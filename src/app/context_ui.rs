@@ -292,6 +292,14 @@ impl Studio {
                 source_rect,
             } => {
                 self.selection_actions(ui);
+                if action(ui, "Magic Eraser", !layer.locked).clicked() {
+                    self.selected = Some(id);
+                    self.selected_asset = None;
+                    self.tool = Tool::MagicEraser;
+                }
+                if action(ui, "Blend edges…", !layer.locked).clicked() {
+                    self.enable_backing(ui.ctx(), id);
+                }
                 if action(ui, "Add motion", !layer.locked).clicked() {
                     self.add_motion(id);
                 }

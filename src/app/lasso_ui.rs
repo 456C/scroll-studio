@@ -6,6 +6,8 @@ use scroll_studio::clipping::{
 pub(super) struct LassoState {
     pub edge: EdgeSettings,
     pub tolerance: u8,
+    pub smart_width: f32,
+    pub erase_connected: bool,
     pub stabilizer: f32,
     pub mode: SelectionMode,
     bound: Option<u64>,
@@ -18,6 +20,8 @@ impl Default for LassoState {
         Self {
             edge: EdgeSettings::default(),
             tolerance: 28,
+            smart_width: 32.0,
+            erase_connected: true,
             stabilizer: 0.0,
             mode: SelectionMode::Replace,
             bound: None,
@@ -45,10 +49,14 @@ struct SelectionJob {
     chapter: u64,
     layer: u64,
     apply_crop: bool,
+    erase: bool,
+    asset_id: u64,
+    source: Arc<Vec<u8>>,
 }
 struct ActiveSelection {
     epoch: u64,
-    revision: u64,
+    asset_id: u64,
+    source: Arc<Vec<u8>>,
     chapter: u64,
     layer: u64,
     mask: Arc<SelectionMask>,
@@ -57,6 +65,8 @@ struct ActiveSelection {
 pub(super) enum SelectionInput {
     Polygon(Vec<[f32; 2]>),
     Smart([u32; 2]),
+    Erase([u32; 2], bool),
+    SmartBrush(Vec<[f32; 2]>, [f32; 2]),
 }
 pub(super) fn selection_mode(modifiers: egui::Modifiers) -> SelectionMode {
     if modifiers.alt {
@@ -69,6 +79,38 @@ pub(super) fn selection_mode(modifiers: egui::Modifiers) -> SelectionMode {
 }
 
 impl Studio {
+    pub(super) fn deselect_pixels(&mut self) {
+        self.lasso.clear();
+        self.lasso_state.cancel();
+        self.status = "Selection cleared".into();
+    }
+    pub(super) fn retain_selection_after_history(&mut self) {
+        self.lasso.clear();
+        self.lasso_state.bound = None;
+        self.lasso_state.editing = false;
+        let chapter = &self.story.chapters[self.chapter];
+        self.selected = self
+            .selected
+            .filter(|id| chapter.layers.iter().any(|l| l.id == *id));
+        if self.selected.is_none() {
+            if let Some(s) = &self.lasso_state.selection {
+                if s.epoch == self.document_epoch
+                    && s.chapter == chapter.id
+                    && self
+                        .assets
+                        .get(&s.asset_id)
+                        .is_some_and(|bytes| Arc::ptr_eq(bytes, &s.source))
+                    && chapter.layers.iter().any(|l| {
+                        l.id == s.layer
+                            && matches!(l.kind,
+                        LayerKind::Image { asset_id, .. } if asset_id == s.asset_id)
+                    })
+                {
+                    self.selected = Some(s.layer);
+                }
+            }
+        }
+    }
     pub(super) fn separate_selection(&mut self, copy: bool) {
         let Some(selection) = self.active_selection() else {
             return;
@@ -158,13 +200,20 @@ impl Studio {
             .layers
             .insert(index + 1, part);
         self.selected = Some(new_id);
-        self.lasso_state.cancel();
         self.tool = Tool::Move;
         self.changed();
         self.status = "Selection separated; original image reused".into();
     }
     pub(super) fn selection_actions(&mut self, ui: &mut egui::Ui) {
         if self.active_selection().is_none() {
+            return;
+        }
+        if motion::button(ui, "Deselect")
+            .on_hover_text("Ctrl+D")
+            .clicked()
+        {
+            self.deselect_pixels();
+            ui.close_menu();
             return;
         }
         if motion::button(ui, "Crop selection").clicked() {
@@ -193,9 +242,11 @@ impl Studio {
     fn active_selection(&self) -> Option<&ActiveSelection> {
         self.lasso_state.selection.as_ref().filter(|s| {
             s.epoch == self.document_epoch
-                && s.revision == self.revision
+                && self.assets.get(&s.asset_id).is_some_and(|bytes| Arc::ptr_eq(bytes, &s.source))
                 && Some(s.layer) == self.selected
                 && self.story.chapters[self.chapter].id == s.chapter
+                && self.story.chapters[self.chapter].layers.iter().any(|l| l.id == s.layer
+                    && matches!(l.kind, LayerKind::Image { asset_id, .. } if asset_id == s.asset_id))
         })
     }
     pub(super) fn fill_active_selection(&mut self, ctx: &egui::Context) {
@@ -251,9 +302,6 @@ impl Studio {
             }));
         }
         self.changed();
-        if let Some(selection) = &mut self.lasso_state.selection {
-            selection.revision = self.revision;
-        }
         self.status = "Crop applied".into();
     }
     pub(super) fn paint_selection_outline(
@@ -324,8 +372,43 @@ impl Studio {
                 self.lasso_state.edge = clip.edge;
             }
         }
+        if let Some(Layer {
+            kind: LayerKind::Image {
+                clip: Some(clip), ..
+            },
+            ..
+        }) = &selected
+        {
+            self.lasso_state.edge.backing = clip.edge.backing;
+        }
+        if self.tool == Tool::MagicEraser {
+            ui.horizontal(|ui| {
+                ui.label("Tolerance");
+                ui.add(egui::DragValue::new(&mut self.lasso_state.tolerance).range(0..=255));
+                ui.checkbox(&mut self.lasso_state.erase_connected, "Connected")
+                    .on_hover_text("Turn off to erase matching color in enclosed gaps as well");
+                if self.lasso_state.job.is_some() {
+                    ui.spinner();
+                }
+            });
+            return;
+        }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 7.0;
+            if self.tool == Tool::SmartLasso {
+                ui.label("Size");
+                ui.add(
+                    egui::DragValue::new(&mut self.lasso_state.smart_width)
+                        .range(1.0..=256.0)
+                        .suffix(" px"),
+                )
+                .on_hover_text(
+                    "Selection brush diameter on screen; click or drag. Shift adds, Alt removes.",
+                );
+                ui.label("Tolerance");
+                ui.add(egui::DragValue::new(&mut self.lasso_state.tolerance).range(0..=255));
+            }
+
             egui::ComboBox::from_id_salt("lasso_pattern")
                 .width(76.0)
                 .selected_text(self.lasso_state.edge.pattern.label())
@@ -338,7 +421,7 @@ impl Studio {
                         );
                     }
                 });
-            ui.label("Width");
+            ui.label("Edge width");
             ui.add(
                 egui::DragValue::new(&mut self.lasso_state.edge.width)
                     .range(0..=512)
@@ -419,13 +502,10 @@ impl Studio {
             {
                 self.apply_selection_crop();
             }
-            if self.tool == Tool::SmartLasso {
-                ui.label("Tolerance");
-                ui.add(egui::DragValue::new(&mut self.lasso_state.tolerance).range(0..=255));
-            } else if self.tool == Tool::Lasso {
+            if self.tool == Tool::Lasso {
                 ui.spacing_mut().slider_width = 65.0;
                 ui.add(
-                    egui::Slider::new(&mut self.lasso_state.stabilizer, 0.0..=1.0)
+                    egui::Slider::new(&mut self.lasso_state.stabilizer, 0.0..=4.0)
                         .show_value(false)
                         .text("Stabilizer"),
                 );
@@ -461,9 +541,6 @@ impl Studio {
                         }
                     }
                     self.changed();
-                    if let Some(selection) = &mut self.lasso_state.selection {
-                        selection.revision = self.revision;
-                    }
                 }
             }
         }
@@ -502,30 +579,29 @@ impl Studio {
                 layer.height /= ch;
             }
         }
-        self.lasso_state.cancel();
         self.changed();
     }
 
     pub(super) fn smart_select(&mut self, ctx: &egui::Context, p: [f32; 2]) {
-        // Retain the selected image even when the click is outside its current
-        // mask, allowing Shift to restore areas that were previously clipped.
+        self.smart_select_stroke(ctx, &[p], selection_mode(ctx.input(|i| i.modifiers)));
+    }
+    pub(super) fn magic_erase(&mut self, ctx: &egui::Context, p: [f32; 2]) {
+        let layers = &self.story.chapters[self.chapter].layers;
         let contains = |l: &Layer| {
-            !l.locked
-                && l.visible
+            l.visible
+                && !l.locked
                 && matches!(l.kind, LayerKind::Image { .. })
                 && p[0] >= l.x
                 && p[0] < l.x + l.width
                 && p[1] >= l.y
                 && p[1] < l.y + l.height
         };
-        let layers = &self.story.chapters[self.chapter].layers;
-        let target = layers
+        let Some(layer) = layers
             .iter()
             .find(|l| Some(l.id) == self.selected && contains(l))
             .or_else(|| layers.iter().rev().find(|l| contains(l)))
-            .cloned();
-        let Some(layer) = target else {
-            self.status = "Click an image to select a connected area".into();
+            .cloned()
+        else {
             return;
         };
         let LayerKind::Image { asset_id, .. } = layer.kind else {
@@ -547,8 +623,88 @@ impl Studio {
         ];
         self.selected = Some(layer.id);
         self.selected_asset = None;
-        let mode = selection_mode(ctx.input(|i| i.modifiers));
-        self.start_selection(ctx, SelectionInput::Smart(seed), mode);
+        self.start_selection(
+            ctx,
+            SelectionInput::Erase(seed, self.lasso_state.erase_connected),
+            SelectionMode::Subtract,
+        );
+    }
+    pub(super) fn smart_select_stroke(
+        &mut self,
+        ctx: &egui::Context,
+        points: &[[f32; 2]],
+        mode: SelectionMode,
+    ) {
+        let Some(&p) = points.first() else {
+            return;
+        };
+        // Retain the selected image even when the click is outside its current
+        // mask, allowing Shift to restore areas that were previously clipped.
+        let hit_radius = self.lasso_state.smart_width * 0.5 / self.zoom.max(0.02);
+        let contains = |l: &Layer| {
+            !l.locked
+                && l.visible
+                && matches!(l.kind, LayerKind::Image { .. })
+                && (p[0] - p[0].clamp(l.x, l.x + l.width))
+                    .hypot(p[1] - p[1].clamp(l.y, l.y + l.height))
+                    <= hit_radius
+        };
+        let layers = &self.story.chapters[self.chapter].layers;
+        let target = layers
+            .iter()
+            .find(|l| Some(l.id) == self.selected && contains(l))
+            .or_else(|| layers.iter().rev().find(|l| contains(l)))
+            .cloned();
+        let Some(layer) = target else {
+            self.status = "Click an image to select a connected area".into();
+            return;
+        };
+        let LayerKind::Image { asset_id, .. } = layer.kind else {
+            return;
+        };
+        let Some(asset) = self.story.assets.iter().find(|a| a.id == asset_id) else {
+            return;
+        };
+        let mapped: Vec<_> = points
+            .iter()
+            .map(|p| {
+                let uv = source_uv(
+                    &layer,
+                    [
+                        (p[0] - layer.x) / layer.width,
+                        (p[1] - layer.y) / layer.height,
+                    ],
+                );
+                [uv[0] * asset.width as f32, uv[1] * asset.height as f32]
+            })
+            .collect();
+        let crop = if let LayerKind::Image { source_rect, .. } = layer.kind {
+            source_rect.unwrap_or([0.0, 0.0, 1.0, 1.0])
+        } else {
+            unreachable!()
+        };
+        let radius = self.lasso_state.smart_width * 0.5 / self.zoom.max(0.02);
+        let radii = [
+            radius * crop[2] * asset.width as f32 / layer.width,
+            radius * crop[3] * asset.height as f32 / layer.height,
+        ];
+        self.selected = Some(layer.id);
+        self.selected_asset = None;
+        if self.lasso_state.smart_width <= 1.0
+            && mapped.len() == 1
+            && mapped[0][0] >= 0.0
+            && mapped[0][1] >= 0.0
+            && mapped[0][0] < asset.width as f32
+            && mapped[0][1] < asset.height as f32
+        {
+            self.start_selection(
+                ctx,
+                SelectionInput::Smart([mapped[0][0] as u32, mapped[0][1] as u32]),
+                mode,
+            );
+        } else {
+            self.start_selection(ctx, SelectionInput::SmartBrush(mapped, radii), mode);
+        }
     }
 
     pub(super) fn finish_lasso(&mut self, ctx: &egui::Context) {
@@ -616,21 +772,50 @@ impl Studio {
         };
         let (width, height) = (asset.width, asset.height);
         let previous = self.active_selection().map(|s| s.mask.clone());
-        let edge = self.lasso_state.edge;
+        let erase = matches!(&input, SelectionInput::Erase(..));
+        let edge = if erase {
+            clip.as_ref().map_or_else(EdgeSettings::default, |c| c.edge)
+        } else {
+            self.lasso_state.edge
+        };
         let tolerance = self.lasso_state.tolerance;
         let (sender, receiver) = mpsc::sync_channel(1);
+        let selection_source = source.clone();
         let wake = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| -> SelectionResult {
-                let incoming = match input {
+                let mut incoming = match input {
+                    SelectionInput::Erase(seed, connected) => SelectionMask::color_region(
+                        &compositor::decode_image(&source)?,
+                        seed,
+                        tolerance,
+                        connected,
+                    )?,
                     SelectionInput::Polygon(points) => {
                         SelectionMask::polygon(width, height, &points)?
                     }
+                    SelectionInput::SmartBrush(points, radii) => SelectionMask::smart_brush(
+                        &compositor::decode_image(&source)?,
+                        &points,
+                        radii,
+                        tolerance,
+                    )?,
                     SelectionInput::Smart(seed) => {
                         SelectionMask::smart(&compositor::decode_image(&source)?, seed, tolerance)?
                     }
                 };
-                let mut selection = if mode == SelectionMode::Replace {
+                if erase {
+                    if let Some(previous) = &previous {
+                        incoming.intersect(previous)?;
+                    }
+                }
+                let mut selection = if erase {
+                    if let Some(clip) = clip {
+                        (*clip.selection).clone()
+                    } else {
+                        SelectionMask::polygon(width, height, &mask)?
+                    }
+                } else if mode == SelectionMode::Replace {
                     incoming.clone()
                 } else if let Some(previous) = previous {
                     (*previous).clone()
@@ -669,8 +854,16 @@ impl Studio {
             chapter: self.story.chapters[self.chapter].id,
             layer: layer.id,
             apply_crop: self.tool == Tool::Crop,
+            erase,
+            asset_id,
+            source: selection_source,
         });
-        self.status = "Selecting…".into();
+        self.status = if erase {
+            "Removing color…"
+        } else {
+            "Selecting…"
+        }
+        .into();
     }
 
     pub(super) fn poll_selection(&mut self, _ctx: &egui::Context) {
@@ -694,9 +887,36 @@ impl Studio {
                 }) {
                     return;
                 }
+                if job.erase {
+                    let Some(chapter) =
+                        self.story.chapters.iter().position(|c| c.id == job.chapter)
+                    else {
+                        return;
+                    };
+                    let Some(index) = self.story.chapters[chapter]
+                        .layers
+                        .iter()
+                        .position(|l| l.id == job.layer)
+                    else {
+                        return;
+                    };
+                    self.checkpoint();
+                    if let LayerKind::Image {
+                        mask, clip: target, ..
+                    } = &mut self.story.chapters[chapter].layers[index].kind
+                    {
+                        mask.clear();
+                        *target = Some(clip);
+                    }
+                    self.lasso_state.bound = None;
+                    self.changed();
+                    self.status = "Color removed".into();
+                    return;
+                }
                 self.lasso_state.selection = Some(ActiveSelection {
                     epoch: self.document_epoch,
-                    revision: self.revision,
+                    asset_id: job.asset_id,
+                    source: job.source,
                     chapter: job.chapter,
                     layer: job.layer,
                     mask: clip.selection.clone(),
@@ -919,5 +1139,158 @@ mod tests {
             [restored.x, restored.y, restored.width, restored.height],
             [0.0, 0.0, 96.0, 64.0]
         );
+    }
+    fn select_left(ctx: &egui::Context, studio: &mut Studio) {
+        studio.tool = Tool::Lasso;
+        studio.start_selection(
+            ctx,
+            SelectionInput::Polygon(vec![[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]]),
+            SelectionMode::Replace,
+        );
+        finish(ctx, studio);
+    }
+    #[test]
+    fn undo_redo_and_unrelated_edits_preserve_the_exact_active_selection() {
+        let (ctx, mut studio, id) = fixture();
+        select_left(&ctx, &mut studio);
+        let mask = studio.active_selection().unwrap().mask.clone();
+        let selected = studio.selected;
+        studio.apply_selection_crop();
+        studio.undo();
+        assert_eq!(studio.selected, selected);
+        assert!(Arc::ptr_eq(&studio.active_selection().unwrap().mask, &mask));
+        studio.redo();
+        assert!(Arc::ptr_eq(&studio.active_selection().unwrap().mask, &mask));
+        studio.checkpoint();
+        studio.story.chapters[0].layers[0].opacity = 0.5;
+        studio.changed();
+        assert!(studio.active_selection().is_some());
+        studio.undo();
+        assert!(studio.active_selection().is_some());
+        let source = studio.assets[&id].clone();
+        studio.assets.insert(id, Arc::new((*source).clone()));
+        assert!(
+            studio.active_selection().is_none(),
+            "A replaced source cannot inherit an old mask"
+        );
+    }
+    #[test]
+    fn undo_separation_restores_selection_and_explicit_deselect_does_not_resurrect() {
+        let (ctx, mut studio, _) = fixture();
+        select_left(&ctx, &mut studio);
+        let mask = studio.active_selection().unwrap().mask.clone();
+        studio.separate_selection(false);
+        studio.undo();
+        assert!(Arc::ptr_eq(&studio.active_selection().unwrap().mask, &mask));
+        studio.deselect_pixels();
+        studio.redo();
+        studio.undo();
+        assert!(studio.active_selection().is_none());
+    }
+    #[test]
+    fn control_d_keeps_the_layer_and_crop_but_clears_pending_and_completed_selections() {
+        let (ctx, mut studio, _) = fixture();
+        studio.welcome = false;
+        select_left(&ctx, &mut studio);
+        studio.apply_selection_crop();
+        let before = studio.story.clone();
+        let selected = studio.selected;
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::D,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+                ..Default::default()
+            },
+            |ctx| studio.shortcuts(ctx),
+        );
+        assert!(studio.active_selection().is_none());
+        assert_eq!(studio.selected, selected);
+        assert_eq!(studio.story, before);
+        studio.start_selection(&ctx, SelectionInput::Smart([2, 2]), SelectionMode::Replace);
+        studio.deselect_pixels();
+        finish(&ctx, &mut studio);
+        assert!(studio.active_selection().is_none());
+    }
+    #[test]
+    fn magic_eraser_removes_connected_or_all_matching_color_with_one_undo_and_original_bytes() {
+        let (ctx, mut studio, asset) = fixture();
+        let mut image = image::RgbaImage::from_pixel(96, 64, image::Rgba([245, 245, 245, 255]));
+        for y in 10..54 {
+            for x in 20..76 {
+                image.put_pixel(x, y, image::Rgba([30, 90, 140, 255]));
+            }
+        }
+        for y in 20..30 {
+            for x in 40..50 {
+                image.put_pixel(x, y, image::Rgba([245, 245, 245, 255]));
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        studio.assets.insert(asset, Arc::new(bytes.into_inner()));
+        let source = studio.assets[&asset].clone();
+        let original = studio.story.clone();
+        studio.tool = Tool::MagicEraser;
+        studio.magic_erase(&ctx, [1.0, 1.0]);
+        finish(&ctx, &mut studio);
+        let LayerKind::Image {
+            clip: Some(clip), ..
+        } = &studio.story.chapters[0].layers[0].kind
+        else {
+            panic!()
+        };
+        assert!(!clip.selection.contains(1, 1));
+        assert!(clip.selection.contains(45, 25));
+        assert!(clip.selection.contains(30, 30));
+        assert_eq!(studio.undo.len(), 1);
+        studio.undo();
+        assert_eq!(studio.story, original);
+        studio.lasso_state.erase_connected = false;
+        studio.magic_erase(&ctx, [1.0, 1.0]);
+        finish(&ctx, &mut studio);
+        let LayerKind::Image {
+            clip: Some(clip), ..
+        } = &studio.story.chapters[0].layers[0].kind
+        else {
+            panic!()
+        };
+        assert!(!clip.selection.contains(45, 25));
+        assert!(clip.selection.contains(30, 30));
+        let mut rendered = image.clone();
+        scroll_studio::clipping::apply(&mut rendered, clip).unwrap();
+        assert_eq!(rendered.get_pixel(45, 25)[3], 0);
+        assert_eq!(rendered.get_pixel(30, 30), image.get_pixel(30, 30));
+        assert!(Arc::ptr_eq(&source, &studio.assets[&asset]));
+    }
+    #[test]
+    fn magic_eraser_honors_active_selection_and_rejects_stale_completion() {
+        let (ctx, mut studio, _) = fixture();
+        select_left(&ctx, &mut studio);
+        let selected = studio.active_selection().unwrap().mask.clone();
+        studio.magic_erase(&ctx, [10.0, 10.0]);
+        finish(&ctx, &mut studio);
+        let LayerKind::Image {
+            clip: Some(clip), ..
+        } = &studio.story.chapters[0].layers[0].kind
+        else {
+            panic!()
+        };
+        assert!(!clip.selection.contains(10, 10));
+        assert!(clip.selection.contains(80, 10));
+        assert!(Arc::ptr_eq(
+            &selected,
+            &studio.active_selection().unwrap().mask
+        ));
+        studio.undo();
+        let before = studio.story.clone();
+        studio.magic_erase(&ctx, [10.0, 10.0]);
+        studio.changed();
+        finish(&ctx, &mut studio);
+        assert_eq!(studio.story, before);
     }
 }

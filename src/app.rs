@@ -7,6 +7,7 @@ mod canvas;
 mod character_io;
 mod characters_ui;
 mod context_ui;
+mod cutout_ui;
 mod dialogue_ui;
 mod effects_ui;
 mod export_ui;
@@ -54,6 +55,7 @@ pub(super) enum Tool {
     Crop,
     Lasso,
     SmartLasso,
+    MagicEraser,
     Brush,
     Heal,
     Blur,
@@ -87,6 +89,7 @@ enum JobResult {
     Exported(export::ExportReport),
     CharacterSheetDone(String),
     Healed(healing_ui::HealingResult),
+    BackingColor(cutout_ui::SceneColorResult),
 }
 
 pub struct Studio {
@@ -386,7 +389,6 @@ impl Studio {
             self.chapter = self
                 .chapter
                 .min(self.story.chapters.len().saturating_sub(1));
-            self.selected = None;
             self.drag_tail = None;
             self.drag_layer = None;
             self.resize_anchor = None;
@@ -396,6 +398,7 @@ impl Studio {
             self.bubble_preset_name = None;
             self.sanitize_location_selection();
             self.changed();
+            self.retain_selection_after_history();
         }
     }
 
@@ -407,7 +410,6 @@ impl Studio {
             self.chapter = self
                 .chapter
                 .min(self.story.chapters.len().saturating_sub(1));
-            self.selected = None;
             self.drag_tail = None;
             self.drag_layer = None;
             self.resize_anchor = None;
@@ -417,6 +419,7 @@ impl Studio {
             self.bubble_preset_name = None;
             self.sanitize_location_selection();
             self.changed();
+            self.retain_selection_after_history();
         }
     }
 
@@ -618,6 +621,7 @@ impl Studio {
                     }
                     Ok(JobResult::CharacterSheetDone(message)) => self.status = message,
                     Ok(JobResult::Healed(result)) => self.apply_healing(result),
+                    Ok(JobResult::BackingColor(result)) => self.apply_backing_color(result),
                     Err(e) => self.error = Some(format!("{e:#}")),
                 }
                 self.continue_after_save = false;
@@ -994,6 +998,10 @@ impl Studio {
             self.redo();
             return;
         }
+        if consume(command, egui::Key::D) {
+            self.deselect_pixels();
+            return;
+        }
         if consume(command, egui::Key::Z) {
             self.undo();
             return;
@@ -1024,6 +1032,7 @@ impl Studio {
             (egui::Key::C, Tool::Crop),
             (egui::Key::L, Tool::Lasso),
             (egui::Key::W, Tool::SmartLasso),
+            (egui::Key::E, Tool::MagicEraser),
             (egui::Key::B, Tool::Brush),
             (egui::Key::J, Tool::Heal),
             (egui::Key::K, Tool::Glint),
@@ -1040,9 +1049,7 @@ impl Studio {
             self.delete_selection();
         }
         if consume(egui::Modifiers::NONE, egui::Key::Escape) {
-            self.selected = None;
             self.lasso.clear();
-            self.lasso_state.cancel();
             self.drag_tail = None;
             self.drag_layer = None;
             self.resize_anchor = None;

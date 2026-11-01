@@ -275,6 +275,7 @@ fn main() -> anyhow::Result<()> {
                         contour: Contour::Outside,
                         dot_scale: 24,
                         background: [130, 199, 219, 100],
+                        backing: Default::default(),
                     },
                 })),
                 source_rect: None,

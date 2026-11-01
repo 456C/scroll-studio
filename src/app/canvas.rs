@@ -71,6 +71,7 @@ impl Studio {
                         | Tool::Text
                         | Tool::Lasso
                         | Tool::SmartLasso
+                        | Tool::MagicEraser
                         | Tool::Select
                         | Tool::Crop
                 ) {
@@ -86,6 +87,45 @@ impl Studio {
                     ),
                     vec2(toolbar_width, toolbar_height),
                 );
+                let inset_id = egui::Id::new((
+                    "canvas_wheel_inset",
+                    self.document_epoch,
+                    self.story.chapters[self.chapter].id,
+                ));
+                if self.auto_fit {
+                    ctx.data_mut(|d| d.remove::<egui::Vec2>(inset_id));
+                }
+                let mut manual_inset = ctx.data(|d| d.get_temp::<egui::Vec2>(inset_id));
+                let mut zoom_scroll = None;
+                let (factor, pointer, dragging) =
+                    ctx.input(|i| (i.zoom_delta(), i.pointer.hover_pos(), i.pointer.any_down()));
+                if factor.is_finite() && factor > 0.0 && factor != 1.0 && !dragging {
+                    if let Some(pointer) = pointer.filter(|p| {
+                        viewport_rect.contains(*p)
+                            && self.canvas_rect.contains(*p)
+                            && !self.toolbar_rect.contains(*p)
+                            && !self.reference_contains(*p)
+                            && ctx.layer_id_at(*p) == Some(ui.layer_id())
+                    }) {
+                        let next = (self.zoom * factor).clamp(0.02, 1.5);
+                        if next != self.zoom {
+                            // Keep the exact original-image point under the cursor. Extra
+                            // stage padding also preserves it when zooming below Fit.
+                            let origin =
+                                pointer - (pointer - self.canvas_rect.min) * (next / self.zoom);
+                            let relative = origin - viewport_rect.min;
+                            let inset = relative.max(vec2(42.0, 158.0));
+                            zoom_scroll = Some(inset - relative);
+                            manual_inset = Some(inset);
+                            ctx.data_mut(|d| d.insert_temp(inset_id, inset));
+                            self.zoom = next;
+                            self.auto_fit = false;
+                            self.jump_y = None;
+                            ctx.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+                            ctx.request_repaint();
+                        }
+                    }
+                }
                 let zoom = self.zoom;
                 let width = self.story.chapters[self.chapter].width as f32;
                 let height = self.story.chapters[self.chapter].height as f32;
@@ -104,6 +144,11 @@ impl Studio {
                 } else {
                     area
                 };
+                let area = if let Some(offset) = zoom_scroll {
+                    area.scroll_offset(offset)
+                } else {
+                    area
+                };
                 area.show_viewport(ui, |ui, viewport| {
                     #[cfg(test)]
                     ctx.data_mut(|data| {
@@ -112,19 +157,23 @@ impl Studio {
                     self.scroll_y = viewport.top() / zoom;
                     let group_width = width * zoom + 72.0 + script_width;
                     let center_offset = ((viewport.width() - group_width) * 0.5).max(0.0);
+                    let inset = manual_inset.unwrap_or(vec2(42.0 + center_offset, 158.0));
                     let content_height = if self.show_script {
                         (height * zoom).max(self.script_lane_height())
                     } else {
                         height * zoom
                     };
                     let (stage, _) = ui.allocate_exact_size(
-                        vec2(group_width.max(viewport.width()), content_height + 196.0),
+                        vec2(
+                            (inset.x + width * zoom + 30.0 + script_width).max(viewport.width()),
+                            content_height + inset.y + 38.0,
+                        ),
                         Sense::hover(),
                     );
                     let canvas = Rect::from_min_size(
                         // Reserve the largest tool shelf so changing tools
                         // never shifts artwork under the pointer.
-                        stage.min + vec2(42.0 + center_offset, 158.0),
+                        stage.min + inset,
                         vec2(width * zoom, height * zoom),
                     );
                     self.canvas_rect = canvas;
@@ -393,14 +442,20 @@ impl Studio {
                         canvas,
                     );
                     self.paint_selection_outline(&painter, canvas, zoom);
-                    if matches!(self.tool, Tool::Brush | Tool::Heal | Tool::Blur)
-                        && response.hovered()
+                    if matches!(
+                        self.tool,
+                        Tool::Brush | Tool::Heal | Tool::Blur | Tool::SmartLasso
+                    ) && response.hovered()
                     {
                         if let Some(p) = ctx
                             .pointer_hover_pos()
                             .filter(|p| canvas.contains(*p) && !self.toolbar_rect.contains(*p))
                         {
-                            let radius = (self.active_brush_size() * zoom * 0.5).max(2.0);
+                            let radius = if self.tool == Tool::SmartLasso {
+                                self.lasso_state.smart_width * 0.5
+                            } else {
+                                (self.active_brush_size() * zoom * 0.5).max(2.0)
+                            };
                             painter.circle_stroke(
                                 p,
                                 radius,
@@ -421,9 +476,13 @@ impl Studio {
                             .collect();
                         painter.add(egui::Shape::line(
                             points,
-                            if matches!(self.tool, Tool::Heal | Tool::Blur) {
+                            if matches!(self.tool, Tool::Heal | Tool::Blur | Tool::SmartLasso) {
                                 Stroke::new(
-                                    self.active_brush_size() * zoom,
+                                    if self.tool == Tool::SmartLasso {
+                                        self.lasso_state.smart_width
+                                    } else {
+                                        self.active_brush_size() * zoom
+                                    },
                                     Color32::from_rgba_unmultiplied(122, 184, 245, 100),
                                 )
                             } else {
@@ -522,8 +581,9 @@ impl Studio {
                                         Tool::SmartLasso,
                                         icons::Icon::SmartLasso,
                                         "Smart Lasso",
-                                        "W · Click a connected area · Shift adds · Left Alt subtracts",
+                                        "W · Brush to select · Shift adds · Left Alt subtracts",
                                     ),
+                                    (Tool::MagicEraser,icons::Icon::Eraser,"Magic Eraser","E · Click a solid color to remove it"),
                                     (
                                         Tool::Brush,
                                         icons::Icon::Brush,
@@ -670,7 +730,7 @@ impl Studio {
                             }
                         });
                     });
-                    if matches!(self.tool,Tool::Lasso|Tool::SmartLasso|Tool::Select|Tool::Crop) {
+                    if matches!(self.tool,Tool::Lasso|Tool::SmartLasso|Tool::MagicEraser|Tool::Select|Tool::Crop) {
                         self.lasso_controls(ui);
                     } else if matches!(self.tool,Tool::Brush|Tool::Heal|Tool::Blur) {
                         ui.horizontal(|ui| {
@@ -684,7 +744,7 @@ impl Studio {
                             if self.tool==Tool::Blur {
                                 ui.add(egui::Slider::new(&mut self.motion_brush.length,1.0..=128.0).text("Blur"));
                                 motion::menu_button(ui,"Direction",|ui|{ui.checkbox(&mut self.motion_brush.automatic,"Follow stroke");if !self.motion_brush.automatic {ui.add(egui::Slider::new(&mut self.motion_brush.angle,-180.0..=180.0).suffix("°"));}});
-                            }else{ui.add(egui::Slider::new(&mut self.lasso_state.stabilizer,0.0..=1.0).show_value(false).text("Stabilizer"));}
+                            }else{ui.add(egui::Slider::new(&mut self.lasso_state.stabilizer,0.0..=4.0).show_value(false).text("Stabilizer"));}
                         });
                     } else if self.tool == Tool::Text {
                         ui.horizontal_wrapped(|ui| {
@@ -895,6 +955,7 @@ impl Studio {
                         self.selected_asset = None;
                     }
                     Tool::SmartLasso => self.smart_select(ctx, p),
+                    Tool::MagicEraser => self.magic_erase(ctx, p),
                     Tool::Glint => self.add_glint(p),
                     Tool::Wind => self.add_wind(&[p]),
                     Tool::Blur => self.start_motion_blur(ctx, vec![p]),
@@ -1059,7 +1120,9 @@ impl Studio {
                         self.lasso = vec![p];
                     }
                     Tool::Brush => self.begin_stroke(p),
-                    Tool::Heal | Tool::Blur | Tool::Wind => {
+                    Tool::Heal | Tool::Blur | Tool::Wind | Tool::SmartLasso => {
+                        self.lasso_state.mode =
+                            super::lasso_ui::selection_mode(ctx.input(|i| i.modifiers));
                         self.lasso = vec![p];
                     }
                     _ => (),
@@ -1137,7 +1200,10 @@ impl Studio {
                             self.lasso = vec![start, [p[0], start[1]], p, [start[0], p[1]], start];
                         }
                     }
-                    Tool::Lasso | Tool::Heal | Tool::Blur | Tool::Wind => {
+                    Tool::Lasso | Tool::Heal | Tool::Blur | Tool::Wind | Tool::SmartLasso => {
+                        if self.lasso.is_empty() {
+                            return;
+                        }
                         let p = self.lasso.last().map_or(p, |last| {
                             scroll_studio::clipping::stabilize(
                                 *last,
@@ -1221,6 +1287,16 @@ impl Studio {
                         }
                     }
                 }
+            }
+            if self.tool == Tool::SmartLasso && !self.lasso.is_empty() {
+                if let Some(p) = point {
+                    if self.lasso.len() < 2000 {
+                        self.lasso.push(p);
+                    } else if let Some(last) = self.lasso.last_mut() {
+                        *last = p;
+                    }
+                }
+                self.smart_select_stroke(ctx, &self.lasso.clone(), self.lasso_state.mode);
             }
             if self.tool == Tool::Blur && !self.lasso.is_empty() {
                 if let Some(p) = point {
@@ -2115,6 +2191,69 @@ mod floating_toolbar_tests {
         assert!(studio.dialog.is_some());
         assert_eq!(studio.story, original);
     }
+
+    #[test]
+    fn control_wheel_keeps_cursor_point_fixed_in_both_axes_and_does_not_edit_story() {
+        for show_script in [false, true] {
+            let (ctx, mut studio) = fixture();
+            studio.show_script = show_script;
+            studio.auto_fit = true;
+            for _ in 0..3 {
+                frame(&ctx, &mut studio, vec2(1280.0, 760.0), vec![]);
+            }
+            let original = studio.story.clone();
+            let revision = studio.revision;
+            let pointer = pos2(
+                studio.canvas_rect.left() + studio.canvas_rect.width() * 0.7,
+                410.0,
+            );
+            let source_point = (pointer - studio.canvas_rect.min) / studio.zoom;
+            let initial_zoom = studio.zoom;
+            for direction in [1.0, -1.0, -1.0] {
+                frame(
+                    &ctx,
+                    &mut studio,
+                    vec2(1280.0, 760.0),
+                    vec![
+                        egui::Event::PointerMoved(pointer),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Line,
+                            delta: vec2(0.0, direction * 3.0),
+                            modifiers: egui::Modifiers::CTRL,
+                        },
+                    ],
+                );
+                for _ in 0..30 {
+                    frame(&ctx, &mut studio, vec2(1280.0, 760.0), vec![]);
+                    let screen_point = studio.canvas_rect.min + source_point * studio.zoom;
+                    assert!(screen_point.distance(pointer) < 1.0,
+                        "Cursor drifted: {screen_point:?}, target {pointer:?}, script={show_script}");
+                }
+            }
+            assert!(studio.zoom < initial_zoom && !studio.auto_fit);
+            assert_eq!(studio.story, original);
+            assert_eq!(studio.revision, revision);
+            // Scrolling an inspector or another overlay must not zoom the canvas.
+            let saved_zoom = studio.zoom;
+            frame(
+                &ctx,
+                &mut studio,
+                vec2(1280.0, 760.0),
+                vec![
+                    egui::Event::PointerMoved(pos2(1200.0, 400.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Line,
+                        delta: vec2(0.0, 3.0),
+                        modifiers: egui::Modifiers::CTRL,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                frame(&ctx, &mut studio, vec2(1280.0, 760.0), vec![]);
+            }
+            assert_eq!(studio.zoom, saved_zoom);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2782,5 +2921,82 @@ mod tests {
             (preset.color, preset.size, preset.bubble)
         );
         assert!(!compositor::text_overflows(layer));
+    }
+    #[test]
+    fn smart_brush_drag_covers_its_width_and_release_on_a_scaled_image() {
+        let (ctx, mut studio, id) = fixture();
+        let asset = studio.story.alloc_id();
+        let mut image = image::RgbaImage::new(96, 64);
+        for (x, y, p) in image.enumerate_pixels_mut() {
+            *p = image::Rgba([x as u8, y as u8, 180, 255]);
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        studio.assets.insert(asset, Arc::new(bytes.into_inner()));
+        studio.story.assets.push(Asset {
+            id: asset,
+            name: "Brush target".into(),
+            kind: AssetKind::Image,
+            width: 96,
+            height: 64,
+            notes: String::new(),
+            prompt: String::new(),
+            character: CharacterProfile::default(),
+        });
+        studio.story.chapters[0].layers[0].kind = LayerKind::Image {
+            asset_id: asset,
+            mask: vec![],
+            clip: None,
+            source_rect: None,
+        };
+        studio.selected = Some(id);
+        studio.tool = Tool::SmartLasso;
+        studio.lasso_state.smart_width = 10.0;
+        studio.lasso_state.tolerance = 0;
+        frame(
+            &ctx,
+            &mut studio,
+            press(pos2(110.0, 110.0), egui::PointerButton::Primary),
+        );
+        frame(
+            &ctx,
+            &mut studio,
+            vec![egui::Event::PointerMoved(pos2(125.0, 125.0))],
+        );
+        frame(
+            &ctx,
+            &mut studio,
+            vec![
+                egui::Event::PointerMoved(pos2(140.0, 140.0)),
+                egui::Event::PointerButton {
+                    pos: pos2(140.0, 140.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        while studio.status != "Selection ready" {
+            assert!(Instant::now() < deadline, "{}", studio.status);
+            studio.poll_selection(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        studio.apply_selection_crop();
+        let LayerKind::Image {
+            clip: Some(clip), ..
+        } = &studio.story.chapters[0].layers[0].kind
+        else {
+            panic!()
+        };
+        assert!(
+            clip.selection.contains(48, 37),
+            "Off-center pixels inside brush width are selected"
+        );
+        assert!(!clip.selection.contains(48, 50));
+        assert!(
+            clip.selection.contains(76, 51),
+            "Release position must be selected"
+        );
     }
 }

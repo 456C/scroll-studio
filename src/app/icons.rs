@@ -7,6 +7,7 @@ pub(super) enum Icon {
     Select,
     Crop,
     SmartLasso,
+    Eraser,
     Brush,
     Heal,
     Bubble,
@@ -278,6 +279,18 @@ pub(super) fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color:
             line(&[[2.5, 4.5], [7.5, 4.5]]);
             line(&[[20.0, 12.0], [20.0, 18.0]]);
             line(&[[17.0, 15.0], [23.0, 15.0]]);
+        }
+        Icon::Eraser => {
+            line(&[
+                [2.0, 15.0],
+                [13.0, 4.0],
+                [22.0, 13.0],
+                [14.0, 21.0],
+                [8.0, 21.0],
+                [2.0, 15.0],
+            ]);
+            line(&[[7.0, 10.0], [17.0, 19.0]]);
+            line(&[[15.0, 23.0], [23.0, 23.0]]);
         }
         Icon::Heal => {
             line(&[

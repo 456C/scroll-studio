@@ -193,3 +193,22 @@ Pass 1 checked data, coordinates, undo, storage, export and bounded work. Pass 2
 | Recovery and modal isolation | Stale worker results rejected; modal actions isolated | Native Windows folder virtualization reproduced and fixed by resolving the actual write directory before strict containment checks; native recovery round trip passed |
 
 Validation: 315 tests passed (123 library + 192 application), all targets; Clippy with warnings denied; formatting check. `examples/studio_tools_playground.rs` produces a six-source story, original-byte round trip, identical full/sliced export pixels, native recovery check and effect/fill proofs. A representative release run completed composite fill plus proof in about 0.18 seconds; this is a fixture measurement, not a guarantee for all image sizes or hardware. Generated local texture fills can still need adjustment on complex scene structure.
+
+
+## 0.10.1 — selection, cutout and zoom review
+
+| Feature | Pass 1 | Pass 2 and polish |
+| --- | --- | --- |
+| Smart Lasso width | Screen-space ellipse mapped into original pixels; multi-seed bounded flood and transparent-padding tests | Circular canvas/snippet footprint; native drag selected torso and limb; Size moved ahead of edge controls |
+| Selection persistence | Source identity, undo/redo and stale-result guards | Native crop/undo retained the outline; Ctrl+D cleared it without undoing the crop; pending snippet jobs cannot restore a cleared selection |
+| 4× stabilizer | Old numerical values preserve strength; maximum trailing radius increases from 30 to 120 screen pixels | Shared controls across drawing, lasso and snippets; exact strength regression |
+| Magic Eraser | Connected/all-matching color removal, active-selection restriction, undo and original-byte tests | Native white-background removal and enclosed hair-gap removal; dedicated quick controls and correctly sized toolbar hit surface |
+| Cutout backing | Alpha-derived falloff, gap closing, opacity and opaque-pixel invariance; metadata crop expansion and storage round trip | Before/after proof; bounded distance grid; inspector labels rearranged to fit; percent display no longer changes alpha merely by opening the inspector |
+| Match scene | Worker samples only layers beneath the cutout, rejects stale results and shares the enable undo step | Native test exposed output-coordinate mismatch; corrected scaling and added an 800 px-wide, tall-chapter regression |
+| Cursor zoom | Ctrl-wheel changes canvas scale and compensates both scroll axes without editing the story | Input-event regression checks repeated in/out zoom, below-Fit padding, script lane on/off, cursor drift under one pixel and inspector isolation |
+
+Native review at 1280×760 covered the new eraser and backing controls. Computer Use was stopped by the user with Escape before a second native size pass; no further UI input was issued. The corrected backing layout is checked through the actual inspector at 1100 and 1280 logical pixels. Earlier native selection review verified crop/undo/Ctrl+D. Final UI corrections and cursor zoom are covered by headless native egui input/render checks, not a completed second live desktop pass.
+
+The synthetic proof `examples/cutout_playground.rs` verifies source bytes and backing survive a .scro round trip and exports from the same renderer used for preview. A 512×640 erase/backing/proof run took about 58 ms in a release build; this is a fixture measurement, not a frame-rate guarantee. Backing can extend into the source image's existing transparent padding, but does not invent pixels beyond its bitmap bounds. Generated proof files remain under ignored target/.
+
+Validation: all 332 tests passed (130 library and 202 application), all targets; strict Clippy and formatting checks passed. No new runtime dependency.

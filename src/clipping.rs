@@ -49,6 +49,7 @@ pub struct EdgeSettings {
     pub dot_scale: u16,
     /// Zero alpha disables the background. It exists only inside the edge band.
     pub background: [u8; 4],
+    pub backing: crate::cutout::BackingSettings,
 }
 impl Default for EdgeSettings {
     fn default() -> Self {
@@ -58,6 +59,7 @@ impl Default for EdgeSettings {
             contour: Contour::Center,
             dot_scale: 12,
             background: [255, 255, 255, 0],
+            backing: crate::cutout::BackingSettings::default(),
         }
     }
 }
@@ -120,18 +122,24 @@ mod mask_archive {
 }
 impl EdgeSettings {
     pub fn outside_extent(self) -> u32 {
-        if self.width == 0
+        let contour = if self.width == 0
             || (self.pattern == EdgePattern::Hard
                 && self.contour == Contour::Center
                 && self.background[3] == 0)
         {
-            return 0;
-        }
-        match self.contour {
-            Contour::Inside => 0,
-            Contour::Center => u32::from(self.width).div_ceil(2),
-            Contour::Outside => u32::from(self.width),
-        }
+            0
+        } else {
+            match self.contour {
+                Contour::Inside => 0,
+                Contour::Center => u32::from(self.width).div_ceil(2),
+                Contour::Outside => u32::from(self.width),
+            }
+        };
+        contour.max(if self.backing.enabled {
+            u32::from(self.backing.reach)
+        } else {
+            0
+        })
     }
 }
 impl SelectionMask {
@@ -149,8 +157,21 @@ impl SelectionMask {
     /// A local foreground estimate for reference sheets: flood dominant border
     /// colors, then keep the foreground component under the user's click.
     pub fn subject(image: &RgbaImage, seed: [u32; 2], tolerance: u8) -> Result<Self> {
+        Self::subject_brush(
+            image,
+            &[[seed[0] as f32 + 0.5, seed[1] as f32 + 0.5]],
+            [0.5; 2],
+            tolerance,
+        )
+    }
+    pub fn subject_brush(
+        image: &RgbaImage,
+        points: &[[f32; 2]],
+        radii: [f32; 2],
+        tolerance: u8,
+    ) -> Result<Self> {
         let (w, h) = image.dimensions();
-        ensure!(seed[0] < w && seed[1] < h, "Click inside the subject");
+        let footprint = Self::brush(w, h, points, radii)?;
         let mut histogram = std::collections::HashMap::<[u8; 3], (usize, [u64; 3])>::new();
         let mut sample = |x, y| {
             let p = image.get_pixel(x, y);
@@ -230,14 +251,18 @@ impl SelectionMask {
                 }
             }
         }
-        ensure!(
-            !background.contains(seed[0], seed[1]),
-            "Click the character, or use Lasso on a busy background"
-        );
         let mut selected = Self::empty(w, h)?;
-        let first = seed[1] * w + seed[0];
-        selected.set_index(first as usize);
-        queue.push_back(first);
+        for i in 0..(w as usize * h as usize) {
+            if footprint.get_index(i) && !background.get_index(i) {
+                selected.set_index(i);
+                ensure!(queue.len() < 4_000_000, "Use a smaller selection brush");
+                queue.push_back(i as u32);
+            }
+        }
+        ensure!(
+            !queue.is_empty(),
+            "Brush over the character, or use Lasso on a busy background"
+        );
         while let Some(i) = queue.pop_front() {
             let (x, y) = (i % w, i / w);
             for (nx, ny) in [
@@ -298,10 +323,10 @@ impl SelectionMask {
         }
         Ok(())
     }
-    fn get_index(&self, i: usize) -> bool {
+    pub(crate) fn get_index(&self, i: usize) -> bool {
         self.bits[i / 64] & (1 << (i % 64)) != 0
     }
-    fn set_index(&mut self, i: usize) {
+    pub(crate) fn set_index(&mut self, i: usize) {
         self.bits[i / 64] |= 1 << (i % 64);
     }
     pub fn contains(&self, x: u32, y: u32) -> bool {
@@ -391,6 +416,135 @@ impl SelectionMask {
         }
         Ok(result)
     }
+    /// Rasterize a circular screen brush mapped to original image coordinates.
+    /// Elliptical source radii preserve a circular cursor on stretched images.
+    pub fn brush(width: u32, height: u32, points: &[[f32; 2]], radii: [f32; 2]) -> Result<Self> {
+        let mut mask = Self::empty(width, height)?;
+        ensure!(
+            !points.is_empty()
+                && points.len() <= 2000
+                && points.iter().flatten().all(|v| v.is_finite())
+                && radii.iter().all(|r| r.is_finite() && *r > 0.0),
+            "Invalid selection brush"
+        );
+        let rx = radii[0].clamp(0.5, 16384.0);
+        let ry = radii[1].clamp(0.5, 16384.0);
+        let mut work = 0_u64;
+        for (a, b) in points
+            .iter()
+            .zip(points.iter().skip(1).chain(points.last()))
+        {
+            let left = (a[0].min(b[0]) - rx).floor().clamp(0.0, width as f32) as u32;
+            let right = (a[0].max(b[0]) + rx).ceil().clamp(0.0, width as f32) as u32;
+            let top = (a[1].min(b[1]) - ry).floor().clamp(0.0, height as f32) as u32;
+            let bottom = (a[1].max(b[1]) + ry).ceil().clamp(0.0, height as f32) as u32;
+            work += u64::from(right - left) * u64::from(bottom - top);
+            ensure!(
+                work <= 64_000_000,
+                "Use a shorter selection stroke or a smaller brush"
+            );
+            let dx = (b[0] - a[0]) / rx;
+            let dy = (b[1] - a[1]) / ry;
+            let length = dx * dx + dy * dy;
+            for y in top..bottom {
+                for x in left..right {
+                    let px = (x as f32 + 0.5 - a[0]) / rx;
+                    let py = (y as f32 + 0.5 - a[1]) / ry;
+                    let t = if length > 0.0 {
+                        ((px * dx + py * dy) / length).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    if (px - t * dx).powi(2) + (py - t * dy).powi(2) <= 1.0 {
+                        mask.set_index((y * width + x) as usize);
+                    }
+                }
+            }
+            // A one-pixel brush still selects its hit pixel at any subpixel position.
+            for p in [a, b] {
+                if p[0] >= 0.0 && p[1] >= 0.0 && p[0] < width as f32 && p[1] < height as f32 {
+                    mask.set_index((p[1] as u32 * width + p[0] as u32) as usize);
+                }
+            }
+        }
+        ensure!(mask.any(), "Brush inside the image");
+        Ok(mask)
+    }
+
+    /// Grow all touched color regions in one bounded multi-source flood, rather
+    /// than decoding/flooding the whole image once for every pointer sample.
+    pub fn smart_brush(
+        image: &RgbaImage,
+        points: &[[f32; 2]],
+        radii: [f32; 2],
+        tolerance: u8,
+    ) -> Result<Self> {
+        let (w, h) = image.dimensions();
+        let mut selected = Self::brush(w, h, points, radii)?;
+        // When the brush touches artwork, transparent padding is not another
+        // color region to flood across the entire source image.
+        let prefer_artwork = image
+            .pixels()
+            .enumerate()
+            .any(|(i, p)| selected.get_index(i) && p[3] > 0);
+        if prefer_artwork {
+            for (i, p) in image.pixels().enumerate() {
+                if p[3] == 0 {
+                    selected.bits[i / 64] &= !(1_u64 << (i % 64));
+                }
+            }
+        }
+        let mut queue = VecDeque::new();
+        for y in 0..h {
+            for x in 0..w {
+                if selected.contains(x, y)
+                    && [
+                        (x.wrapping_sub(1), y),
+                        (x + 1, y),
+                        (x, y.wrapping_sub(1)),
+                        (x, y + 1),
+                    ]
+                    .iter()
+                    .any(|&(nx, ny)| nx < w && ny < h && !selected.contains(nx, ny))
+                {
+                    ensure!(queue.len() < 4_000_000, "Use a smaller selection brush");
+                    queue.push_back((y * w + x, image.get_pixel(x, y).0));
+                }
+            }
+        }
+        while let Some((i, target)) = queue.pop_front() {
+            let (x, y) = (i % w, i / w);
+            for (nx, ny) in [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ] {
+                if nx >= w || ny >= h || selected.contains(nx, ny) {
+                    continue;
+                }
+                let pixel = image.get_pixel(nx, ny).0;
+                if prefer_artwork && pixel[3] == 0 {
+                    continue;
+                }
+                let similar = pixel[3].abs_diff(target[3]) <= tolerance
+                    && (0..3).all(|c| {
+                        let a = u32::from(pixel[c]) * u32::from(pixel[3]) / 255;
+                        let b = u32::from(target[c]) * u32::from(target[3]) / 255;
+                        a.abs_diff(b) <= u32::from(tolerance)
+                    });
+                if similar {
+                    selected.set_index((ny * w + nx) as usize);
+                    ensure!(
+                        queue.len() < 4_000_000,
+                        "Selection is too complex; use a smaller tolerance"
+                    );
+                    queue.push_back((ny * w + nx, target));
+                }
+            }
+        }
+        Ok(selected)
+    }
     /// Connected, seed-relative color selection. Transparent RGB is ignored.
     pub fn smart(image: &RgbaImage, seed: [u32; 2], tolerance: u8) -> Result<Self> {
         let (width, height) = image.dimensions();
@@ -442,6 +596,33 @@ impl SelectionMask {
         }
         Ok(selected)
     }
+    /// Matching source color, optionally including disconnected enclosed gaps.
+    pub fn color_region(
+        image: &RgbaImage,
+        seed: [u32; 2],
+        tolerance: u8,
+        connected: bool,
+    ) -> Result<Self> {
+        if connected {
+            return Self::smart(image, seed, tolerance);
+        }
+        let (w, h) = image.dimensions();
+        ensure!(seed[0] < w && seed[1] < h, "Click inside the image");
+        let target = image.get_pixel(seed[0], seed[1]).0;
+        let mut result = Self::empty(w, h)?;
+        for (i, p) in image.pixels().enumerate() {
+            if p[3].abs_diff(target[3]) <= tolerance
+                && (0..3).all(|c| {
+                    (u32::from(p[c]) * u32::from(p[3]) / 255)
+                        .abs_diff(u32::from(target[c]) * u32::from(target[3]) / 255)
+                        <= u32::from(tolerance)
+                })
+            {
+                result.set_index(i);
+            }
+        }
+        Ok(result)
+    }
     pub fn bounds(&self) -> Option<[u32; 4]> {
         let (mut left, mut top, mut right, mut bottom) = (self.width, self.height, 0, 0);
         for y in 0..self.height {
@@ -480,13 +661,14 @@ impl ImageClip {
             self.edge.width <= 512 && (2..=128).contains(&self.edge.dot_scale),
             "Invalid selection edge settings"
         );
+        self.edge.backing.validate()?;
         Ok(())
     }
 }
 
 /// Fixed-point chamfer distance, eight units per source pixel. Only opposite
 /// selection pixels seed the field; the image boundary is not an invented crop.
-fn distances(mask: &SelectionMask, cap: u16) -> Vec<u16> {
+pub(crate) fn distances(mask: &SelectionMask, cap: u16) -> Vec<u16> {
     let w = mask.width as usize;
     let h = mask.height as usize;
     let mut d = vec![cap; w * h];
@@ -555,7 +737,7 @@ pub fn apply(image: &mut RgbaImage, clip: &ImageClip) -> Result<()> {
                 *pixel = Rgba([0; 4]);
             }
         }
-        return Ok(());
+        return crate::cutout::apply_backing(image, edge.backing);
     }
     let field = distances(mask, (edge.width + 2) * 8);
     let width = f32::from(edge.width);
@@ -616,13 +798,13 @@ pub fn apply(image: &mut RgbaImage, clip: &ImageClip) -> Result<()> {
         }
         pixel[3] = (alpha * 255.0).round() as u8;
     }
-    Ok(())
+    crate::cutout::apply_backing(image, edge.backing)
 }
 
 /// A bounded trailing filter in chapter coordinates; screen-space radius is
 /// independent of zoom. Zero preserves raw input, and release keeps the endpoint.
 pub fn stabilize(previous: [f32; 2], point: [f32; 2], strength: f32, zoom: f32) -> [f32; 2] {
-    let radius = strength.clamp(0.0, 1.0) * 30.0 / zoom.max(0.02);
+    let radius = strength.clamp(0.0, 4.0) * 30.0 / zoom.max(0.02);
     let distance = (point[0] - previous[0]).hypot(point[1] - previous[1]);
     let amount = if radius == 0.0 {
         1.0
@@ -697,6 +879,7 @@ mod tests {
                         width: 16,
                         dot_scale: 8,
                         background: [250, 10, 30, 160],
+                        backing: Default::default(),
                     },
                 };
                 let mut cut = source.clone();
@@ -772,5 +955,72 @@ mod tests {
         assert!(apply(&mut image, &clip).is_err());
         assert_eq!(stabilize([0.0, 0.0], [20.0, 10.0], 0.0, 1.0), [20.0, 10.0]);
         assert!(stabilize([0.0, 0.0], [20.0, 10.0], 1.0, 1.0)[0] < 20.0);
+    }
+    #[test]
+    fn smart_brush_width_samples_regions_and_strokes_without_crossing_unpainted_gaps() {
+        let mut image = RgbaImage::from_pixel(80, 48, image::Rgba([0, 0, 0, 255]));
+        for y in 0..48 {
+            for x in 0..80 {
+                if !(20..60).contains(&x) {
+                    image.put_pixel(x, y, image::Rgba([220, 40, 30, 255]));
+                } else if x < 40 {
+                    image.put_pixel(x, y, image::Rgba([25, 150, 80, 255]));
+                }
+            }
+        }
+        let narrow = SelectionMask::smart_brush(&image, &[[17.5, 24.5]], [1.0; 2], 0).unwrap();
+        assert!(narrow.contains(5, 5));
+        assert!(!narrow.contains(25, 24));
+        let wide = SelectionMask::smart_brush(&image, &[[17.5, 24.5]], [6.0; 2], 0).unwrap();
+        assert!(wide.contains(25, 5));
+        assert!(!wide.contains(50, 24));
+        assert!(
+            !wide.contains(70, 24),
+            "Disconnected same-color region must stay outside"
+        );
+        let stroke =
+            SelectionMask::brush(80, 48, &[[5.5, 20.5], [65.5, 20.5]], [3.0, 6.0]).unwrap();
+        assert!(stroke.contains(40, 25));
+        assert!(!stroke.contains(40, 28));
+        assert!(!stroke.contains(70, 20));
+        assert!(SelectionMask::brush(80, 48, &[[f32::NAN, 0.0]], [3.0; 2]).is_err());
+    }
+    #[test]
+    fn subject_brush_catches_a_near_miss_without_selecting_background() {
+        let mut image = RgbaImage::new(64, 64);
+        for y in 10..54 {
+            for x in 24..40 {
+                image.put_pixel(x, y, image::Rgba([35, 145, 180, 255]));
+            }
+        }
+        assert!(SelectionMask::subject(&image, [21, 32], 24).is_err());
+        let mask = SelectionMask::subject_brush(&image, &[[21.5, 32.5]], [6.0; 2], 24).unwrap();
+        assert!(mask.contains(32, 12));
+        assert!(!mask.contains(21, 32));
+        assert!(!mask.contains(0, 0));
+    }
+    #[test]
+    fn stabilizer_extends_to_four_times_the_old_radius_without_changing_old_values() {
+        assert_eq!(stabilize([0.0; 2], [120.0, 0.0], 1.0, 1.0), [96.0, 0.0]);
+        assert_eq!(stabilize([0.0; 2], [120.0, 0.0], 4.0, 1.0), [60.0, 0.0]);
+        assert_eq!(
+            stabilize([0.0; 2], [120.0, 0.0], 4.0, 1.0),
+            stabilize([0.0; 2], [120.0, 0.0], 1.0, 0.25)
+        );
+    }
+    #[test]
+    fn wide_smart_brush_ignores_transparent_padding_when_it_touches_artwork() {
+        let mut image = RgbaImage::new(64, 64);
+        for y in 10..54 {
+            for x in 24..40 {
+                image.put_pixel(x, y, image::Rgba([40, 150, 180, 255]));
+            }
+        }
+        let mask = SelectionMask::smart_brush(&image, &[[22.5, 32.5]], [6.0; 2], 28).unwrap();
+        assert!(mask.contains(32, 12));
+        assert_eq!(mask.bounds(), Some([24, 10, 16, 44]));
+        let empty_area = SelectionMask::smart_brush(&image, &[[5.5, 5.5]], [1.0; 2], 0).unwrap();
+        assert!(empty_area.contains(60, 60));
+        assert!(!empty_area.contains(32, 32));
     }
 }

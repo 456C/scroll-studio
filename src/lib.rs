@@ -2,6 +2,7 @@ pub mod bubbles;
 pub mod characters;
 pub mod clipping;
 pub mod compositor;
+pub mod cutout;
 pub mod dialogue;
 pub mod effects;
 pub mod export;

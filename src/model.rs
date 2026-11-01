@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 pub const MAX_POINTER_OFFSET: f32 = 10_000_000.0;
 pub const MAX_BUBBLE_POINTERS: usize = 8;
 pub type AssetBytes = HashMap<u64, Arc<Vec<u8>>>;

@@ -828,6 +828,7 @@ impl Studio {
                                                         self.copy_cutout(&original);
                                                     }
                                                 });
+                                                self.backing_editor(ui, &mut layer);
                                             }
                                             LayerKind::Text { .. } => {}
                                             LayerKind::Effect { effect } => {
@@ -847,9 +848,15 @@ impl Studio {
                                     }
                                 });
                                 if layer != original {
+                                    let newly_enabled = !super::cutout_ui::settings(&original)
+                                        .enabled
+                                        && super::cutout_ui::settings(&layer).enabled;
                                     self.checkpoint();
                                     self.story.chapters[self.chapter].layers[index] = layer;
                                     self.changed();
+                                    if newly_enabled {
+                                        self.start_backing_match(ui.ctx(), id, false);
+                                    }
                                 }
                                 ui.add_space(12.0);
                                 ui.separator();

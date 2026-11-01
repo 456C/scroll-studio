@@ -2,7 +2,18 @@
 
 A native Rust desktop editor for composing vertical comics. A story contains its chapters, script beats, character sheets, backgrounds, image assets, and editable layers in one `.scro` file.
 
-This is an early desktop editor, currently version 0.10.0. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+This is an early desktop editor, currently version 0.10.1. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+
+## Changes in 0.10.1
+
+- Smart Lasso has a **Size** control (1–256 screen pixels) and a visible circular brush. Click or drag to select connected regions; Shift adds and Left Alt subtracts. Character Snippet uses the same width and catches nearby foreground inside the brush.
+- Active selections survive undo/redo and ordinary edits while their original image exists. **Ctrl+D** clears the selection without undoing a crop; Escape cancels the current gesture.
+- Stabilizer range reaches **4×** its previous maximum. Existing values keep the same strength.
+- **Magic Eraser (E)** removes a clicked color through a reversible mask. Tolerance and Connected are the only quick controls; turn Connected off to include enclosed gaps. An active pixel selection limits the removal.
+- **Blend edges** adds a soft backing around the actual cutout and across small hair gaps. Right-click an image to enable it; the inspector exposes color, scene matching, opacity, reach, softness and gap size. Original image bytes and opaque pixels remain unchanged.
+- **Ctrl + mouse wheel** zooms the canvas around the point under the cursor, including when zooming out below Fit. Ordinary wheel scrolling stays unchanged.
+- Scene-color matching accounts for export scale, fixing “Export region lies outside the chapter.”
+- Saving uses `.scro` format **8** for backing settings. Older stories load normally; files saved by this version require Scroll Studio 0.10.1 or newer.
 
 ## Changes in 0.10.0
 
@@ -185,11 +196,11 @@ The design rule for this project is a simple first view with deeper controls ava
 - PNG or JPEG export with a quality control, automatic splitting to satisfy each image's size limit, episode warnings, and an export report.
 - Corrected **Fit** zoom and removed full layer-list cloning during canvas repaint.
 
-The Windows package is versioned (`dist/Scroll Studio 0.10.0`) so updating does not overwrite an older executable that may still be running. The archive is `dist/Scroll-Studio-0.10.0-windows-x64.zip`.
+The Windows package is versioned (`dist/Scroll Studio 0.10.1`) so updating does not overwrite an older executable that may still be running. The archive is `dist/Scroll-Studio-0.10.1-windows-x64.zip`.
 
 ## Install on Windows
 
-Run `dist/Scroll-Studio-0.10.0-Setup-x64.exe` for Windows 10/11 x64. Setup installs for your account under `%LOCALAPPDATA%\Programs\Scroll Studio` without administrator access. It adds a Start menu shortcut; sample stories, Windows Open with integration for `.scro`, and a desktop shortcut are selectable. Your existing default file association is not changed.
+Run `dist/Scroll-Studio-0.10.1-Setup-x64.exe` for Windows 10/11 x64. Setup installs for your account under `%LOCALAPPDATA%\Programs\Scroll Studio` without administrator access. It adds a Start menu shortcut; sample stories, Windows Open with integration for `.scro`, and a desktop shortcut are selectable. Your existing default file association is not changed.
 
 Remove the app from Windows Installed apps or run `Uninstall.exe` in its folder. Uninstall preserves sample stories, other saved files, preferences and recovery copies. Upgrades keep any sample you have edited. The installer is currently unsigned.
 
@@ -299,6 +310,8 @@ The completion window shows the result, and `export-report.txt` records file ord
 | M | Rectangular selection |
 | C | Rectangular crop |
 | W | Smart Lasso |
+| E | Magic Eraser |
+| Ctrl + mouse wheel | Zoom canvas under the cursor |
 | J | Content-Aware Brush |
 | O | Motion Blur brush |
 | K | Glint |
@@ -312,7 +325,8 @@ The completion window shows the result, and `export-report.txt` records file ord
 | S | Toggle snapping |
 | Alt while moving | Temporarily bypass snapping |
 | Delete | Delete the selected unlocked layer |
-| Escape | Clear selection/current lasso |
+| Ctrl+D | Deselect pixels; retain the layer and applied crop |
+| Escape | Cancel the current gesture |
 
 Tool shortcuts are inactive while a text field is focused. Use the toolbar's **−**, **+**, and **Fit** controls for zoom; the canvas scrolls both vertically and horizontally.
 
@@ -347,12 +361,13 @@ The archive contains no external image-path dependencies. Saving writes a tempor
 - Library thumbnails use at most 384 px on their longest side. Canvas previews use stable 384/768/1024/1536/2048 px buckets based on their screen size. GPU textures use a 64 MiB least-recently-used cache. Offscreen artwork is skipped. Original images remain available for full-resolution export. Text previews share export rasterization.
 - Switching documents or undoing edits invalidates old preview results. Asset identities prevent a reused numeric ID from showing a stale image, and failed previews are cached instead of retried on every frame. Workers wake the UI when results are ready; previews require no continuous polling.
 - Export runs on a worker thread and rasterizes one slice at a time. It never allocates an entire tall chapter bitmap. The decoded export-image cache is capped at 96 MiB.
+- Cutout backing uses a distance grid capped at 2048 px on its longest side, computed in the preview worker. The foreground is never resized by this operation. Backing stays within the original image bounds; metadata crops can expand into available source padding.
 - Lasso rasterization uses polygon scanlines. Brush export allocates coverage for the visible stroke bounds and avoids repeatedly darkening translucent joins.
 - Images are limited to 64 MiB encoded, 32 megapixels, and 16,384 px per side. Story archives are limited to 512 MiB; manifests are limited to 16 MiB. These are validation limits, not guaranteed smooth-performance targets.
 - Undo keeps up to 48 story snapshots. Encoded image data is shared rather than copied into every snapshot. Dense drawing histories and large asset libraries still increase memory use.
 - Initial import validation, clipboard conversion, and opening archives can still briefly occupy the UI thread. This version does not implement disk-backed tile streaming or memory-budgeted undo. Recovery snapshots rewrite the complete archive on a worker; they are not incremental backups.
 
-The brush is a simple fixed-size stroke tool without tablet pressure, erasing, stabilization, or advanced brush engines. There is no PSD import/export, rotation, blend-mode system, color-management workflow, editable panel-border tool, or direct AI API integration. Lettering uses bundled Latin fonts; complex-script shaping and broad international font fallback are not implemented. Each bubble supports up to eight independently placed pointers. Linked balloons, freehand balloon outlines, and mixed fonts within a single text layer are not implemented.
+The brush is a simple fixed-size stroke tool without tablet pressure, erasing, or advanced brush engines. There is no PSD import/export, rotation, blend-mode system, color-management workflow, editable panel-border tool, or direct AI API integration. Lettering uses bundled Latin fonts; complex-script shaping and broad international font fallback are not implemented. Each bubble supports up to eight independently placed pointers. Freehand balloon outlines and mixed fonts within a single text layer are not implemented.
 
 ## Development checks
 

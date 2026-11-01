@@ -21,6 +21,7 @@ pub(super) struct SnippetPicker {
     outline: Vec<[[f32; 2]; 2]>,
     job: Option<mpsc::Receiver<anyhow::Result<Arc<SelectionMask>>>>,
     error: Option<String>,
+    discard_job: bool,
 }
 impl Studio {
     pub(super) fn begin_snippet(&mut self, ctx: &egui::Context, kind: SnippetKind) {
@@ -54,17 +55,33 @@ impl Studio {
             outline: vec![],
             job: None,
             error: None,
+            discard_job: false,
         });
     }
     pub(super) fn snippet_ui(&mut self, ctx: &egui::Context) {
         let Some(mut picker) = self.snippet.take() else {
             return;
         };
+        if !ctx.wants_keyboard_input()
+            && ctx.input_mut(|i| {
+                i.consume_shortcut(&egui::KeyboardShortcut::new(
+                    egui::Modifiers::COMMAND,
+                    egui::Key::D,
+                ))
+            })
+        {
+            picker.selection = None;
+            picker.outline.clear();
+            picker.drag.clear();
+            picker.discard_job = true;
+            picker.error = None;
+        }
         if let Some(receiver) = &picker.job {
             match receiver.try_recv() {
                 Ok(result) => {
                     picker.job = None;
                     match result {
+                        _ if picker.discard_job => {}
                         Ok(mask) => {
                             picker.outline = super::lasso_ui::selection_outline(&mask);
                             picker.selection = Some(mask);
@@ -115,6 +132,9 @@ impl Studio {
                         ui.selectable_value(&mut picker.freehand, false, "Smart");
                         ui.selectable_value(&mut picker.freehand, true, "Lasso");
                         if !picker.freehand {
+                            ui.label("Size");
+                            ui.add(egui::DragValue::new(&mut self.lasso_state.smart_width).range(1.0..=256.0).suffix(" px"))
+                                .on_hover_text("Selection brush diameter on screen; click or drag. Shift adds, Alt removes.");
                             ui.label("Tolerance");
                             ui.add(egui::DragValue::new(&mut picker.tolerance).range(0..=255));
                         }
@@ -170,7 +190,7 @@ impl Studio {
                                 picker.edge.background[3] = (opacity * 2.55).round() as u8;
                             }
                             ui.add(
-                                egui::Slider::new(&mut self.lasso_state.stabilizer, 0.0..=1.0)
+                                egui::Slider::new(&mut self.lasso_state.stabilizer, 0.0..=4.0)
                                     .text("Stabilizer"),
                             );
                         });
@@ -257,25 +277,35 @@ impl Studio {
                 } else {
                     if picker.job.is_none() {
                         let mode = super::lasso_ui::selection_mode(ctx.input(|i| i.modifiers));
-                        if !picker.freehand && response.clicked() {
-                            if let Some(p) = response
-                                .interact_pointer_pos()
-                                .filter(|p| rect.contains(*p))
-                            {
-                                let uv = local(p);
-                                let seed = [
-                                    (uv[0] * asset.width as f32).min((asset.width - 1) as f32)
-                                        as u32,
-                                    (uv[1] * asset.height as f32).min((asset.height - 1) as f32)
-                                        as u32,
-                                ];
-                                self.snippet_select(
-                                    ctx,
-                                    &mut picker,
-                                    asset_id,
-                                    SnippetSelection::Smart(seed),
-                                    mode,
-                                );
+                        if !picker.freehand {
+                            let radius = self.lasso_state.smart_width * 0.5;
+                            if let Some(p) = ctx.pointer_hover_pos().filter(|p| rect.contains(*p) && response.hovered()) {
+                                painter.circle_stroke(p, radius, egui::Stroke::new(2.5_f32, Color32::from_black_alpha(180)));
+                                painter.circle_stroke(p, radius, egui::Stroke::new(1.0_f32, ACCENT));
+                            }
+                            if response.drag_started() {
+                                if let Some(p) = ctx.input(|i| i.pointer.press_origin()).filter(|p| rect.contains(*p)) {
+                                    picker.drag = vec![local(p)];
+                                }
+                            }
+                            if response.dragged() && !picker.drag.is_empty() {
+                                if let Some(p) = response.interact_pointer_pos() {
+                                    let uv = local(p);
+                                    if picker.drag.len() < 1999 && picker.drag.last().is_none_or(|last| {
+                                        ((uv[0]-last[0])*rect.width()).hypot((uv[1]-last[1])*rect.height()) >= 2.0
+                                    }) { picker.drag.push(uv); }
+                                }
+                            }
+                            let points = if response.clicked() {
+                                response.interact_pointer_pos().filter(|p| rect.contains(*p)).map(|p| vec![local(p)])
+                            } else if response.drag_stopped() && !picker.drag.is_empty() {
+                                if let Some(p) = response.interact_pointer_pos() { picker.drag.push(local(p)); }
+                                Some(std::mem::take(&mut picker.drag))
+                            } else { None };
+                            if let Some(points) = points {
+                                let points = points.into_iter().map(|uv| [uv[0]*asset.width as f32, uv[1]*asset.height as f32]).collect();
+                                self.snippet_select(ctx, &mut picker, asset_id,
+                                    SnippetSelection::SmartBrush(points, [radius/scale.max(0.0001); 2]), mode);
                             }
                         }
                         if picker.freehand {
@@ -480,11 +510,11 @@ impl Studio {
             let result = (|| -> anyhow::Result<Arc<SelectionMask>> {
                 let image = compositor::decode_image(&source)?;
                 let incoming = match input {
-                    SnippetSelection::Smart(seed) => {
+                    SnippetSelection::SmartBrush(points, radii) => {
                         if previous.is_none() && mode == SelectionMode::Replace {
-                            SelectionMask::subject(&image, seed, tolerance)?
+                            SelectionMask::subject_brush(&image, &points, radii, tolerance)?
                         } else {
-                            SelectionMask::smart(&image, seed, tolerance)?
+                            SelectionMask::smart_brush(&image, &points, radii, tolerance)?
                         }
                     }
                     SnippetSelection::Polygon(points) => {
@@ -504,6 +534,7 @@ impl Studio {
             let _ = sender.send(result);
             wake.request_repaint();
         });
+        picker.discard_job = false;
         picker.job = Some(receiver);
     }
     fn place_snippet(&mut self, picker: &SnippetPicker) -> anyhow::Result<()> {
@@ -602,7 +633,7 @@ impl Studio {
     }
 }
 enum SnippetSelection {
-    Smart([u32; 2]),
+    SmartBrush(Vec<[f32; 2]>, [f32; 2]),
     Polygon(Vec<[f32; 2]>),
 }
 
@@ -669,5 +700,40 @@ mod tests {
         studio.undo();
         studio.undo();
         assert_eq!(studio.story, original);
+    }
+    #[test]
+    fn control_d_in_snippet_clears_selection_and_discards_pending_result() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.begin_snippet(&ctx, SnippetKind::Character);
+        let mask = Arc::new(SelectionMask::polygon(16, 16, &[]).unwrap());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        {
+            let picker = studio.snippet.as_mut().unwrap();
+            picker.selection = Some(mask.clone());
+            picker.job = Some(receiver);
+        }
+        sender.send(Ok(mask)).unwrap();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 720.0),
+                )),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::D,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+                ..Default::default()
+            },
+            |ctx| studio.snippet_ui(ctx),
+        );
+        let picker = studio.snippet.as_ref().unwrap();
+        assert!(picker.selection.is_none());
+        assert!(picker.outline.is_empty());
+        assert!(picker.job.is_none());
     }
 }
