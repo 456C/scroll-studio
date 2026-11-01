@@ -15,11 +15,11 @@ The build reads the app version and copies only that release's installer, portab
 
 Serve `dist` with a local static server for review. The primary download works without JavaScript. Workflow tabs support arrow keys, Home and End; FAQ and checksums use native disclosures. Motion respects the browser's reduced-motion preference.
 
-## Recommended public hosting
+## Public hosting
 
-Cloudflare Workers Static Assets fits the current site. `wrangler.jsonc` is ready to deploy the built `dist` after the owner chooses a Cloudflare account and hostname. No account, domain, paid plan or public deployment is created by the build.
+The public site is [scroll.project456.net](https://scroll.project456.net), hosted on the owner's Contabo server with Nginx. HTTPS uses Let's Encrypt with automatic Certbot renewal. See [deployment instructions](deploy/README.md) for packaging, activation, validation and rollback. The build itself does not deploy anything.
 
-Each current installer is below the 25 MiB per-file static asset limit. Move downloads to R2 when they exceed that limit or when download management grows. Keep the application repository private. See [hosting research](../docs/hosting-research.md) for the later upload, reader and payment architecture.
+`wrangler.jsonc` is retained as an optional Cloudflare alternative. See [hosting research](../docs/hosting-research.md) for scaling options and the later upload, reader and payment architecture. The application repository stays private; public downloads are verified release files served directly from Contabo.
 
 ## Optional support
 
@@ -33,4 +33,4 @@ Package the new app, build into a fresh output directory, run checks, review des
 
 The page was checked at desktop and mobile widths in the browser. All three workflow tabs, arrow-key switching and checksum disclosure worked; images loaded, the mobile document had no horizontal overflow and the console had no errors. A second pass changed mobile Timeline cards to natural height and kept the composition art behind its bubble. Local checks verify all four pages, local links and both release hashes.
 
-The private Sites preview identity is retained in `.openai/hosting.json`. Its isolated deployment checkout is `target/site-preview` at the app repository root; the application repository stays private. Public hosting remains a separate owner decision.
+The private Sites preview identity is retained in `.openai/hosting.json`. Its isolated deployment checkout is `target/site-preview` at the app repository root. It remains separate from the public Contabo site.

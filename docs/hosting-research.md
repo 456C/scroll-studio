@@ -1,14 +1,20 @@
 # Scroll Studio hosting plan
 
-Research checked November 1, 2026. This is a recommendation, not a deployed service or paid-plan purchase. The desktop application stays free. The current website only distributes Scroll Studio; reader accounts, uploads, coins and creator payouts belong to later phases.
+Research checked November 1, 2026. The desktop application stays free. The current website only distributes Scroll Studio; reader accounts, uploads, coins and creator payouts belong to later phases.
+
+## Current deployment
+
+The owner chose their existing Contabo server and [scroll.project456.net](https://scroll.project456.net). The static download site is now served by a dedicated Nginx virtual host with Let's Encrypt HTTPS and automatic renewal. No new hosting plan was purchased. Public release downloads are independent of the private source repository. See the [deployment guide](../website/deploy/README.md).
+
+The managed-service options below remain scaling recommendations for a future publishing platform; none of its accounts, uploads or commerce features have been deployed.
 
 ## Recommended path
 
-Start with **Cloudflare Workers Static Assets** for the download site. Keep HTML, CSS, small JavaScript, branding and versioned Windows downloads together. Requests served directly as static assets are free and unlimited, with no additional asset-storage charge. Avoid routing every static request through application code. [Static-asset billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
+**Cloudflare Workers Static Assets** is a managed alternative for global delivery. Keep HTML, CSS, small JavaScript, branding and versioned Windows downloads together. Requests served directly as static assets are free and unlimited, with no additional asset-storage charge. Avoid routing every static request through application code. [Static-asset billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
 
 The present installer and portable ZIP are approximately 5 MB each, below the **25 MiB per-file** static-asset limit. When binaries outgrow that limit, move them to R2 while preserving the landing-page URLs. The source repository can remain private: copy only approved release binaries, checksums and public site assets into the deployment. Private GitHub release links are not anonymous public downloads. [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 
-Use a domain owned by 456C, with the download page at its main hostname and future media at a separate subdomain. No domain has been selected or purchased. GitHub Actions can verify a release and deploy allowlisted artifacts after the owner chooses hosting. Never expose GitHub access tokens in browser code.
+The download page uses the owner's `scroll.project456.net` subdomain. Keep future media on a separate hostname. GitHub Actions can later verify a release and deploy allowlisted artifacts through a scoped deployment credential. Never expose GitHub access tokens in browser code.
 
 ## Future publishing platform
 
@@ -62,7 +68,7 @@ The download-only site can fit the static free tier. A small publishing pilot ha
 
 **AWS S3 + CloudFront, with RDS Postgres, SQS and a container backend later** is credible if the team wants a conventional container/Rust server and broader AWS stack. CloudFront currently offers a $0 flat-rate tier with 1 million requests and 100 GB transfer, or a $15/month Pro tier with 10 million requests and 50 TB transfer. These are CDN allowances, not database/compute costs. Sustained excess usage can cause delivery adjustments; account eligibility applies. [CloudFront pricing](https://aws.amazon.com/cloudfront/pricing/), [plan behavior](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/flat-rate-pricing-plan.html)
 
-I would choose Cloudflare now because the workload is static downloads and future comic imagery. AWS becomes attractive when media-processing/container requirements dominate. A single unmanaged VPS is a less convenient default for global distribution plus commerce because capacity, backups and recovery remain the operator's work.
+Cloudflare remains a useful future distribution option for static downloads and comic imagery. AWS becomes attractive when media-processing/container requirements dominate. The current Contabo deployment is sufficient for the download site; expanding it into commerce would also require capacity planning, backups and recovery.
 
 ## Delivery stages
 
@@ -71,4 +77,4 @@ I would choose Cloudflare now because the workload is static downloads and futur
 3. **Paid pilot:** provider-approved coin model, durable ledger, chapter unlocks, reconciliation and creator payouts.
 4. **Measured growth:** cache tuning, database compute/read replicas and job capacity based on actual traffic.
 
-The remaining hosting decision is whether to proceed with Cloudflare and which domain/account to use. This research did not change public access, create accounts, purchase a domain, handle credentials or activate paid services.
+Public download hosting is now settled on Contabo. The remaining decisions concern the future publishing platform, payment-provider eligibility and measured scaling requirements. No paid publishing service was activated.
