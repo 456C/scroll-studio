@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 pub const MAX_POINTER_OFFSET: f32 = 10_000_000.0;
 pub const MAX_BUBBLE_POINTERS: usize = 8;
 pub type AssetBytes = HashMap<u64, Arc<Vec<u8>>>;
@@ -19,7 +19,36 @@ pub struct Story {
     #[serde(default)]
     pub locations: Vec<BackgroundLocation>,
     #[serde(default)]
+    pub groups: Vec<WorldGroup>,
+    #[serde(default)]
+    pub timeline: Vec<ChronologyEntry>,
+    #[serde(default)]
     pub bubble_presets: Vec<BubblePreset>,
+}
+
+/// A story-owned affiliation. References reuse existing original image assets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorldGroup {
+    pub id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub color: [u8; 3],
+    #[serde(default)]
+    pub reference_ids: Vec<u64>,
+    #[serde(default)]
+    pub character_ids: Vec<u64>,
+    #[serde(default)]
+    pub location_ids: Vec<u64>,
+}
+
+/// Chronological order is independent of the chapters' reading order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChronologyEntry {
+    pub chapter_id: u64,
+    pub when: String,
+    pub summary: String,
 }
 
 /// Story-owned background folders. Assets outside these lists remain unsorted.
@@ -601,6 +630,8 @@ impl Story {
             chapters: Vec::new(),
             assets: Vec::new(),
             locations: Vec::new(),
+            groups: Vec::new(),
+            timeline: Vec::new(),
             bubble_presets: Vec::new(),
         };
         let mut chapter = Chapter::new(story.alloc_id(), "Chapter 01", width, height);

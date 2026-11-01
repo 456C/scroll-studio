@@ -195,6 +195,16 @@ Pass 1 checked data, coordinates, undo, storage, export and bounded work. Pass 2
 Validation: 315 tests passed (123 library + 192 application), all targets; Clippy with warnings denied; formatting check. `examples/studio_tools_playground.rs` produces a six-source story, original-byte round trip, identical full/sliced export pixels, native recovery check and effect/fill proofs. A representative release run completed composite fill plus proof in about 0.18 seconds; this is a fixture measurement, not a guarantee for all image sizes or hardware. Generated local texture fills can still need adjustment on complex scene structure.
 
 
+## 0.11.0 — world-building and chronology review
+
+First pass: Groups uses shared character/location IDs and original reference bytes; Timeline stores chronology separately from reading order. Save/load, validation, undo/redo, legacy defaults and pointer-driven reorder are covered by tests. The startup mark is bundled, dismissible, reduced-motion aware and releases its texture after 0.85 seconds.
+
+Second pass: native Windows review at 1280×760 and 1100×720 covered populated group cards, reference boards, character affiliations, location affiliations, Timeline cards and native drag/undo. Empty Groups and a new story's Timeline were also inspected. The empty create action is bounded at minimum, laptop and large sizes by layout tests. Removed duplicate numbering from chapter cards, bounded affiliation chips, fixed singular counts, and preserved group membership when a character placeholder receives its first image. Splash dismissal consumes pointer state so a click cannot activate the workspace below it.
+
+Validation: 338 tests passed (132 library, 206 application), formatting and strict Clippy passed. Native startup completion was observed; the brief fade's timing and reduced-motion behavior were checked in tests rather than a captured animation. No new runtime dependency.
+
+The download site uses local assets, direct versioned binaries, checksum disclosures and keyboard-accessible workflow tabs. Hosting and monetization are documented separately; no payment gate, advertising SDK or desktop account system was added.
+
 ## 0.10.1 — selection, cutout and zoom review
 
 | Feature | Pass 1 | Pass 2 and polish |

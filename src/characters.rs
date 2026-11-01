@@ -124,6 +124,11 @@ pub fn compose_prompt(
             sections.push(reference_notes);
         }
     }
+    section(
+        &mut sections,
+        "AFFILIATIONS",
+        &crate::groups::prompt(story, crate::groups::Subject::Character(character.id)),
+    );
     with_story_style(&story.visual_style, &sections.join("\n\n"))
 }
 

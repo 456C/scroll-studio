@@ -24,6 +24,10 @@ pub fn compose_prompt(story: &Story, location: &BackgroundLocation, angle: &str)
             parts.push(format!("{label}: {}", value.trim()));
         }
     }
+    let groups = crate::groups::prompt(story, crate::groups::Subject::Location(location.id));
+    if !groups.is_empty() {
+        parts.push(format!("Affiliations: {groups}"));
+    }
     parts.join("\n\n")
 }
 

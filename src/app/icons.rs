@@ -20,6 +20,8 @@ pub(super) enum Icon {
     ChevronRight,
     Chapter,
     Characters,
+    Groups,
+    Timeline,
     Background,
     Image,
     Settings,
@@ -154,6 +156,9 @@ pub(super) fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color:
     let origin = rect.center() - egui::vec2(12.0, 12.0) * scale;
     let p = |x, y| origin + egui::vec2(x, y) * scale;
     let stroke = egui::Stroke::new(1.7_f32, color);
+    let circle = |center: [f32; 2], radius: f32| {
+        painter.circle_stroke(p(center[0], center[1]), radius * scale, stroke)
+    };
     let line = |points: &[[f32; 2]]| {
         painter.add(egui::Shape::line(
             points.iter().map(|v| p(v[0], v[1])).collect(),
@@ -396,6 +401,27 @@ pub(super) fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color:
             line(&[[8.0, 7.0], [16.0, 7.0]]);
             line(&[[8.0, 11.0], [16.0, 11.0]]);
             line(&[[8.0, 15.0], [16.0, 15.0]]);
+        }
+        Icon::Groups => {
+            circle([8.0, 7.0], 3.0);
+            circle([17.0, 9.0], 2.5);
+            line(&[
+                [2.0, 21.0],
+                [3.0, 16.0],
+                [8.0, 13.0],
+                [13.0, 16.0],
+                [14.0, 21.0],
+            ]);
+            line(&[[15.0, 14.0], [21.0, 17.0], [22.0, 21.0]]);
+        }
+        Icon::Timeline => {
+            line(&[[3.0, 12.0], [21.0, 12.0]]);
+            for x in [4.0, 12.0, 20.0] {
+                circle([x, 12.0], 2.2);
+            }
+            line(&[[4.0, 5.0], [4.0, 8.0]]);
+            line(&[[12.0, 16.0], [12.0, 20.0]]);
+            line(&[[20.0, 5.0], [20.0, 8.0]]);
         }
         Icon::Characters => {
             painter.circle_stroke(p(12.0, 7.0), 4.0 * scale, stroke);

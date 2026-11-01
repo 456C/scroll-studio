@@ -848,6 +848,29 @@ impl Studio {
                             self.import_picker();
                         }
                     }
+                    LibraryTab::Groups => {
+                        if action(
+                            ui,
+                            "New group",
+                            self.story.groups.len() < scroll_studio::groups::MAX_GROUPS,
+                        )
+                        .clicked()
+                        {
+                            self.new_group();
+                        }
+                        if action(ui, "Add references…", self.selected_group.is_some()).clicked()
+                        {
+                            self.import_picker();
+                        }
+                    }
+                    LibraryTab::Timeline => {
+                        if action(ui, "New chapter…", self.story.chapters.len() < 1000).clicked()
+                        {
+                            self.dialog = Some(Dialog::Chapter);
+                            self.dialog_name =
+                                format!("Chapter {:02}", self.story.chapters.len() + 1);
+                        }
+                    }
                     LibraryTab::Bubbles => {
                         if action(
                             ui,

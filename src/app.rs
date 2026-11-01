@@ -12,6 +12,7 @@ mod dialogue_ui;
 mod effects_ui;
 mod export_ui;
 mod glass;
+mod groups_ui;
 mod healing_ui;
 mod icons;
 mod lasso_ui;
@@ -30,7 +31,9 @@ mod settings;
 mod settings_ui;
 mod snippet_ui;
 mod spacing_ui;
+mod startup_ui;
 mod story_setup_ui;
+mod timeline_ui;
 
 use eframe::egui::{self, Color32, RichText};
 use scroll_studio::{compositor, export, model::*, recovery, storage};
@@ -70,6 +73,8 @@ pub(super) enum LibraryTab {
     Bubbles,
     Characters,
     Backgrounds,
+    Groups,
+    Timeline,
     Images,
 }
 #[derive(Clone)]
@@ -100,6 +105,8 @@ pub struct Studio {
     selected: Option<u64>,
     selected_asset: Option<u64>,
     selected_location: Option<u64>,
+    selected_group: Option<u64>,
+    startup: Option<startup_ui::Startup>,
     location_editor: Option<locations_ui::LocationEditor>,
     dialogue_draft: Option<dialogue_ui::DialogueDraft>,
     spacing_draft: Option<spacing_ui::SpacingDraft>,
@@ -185,6 +192,7 @@ impl Studio {
         }
         studio.snap_settings = studio.preferences.snap_settings();
         studio.apply_preferences(&cc.egui_ctx);
+        studio.startup = Some(startup_ui::Startup::new(&cc.egui_ctx));
         studio
     }
 
@@ -279,6 +287,8 @@ impl Studio {
             selected: None,
             selected_asset: None,
             selected_location: None,
+            selected_group: None,
+            startup: None,
             location_editor: None,
             dialogue_draft: None,
             spacing_draft: None,
@@ -485,6 +495,7 @@ impl Studio {
         self.selected = None;
         self.selected_asset = None;
         self.selected_location = None;
+        self.selected_group = None;
         self.location_editor = None;
         self.dialogue_draft = None;
         self.spacing_draft = None;
@@ -666,6 +677,14 @@ impl Studio {
 
     fn import_bytes(&mut self, bytes: Vec<u8>, name: String, place: bool, pos: Option<[f32; 2]>) {
         self.sanitize_location_selection();
+        if self.tab == LibraryTab::Groups {
+            if let Some(group) = self.selected_group {
+                self.import_group_reference_bytes(group, bytes, name);
+            } else {
+                self.status = "Open a group to add references".into();
+            }
+            return;
+        }
         if self.tab == LibraryTab::Characters {
             if let Some(character_id) = self.character_selected_id() {
                 self.import_character_reference_bytes(character_id, bytes, name);
@@ -1011,8 +1030,14 @@ impl Studio {
             self.paste_image();
             return;
         }
-        if matches!(self.tab, LibraryTab::Bubbles | LibraryTab::Characters)
-            || self.style_prompt_open
+        if matches!(
+            self.tab,
+            LibraryTab::Bubbles
+                | LibraryTab::Characters
+                | LibraryTab::Backgrounds
+                | LibraryTab::Groups
+                | LibraryTab::Timeline
+        ) || self.style_prompt_open
         {
             return;
         }
@@ -1062,6 +1087,11 @@ impl Studio {
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_started = Instant::now();
+        let startup_alpha = self.startup_frame(ctx);
+        if startup_alpha == Some(1.0) {
+            self.paint_startup(ctx, 1.0);
+            return;
+        }
         self.begin_context_frame(ctx);
         self.poll_job(ctx);
         self.previews.begin_frame(ctx, _frame.info().cpu_usage);
@@ -1105,6 +1135,10 @@ impl eframe::App for Studio {
                 self.character_workspace(ctx);
             } else if self.tab == LibraryTab::Backgrounds {
                 self.location_workspace(ctx);
+            } else if self.tab == LibraryTab::Groups {
+                self.groups_workspace(ctx);
+            } else if self.tab == LibraryTab::Timeline {
+                self.timeline_workspace(ctx);
             } else {
                 self.inspector(ctx);
                 self.workspace(ctx);
@@ -1193,6 +1227,9 @@ impl eframe::App for Studio {
             self.preferences_changed_at = Some(Instant::now());
         }
         self.flush_preferences(ctx, false);
+        if let Some(alpha) = startup_alpha {
+            self.paint_startup(ctx, alpha);
+        }
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {

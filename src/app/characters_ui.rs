@@ -602,6 +602,10 @@ impl Studio {
                             .char_limit(20000)
                             .desired_width(f32::INFINITY),
                     );
+                    self.affiliation_picker(
+                        ui,
+                        scroll_studio::groups::Subject::Character(character.id),
+                    );
                     ui.add_space(5.0);
                     let _tabs = ui
                         .horizontal(|ui| {

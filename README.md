@@ -2,7 +2,16 @@
 
 A native Rust desktop editor for composing vertical comics. A story contains its chapters, script beats, character sheets, backgrounds, image assets, and editable layers in one `.scro` file.
 
-This is an early desktop editor, currently version 0.10.1. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+This is an early desktop editor, currently version 0.11.0. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+
+## Changes in 0.11.0
+
+- A brief **456C** author splash fades into the app. Click, Enter or Escape skips it; reduced motion keeps it static.
+- **Groups** holds story-wide affiliations, color, descriptions and reference boards. Link characters and locations from their sheets or the group's Members tab. Group details follow name changes and join copied prompts.
+- **Timeline** arranges chapters chronologically with draggable cards, date/era labels and summaries. Reading order stays separate. Double-click a card to open its chapter; changes support undo/redo.
+- Group references reuse original assets. New imports retain their original bytes; no duplicate image storage is needed to share a reference.
+- Saving uses `.scro` format **9**. Older stories load normally; newly saved files require Scroll Studio 0.11.0 or newer.
+- A minimalist download website is in `website/`, with verified installer/ZIP links, local fonts, mobile layouts and no tracking or payment gate. Hosting and optional-support recommendations are in `docs/hosting-research.md` and `docs/monetization-research.md`.
 
 ## Changes in 0.10.1
 
@@ -196,11 +205,11 @@ The design rule for this project is a simple first view with deeper controls ava
 - PNG or JPEG export with a quality control, automatic splitting to satisfy each image's size limit, episode warnings, and an export report.
 - Corrected **Fit** zoom and removed full layer-list cloning during canvas repaint.
 
-The Windows package is versioned (`dist/Scroll Studio 0.10.1`) so updating does not overwrite an older executable that may still be running. The archive is `dist/Scroll-Studio-0.10.1-windows-x64.zip`.
+The Windows package is versioned (`dist/Scroll Studio 0.11.0`) so updating does not overwrite an older executable that may still be running. The archive is `dist/Scroll-Studio-0.11.0-windows-x64.zip`.
 
 ## Install on Windows
 
-Run `dist/Scroll-Studio-0.10.1-Setup-x64.exe` for Windows 10/11 x64. Setup installs for your account under `%LOCALAPPDATA%\Programs\Scroll Studio` without administrator access. It adds a Start menu shortcut; sample stories, Windows Open with integration for `.scro`, and a desktop shortcut are selectable. Your existing default file association is not changed.
+Run `dist/Scroll-Studio-0.11.0-Setup-x64.exe` for Windows 10/11 x64. Setup installs for your account under `%LOCALAPPDATA%\Programs\Scroll Studio` without administrator access. It adds a Start menu shortcut; sample stories, Windows Open with integration for `.scro`, and a desktop shortcut are selectable. Your existing default file association is not changed.
 
 Remove the app from Windows Installed apps or run `Uninstall.exe` in its folder. Uninstall preserves sample stories, other saved files, preferences and recovery copies. Upgrades keep any sample you have edited. The installer is currently unsigned.
 

@@ -1,6 +1,7 @@
 /target/
 /.tools/
 /dist/
+/website/dist/
 *.scro
 *.scro.tmp
 /exports/

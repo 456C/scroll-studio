@@ -155,6 +155,10 @@ impl Studio {
                                 self.begin_location_editor(None);
                                 ui.close_menu();
                             }
+                            if motion::button(ui, "Group").clicked() {
+                                self.new_group();
+                                ui.close_menu();
+                            }
                             if motion::button(ui, "Bubble preset").clicked() {
                                 self.add_bubble_preset(false);
                                 ui.close_menu();
@@ -327,6 +331,8 @@ impl Studio {
                         "Locations",
                         icons::Icon::Background,
                     ),
+                    (LibraryTab::Groups, "Groups", icons::Icon::Groups),
+                    (LibraryTab::Timeline, "Timeline", icons::Icon::Timeline),
                     (LibraryTab::Images, "Images", icons::Icon::Image),
                 ] {
                     if list_row(
@@ -424,6 +430,8 @@ impl Studio {
                     self.character_list(ui);
                 } else if self.tab == LibraryTab::Backgrounds {
                     self.background_library(ui);
+                } else if matches!(self.tab, LibraryTab::Groups | LibraryTab::Timeline) {
+                    // These workspaces own their lists; leave navigation uncluttered.
                 } else {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
@@ -592,6 +600,14 @@ impl Studio {
         }
         if original.kind == AssetKind::Background {
             self.assign_background_location(new_id, location);
+        }
+        for group in &mut self.story.groups {
+            if group.character_ids.contains(&original.id) {
+                if original.width == 0 {
+                    group.character_ids.retain(|id| *id != original.id);
+                }
+                group.character_ids.push(new_id);
+            }
         }
         self.assets.insert(new_id, Arc::new(bytes));
         self.selected_asset = Some(new_id);
@@ -1232,6 +1248,42 @@ mod tests {
             data.get_temp(egui::Id::new(("asset_card_bounds", id)))
                 .unwrap()
         })
+    }
+
+    #[test]
+    fn character_image_replacement_preserves_affiliation_and_undo() {
+        for placeholder in [true, false] {
+            let ctx = egui::Context::default();
+            let (mut studio, id) = asset_library(&ctx, AssetKind::Character);
+            scroll_studio::groups::add(&mut studio.story).unwrap();
+            studio.story.groups[0].character_ids.push(id);
+            if placeholder {
+                studio.story.assets[0].width = 0;
+                studio.story.assets[0].height = 0;
+                studio.assets.remove(&id);
+            }
+            let original = studio.story.clone();
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::from_pixel(8, 4, image::Rgba([10, 20, 30, 255]))
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            studio.replace_library_image(0, bytes.into_inner(), 8, 4);
+            let new_id = studio.selected_asset.unwrap();
+            assert!(studio.story.groups[0].character_ids.contains(&new_id));
+            assert_eq!(
+                studio.story.groups[0].character_ids.contains(&id),
+                !placeholder
+            );
+            storage::validate_story(
+                &studio.story,
+                &assets_for_story(&studio.story, &studio.assets),
+            )
+            .unwrap();
+            studio.undo();
+            assert_eq!(studio.story, original);
+            studio.redo();
+            assert!(studio.story.groups[0].character_ids.contains(&new_id));
+        }
     }
 
     #[test]

@@ -210,6 +210,8 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
         "Story metadata is too large"
     );
     crate::locations::validate_locations(story)?;
+    crate::groups::validate(story)?;
+    crate::timeline::validate(story)?;
     let mut ids = HashSet::new();
     let mut max_id = 0;
     let mut insert_id = |id| -> Result<()> {
@@ -261,6 +263,9 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
     }
     for location in &story.locations {
         insert_id(location.id)?;
+    }
+    for group in &story.groups {
+        insert_id(group.id)?;
     }
     let mut total_bytes = 0u64;
     for asset in &story.assets {

@@ -55,6 +55,7 @@ impl Studio {
                         ui.selectable_value(&mut view.tab, index, *label);
                     }
                 });
+                self.affiliation_picker(ui, scroll_studio::groups::Subject::Location(location.id));
                 ui.add_space(12.0);
                 let body = ui.available_rect_before_wrap();
                 egui::Frame::new()

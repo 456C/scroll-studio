@@ -1,0 +1,1 @@
+{"private":true,"name":"scroll-studio-download-site","type":"module","scripts":{"build":"node build.mjs","check":"node check.mjs"}}

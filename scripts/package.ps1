@@ -92,6 +92,8 @@ $packagedFiles = foreach ($item in $packageSources) {
 # have saved beside a previously unpacked executable.
 $archive = Join-Path $distribution "Scroll-Studio-$packageVersion-windows-x64.zip"
 Compress-Archive -LiteralPath $packagedFiles -DestinationPath $archive -CompressionLevel Optimal -Force
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText("$archive.sha256", "$archiveHash  $([IO.Path]::GetFileName($archive))`n", [Text.UTF8Encoding]::new($false))
 Write-Host "Portable app: $portableDirectory"
 Write-Host "Archive:      $archive"
 Get-Item -LiteralPath (Join-Path $portableDirectory 'Scroll Studio.exe'), $archive |
