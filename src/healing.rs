@@ -385,6 +385,9 @@ fn fill_pixels(source: &RgbaImage, mask: &[bool]) -> Result<RgbaImage> {
     // Keep a stable local color guide: refinement must not drift into a
     // distant face or unrelated object merely because its tiny patch matches.
     let guidance = boundary_guidance(source, &valid, mask, &result);
+    // Patch comparisons start from continued structure rather than the
+    // nearest-donor Voronoi pattern, which otherwise reinforces seams.
+    result = guidance.clone();
     let mut random = 0x71c3_49a5_u32;
     for pass in 0..3 {
         for k in 0..targets.len() {
@@ -474,10 +477,12 @@ fn boundary_guidance(
     initial: &RgbaImage,
 ) -> RgbaImage {
     let (w, h) = (source.width() as usize, source.height() as usize);
-    let mut result = initial.clone();
+    let mut candidates = [initial.clone(), initial.clone()];
     let mut previous = vec![usize::MAX; w * h];
-    let mut scores = vec![u32::MAX; w * h];
-    for vertical in [true, false] {
+    let mut covered = [vec![false; w * h], vec![false; w * h]];
+    let mut scores = [0_u64; 2];
+    let mut counts = [0_u64; 2];
+    for (axis, vertical) in [true, false].into_iter().enumerate() {
         let (lanes, length) = if vertical { (w, h) } else { (h, w) };
         for lane in 0..lanes {
             let index = |p| if vertical { p * w + lane } else { lane * w + p };
@@ -509,15 +514,27 @@ fn boundary_guidance(
                     let d = i32::from(ca[c]) - i32::from(cb[c]);
                     score += (d * d) as u32;
                 }
-                if score < scores[i] {
-                    scores[i] = score;
-                    let t = (p - prev) as f32 / (next - prev) as f32;
-                    let color = std::array::from_fn(|c| {
-                        (ca[c] as f32 * (1.0 - t) + cb[c] as f32 * t).round() as u8
-                    });
-                    result.put_pixel((i % w) as u32, (i / w) as u32, image::Rgba(color));
-                }
+                scores[axis] += u64::from(score);
+                counts[axis] += 1;
+                covered[axis][i] = true;
+                let t = (p - prev) as f32 / (next - prev) as f32;
+                let color = std::array::from_fn(|c| {
+                    (ca[c] as f32 * (1.0 - t) + cb[c] as f32 * t).round() as u8
+                });
+                candidates[axis].put_pixel((i % w) as u32, (i / w) as u32, image::Rgba(color));
             }
+        }
+    }
+    // Choose a coherent continuation direction for the local brush region.
+    // Choosing an axis independently per pixel lets tiny texture variations
+    // alternate between incompatible edges and creates a speckled grid.
+    let preferred = usize::from(
+        counts[0] == 0 || (counts[1] > 0 && scores[1] * counts[0] < scores[0] * counts[1]),
+    );
+    let mut result = candidates[preferred].clone();
+    for (i, pixel) in result.pixels_mut().enumerate() {
+        if mask[i] && !covered[preferred][i] {
+            *pixel = *candidates[1 - preferred].get_pixel((i % w) as u32, (i / w) as u32);
         }
     }
     result
@@ -726,5 +743,36 @@ mod tests {
         let patch = texture_fill(&image, &mask).unwrap();
         assert_eq!(patch.get_pixel(56, 64).0, [40, 130, 160, 255]);
         assert_eq!(patch.get_pixel(72, 64).0, [25, 45, 60, 255]);
+    }
+    #[test]
+    fn textured_parallel_edges_do_not_turn_into_a_speckled_grid() {
+        let mut image = RgbaImage::new(256, 192);
+        let mut mask = vec![false; 256 * 192];
+        for (x, y, p) in image.enumerate_pixels_mut() {
+            let grain = ((x * 17 + y * 31) % 13) as u8;
+            *p = Rgba(if x % 80 < 40 {
+                [70 + grain, 125 + grain, 145 + grain, 255]
+            } else {
+                [28 + grain, 48 + grain, 69 + grain, 255]
+            });
+            if ((x as f32 - 128.0) / 65.0).powi(2) + ((y as f32 - 96.0) / 47.0).powi(2) < 1.0 {
+                mask[(y * 256 + x) as usize] = true;
+                *p = Rgba([240, 20, 20, 255]);
+            }
+        }
+        let patch = texture_fill(&image, &mask).unwrap();
+        let mut wrong = 0;
+        let mut checked = 0;
+        for (x, y, p) in patch.enumerate_pixels() {
+            // Allow the two-pixel patch radius at the actual boundary.
+            if mask[(y * 256 + x) as usize] && (3..37).contains(&(x % 40)) {
+                checked += 1;
+                wrong += usize::from((p[1] > 90) != (x % 80 < 40));
+            }
+        }
+        assert!(
+            wrong * 100 < checked,
+            "{wrong}/{checked} pixels crossed an edge"
+        );
     }
 }
