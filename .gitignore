@@ -1,0 +1,15 @@
+/target/
+/.tools/
+/dist/
+*.scro
+*.scro.tmp
+/exports/
+/screenshots/
+
+
+/output/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
