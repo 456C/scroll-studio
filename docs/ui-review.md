@@ -170,7 +170,7 @@ Pass 1 checked data, coordinates, undo, storage, export and bounded work. Pass 2
 | Sharp canvas assets | Source crops and clipped textures share original bytes with export | Proof and native canvas comparison; crop hit coordinates corrected |
 | Adaptive preview quality | Slow-frame hysteresis, bounded worker queues and cache | Zoomed detail obeys the reduced cap; rapid worker completions cannot exhaust idle restoration |
 | Character reference board | Aspect-preserving masonry, visible tiles only | Native mixed-aspect board; portrait cards favor the upper image so faces remain visible |
-| Locations | Shared image IDs, profile fields and composed angle prompts | Native cards/References/Details; stale canvas drop target cleared, bounded empty state |
+| Locations | Shared image IDs, profile fields and composed angle prompts | Native cards/References/Details; stale canvas drop target cleared, bounded empty state with one create action |
 | Rectangular selection | Transient selection separate from crop | Native drag exposed a duplicate closing corner; four-corner pointer regression now covers Select and Crop |
 | Freehand Lasso | Original-pixel masks and undo | Compact controls, outline clipped to snippet bounds, freehand-only stabilizer |
 | Smart Lasso | Connected color selection, transparent-pixel handling and bounded flood queue | Same modifier behavior, source crop coordinates and focused quick controls |
@@ -187,9 +187,9 @@ Pass 1 checked data, coordinates, undo, storage, export and bounded work. Pass 2
 | Wind | Curved procedural geometry and validated controls | Export proof/native canvas, density/angle/curve controls and layer opacity inspected |
 | Glint | Small editable procedural rays/glow with no raster asset | Proof/native canvas; independent position, size, color, angle and opacity |
 | Angle popup | Finite projection and camera/framing prompts | Native orbit drag and Portrait framing; numeric ring labels, ±90° tilt, high-contrast Copy prompt |
-| Linked bubbles | Independent text, shared preset, ephemeral render joins | Pixel test verifies no internal border; save/preset regression and export proof preserve separate assets |
+| Linked bubbles | Independent text, shared preset, ephemeral render joins | Pixel test verifies no internal border; native repeated + clicks now advance past existing dialogue; save/preset regression and export proof preserve separate assets |
 | Intensity and Impact bubbles | Shared native/export path and automatic text fitting | Spikes randomized to remove repeating saw-like blocks; pointed inward-curved border and safe text inset checked in proof |
 | Transparency | Original alpha retained; all layer types expose opacity | Checkerboard references, premultiplied previews, independent generated patch opacity |
 | Recovery and modal isolation | Stale worker results rejected; modal actions isolated | Native Windows folder virtualization reproduced and fixed by resolving the actual write directory before strict containment checks; native recovery round trip passed |
 
-Validation: 313 tests passed (121 library + 192 application), all targets; Clippy with warnings denied; formatting check. `examples/studio_tools_playground.rs` produces a six-source story, original-byte round trip, identical full/sliced export pixels, native recovery check and effect/fill proofs. A representative release run completed composite fill plus proof in about 0.18 seconds; this is a fixture measurement, not a guarantee for all image sizes or hardware. Generated local texture fills can still need adjustment on complex scene structure.
+Validation: 314 tests passed (122 library + 192 application), all targets; Clippy with warnings denied; formatting check. `examples/studio_tools_playground.rs` produces a six-source story, original-byte round trip, identical full/sliced export pixels, native recovery check and effect/fill proofs. A representative release run completed composite fill plus proof in about 0.18 seconds; this is a fixture measurement, not a guarantee for all image sizes or hardware. Generated local texture fills can still need adjustment on complex scene structure.

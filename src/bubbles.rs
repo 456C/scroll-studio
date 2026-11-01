@@ -97,6 +97,27 @@ pub fn add_cluster_bubble(story: &mut Story, chapter: usize, parent: u64) -> Res
     fit_layer(&mut child)?;
     child.x = original.x + original.width * 0.22;
     child.y = original.y + original.height * 0.80;
+    // Reusing + on an earlier bubble appends to the chain rather than placing
+    // two independent dialogue layers on exactly the same rectangle.
+    for _ in 0..32 {
+        let collision = story.chapters[chapter].layers.iter().find(|other| {
+            let LayerKind::Text { style, .. } = &other.kind else {
+                return false;
+            };
+            if style.cluster_id != Some(cluster) {
+                return false;
+            }
+            let width = (child.x + child.width).min(other.x + other.width) - child.x.max(other.x);
+            let height =
+                (child.y + child.height).min(other.y + other.height) - child.y.max(other.y);
+            width.max(0.0) * height.max(0.0) > child.width * child.height * 0.5
+        });
+        let Some(other) = collision else {
+            break;
+        };
+        child.x = other.x + other.width * 0.22;
+        child.y = other.y + other.height * 0.80;
+    }
     if let LayerKind::Text { style, .. } = &mut story.chapters[chapter].layers[index].kind {
         style.cluster_id = Some(cluster);
     }
@@ -640,5 +661,16 @@ mod tests {
             detached.get_pixel(248, 150)[0] < 80,
             "Detached border must return"
         );
+    }
+    #[test]
+    fn adding_twice_from_the_same_bubble_does_not_stack_dialogue() {
+        let mut story = Story::new("Chain");
+        let id = story.alloc_id();
+        story.chapters[0].layers.push(dialogue(id));
+        add_cluster_bubble(&mut story, 0, id).unwrap();
+        add_cluster_bubble(&mut story, 0, id).unwrap();
+        let a = &story.chapters[0].layers[1];
+        let b = &story.chapters[0].layers[2];
+        assert!((a.y - b.y).abs() > a.height * 0.5);
     }
 }

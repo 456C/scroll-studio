@@ -173,11 +173,18 @@ impl Studio {
         ui.horizontal(|ui| {
             ui.heading("Locations");
             ui.label(RichText::new(self.story.locations.len().to_string()).color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if primary(ui, "+ Location").clicked() {
-                    self.begin_location_editor(None);
-                }
-            });
+            if !self.story.locations.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let add = primary(ui, "+ Location");
+                    #[cfg(test)]
+                    ui.data_mut(|data| {
+                        data.insert_temp(egui::Id::new("add_location_bounds"), add.rect)
+                    });
+                    if add.clicked() {
+                        self.begin_location_editor(None);
+                    }
+                });
+            }
         });
         ui.add_space(16.0);
         if self.story.locations.is_empty() {
@@ -200,10 +207,12 @@ impl Studio {
                         MUTED,
                     );
                     ui.add_space(10.0);
-                    if ui
-                        .add_sized([150.0, 36.0], motion::Button::new("+ Location"))
-                        .clicked()
-                    {
+                    let add = ui.add_sized([150.0, 36.0], motion::Button::new("+ Location"));
+                    #[cfg(test)]
+                    ui.data_mut(|data| {
+                        data.insert_temp(egui::Id::new("add_location_bounds"), add.rect)
+                    });
+                    if add.clicked() {
                         self.begin_location_editor(None);
                     }
                 },

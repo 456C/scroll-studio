@@ -211,10 +211,9 @@ impl Studio {
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let add = motion::button(ui, "+ Location");
-            #[cfg(test)]
-            ui.data_mut(|data| data.insert_temp(egui::Id::new("add_location_bounds"), add.rect));
-            if add.clicked() {
+            // The gallery owns creation while browsing. Keep this shortcut
+            // only when a particular location sheet is open.
+            if self.selected_location.is_some() && motion::button(ui, "+ Location").clicked() {
                 self.begin_location_editor(None);
             }
             let name = self
