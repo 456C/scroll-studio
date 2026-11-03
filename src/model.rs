@@ -27,7 +27,15 @@ pub struct Story {
     #[serde(default)]
     pub lore_board: LoreBoard,
     #[serde(default)]
+    pub card_thumbnails: Vec<CardThumbnail>,
+    #[serde(default)]
     pub bubble_presets: Vec<BubblePreset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CardThumbnail {
+    pub target: u64,
+    pub asset_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -671,6 +679,7 @@ impl Story {
             timeline: Vec::new(),
             lore: Vec::new(),
             lore_board: LoreBoard::default(),
+            card_thumbnails: Vec::new(),
             bubble_presets: Vec::new(),
         };
         let mut chapter = Chapter::new(story.alloc_id(), "Chapter 01", width, height);

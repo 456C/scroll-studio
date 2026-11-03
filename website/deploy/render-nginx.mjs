@@ -14,6 +14,35 @@ const challenge=`location ^~ /.well-known/acme-challenge/ {
     default_type text/plain;
     try_files $uri =404;
 }`;
+const studioSecurity=`add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "same-origin" always;
+add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" always;`;
+const phpLocation=name=>`location = /studio/${name}.php {
+    try_files $uri =404;
+    ${studioSecurity}
+    add_header Cache-Control "no-store" always;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+    fastcgi_pass unix:/run/php/scroll-studio.sock;
+    fastcgi_read_timeout 150s;
+    fastcgi_hide_header X-Powered-By;
+    client_max_body_size 520m;
+    client_body_timeout 60s;
+    limit_req zone=scroll_write burst=12 nodelay;
+    limit_req_status 429;
+    limit_conn scroll_active 8;
+}`;
+const studio=`location = /studio { return 301 /studio/; }
+location = /studio/ { rewrite ^ /studio/index.php last; }
+${phpLocation('index')}
+${phpLocation('api')}
+location ~ \\.php(?:/|$) { return 404; }
+location = /studio/template.json { return 404; }
+location /studio/ {
+    try_files $uri =404;
+    ${studioSecurity}
+    add_header Cache-Control "no-cache" always;
+}`;
 const content=`server_name ${domain};
 root /var/www/scroll-studio/current;
 index index.html;
@@ -26,6 +55,7 @@ ${challenge}
 location ~ /\\. { return 404; }
 location = /SHA256SUMS { return 404; }
 location = /_headers { return 404; }
+${studio}
 location / { try_files $uri $uri/ =404; }
 location ^~ /downloads/ {
     try_files $uri =404;
@@ -61,4 +91,8 @@ const output=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../ta
 await mkdir(output,{recursive:true});
 const destination=path.join(output,`scroll-studio-${mode}.conf`);
 await writeFile(destination,config);
+await writeFile(path.join(output,'scroll-studio-limits.conf'),`map $request_method $scroll_write_key { default ""; POST $binary_remote_addr; }
+limit_req_zone $scroll_write_key zone=scroll_write:10m rate=3r/s;
+limit_conn_zone $binary_remote_addr zone=scroll_active:10m;
+`);
 console.log(destination);

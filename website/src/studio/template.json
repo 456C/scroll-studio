@@ -1,0 +1,203 @@
+{
+  "version": 11,
+  "title": "Untitled world",
+  "synopsis": "",
+  "visual_style": "",
+  "next_id": 8,
+  "chapters": [
+    {
+      "id": 1,
+      "name": "Chapter 01",
+      "width": 1600,
+      "height": 9600,
+      "panels": [
+        {
+          "id": 2,
+          "title": "The opening",
+          "y": 200.0,
+          "height": 1500.0,
+          "script": "",
+          "notes": "",
+          "prompt": ""
+        },
+        {
+          "id": 3,
+          "title": "The moment",
+          "y": 2000.0,
+          "height": 1500.0,
+          "script": "",
+          "notes": "",
+          "prompt": ""
+        },
+        {
+          "id": 4,
+          "title": "What happens next",
+          "y": 3900.0,
+          "height": 1500.0,
+          "script": "",
+          "notes": "",
+          "prompt": ""
+        }
+      ],
+      "layers": []
+    }
+  ],
+  "assets": [],
+  "locations": [],
+  "groups": [],
+  "timeline": [],
+  "lore": [],
+  "lore_board": {
+    "cards": [],
+    "connections": []
+  },
+  "bubble_presets": [
+    {
+      "id": 5,
+      "name": "Webtoon Classic",
+      "style": {
+        "preset_id": null,
+        "cluster_id": null,
+        "font": "KomikaHand",
+        "uppercase": true,
+        "auto_fit": true,
+        "max_width": 1280.0,
+        "modern_layout": true,
+        "shape": "Speech",
+        "fill": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "outline": [
+          35,
+          35,
+          40,
+          255
+        ],
+        "outline_width": 4.0,
+        "padding": 44.0,
+        "line_spacing": 1.12,
+        "align": "Center",
+        "tail": {
+          "enabled": true,
+          "tip": [
+            0.7,
+            1.5
+          ],
+          "width": 72.0,
+          "bend": 0.0
+        },
+        "extra_tails": []
+      },
+      "color": [
+        28,
+        31,
+        38,
+        255
+      ],
+      "size": 76.0,
+      "bubble": true,
+      "opacity": 1.0
+    },
+    {
+      "id": 6,
+      "name": "Mature",
+      "style": {
+        "preset_id": null,
+        "cluster_id": null,
+        "font": "Lato",
+        "uppercase": false,
+        "auto_fit": true,
+        "max_width": 1280.0,
+        "modern_layout": true,
+        "shape": "Speech",
+        "fill": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "outline": [
+          35,
+          35,
+          40,
+          255
+        ],
+        "outline_width": 4.0,
+        "padding": 44.0,
+        "line_spacing": 1.15,
+        "align": "Center",
+        "tail": {
+          "enabled": true,
+          "tip": [
+            0.7,
+            1.5
+          ],
+          "width": 72.0,
+          "bend": 0.0
+        },
+        "extra_tails": []
+      },
+      "color": [
+        28,
+        31,
+        38,
+        255
+      ],
+      "size": 76.0,
+      "bubble": true,
+      "opacity": 1.0
+    },
+    {
+      "id": 7,
+      "name": "Casual",
+      "style": {
+        "preset_id": null,
+        "cluster_id": null,
+        "font": "BalsamiqSans",
+        "uppercase": false,
+        "auto_fit": true,
+        "max_width": 1280.0,
+        "modern_layout": true,
+        "shape": "Speech",
+        "fill": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "outline": [
+          35,
+          35,
+          40,
+          255
+        ],
+        "outline_width": 4.0,
+        "padding": 48.0,
+        "line_spacing": 1.2,
+        "align": "Center",
+        "tail": {
+          "enabled": true,
+          "tip": [
+            0.7,
+            1.5
+          ],
+          "width": 72.0,
+          "bend": 0.0
+        },
+        "extra_tails": []
+      },
+      "color": [
+        28,
+        31,
+        38,
+        255
+      ],
+      "size": 76.0,
+      "bubble": true,
+      "opacity": 1.0
+    }
+  ]
+}

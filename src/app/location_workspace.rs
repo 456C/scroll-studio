@@ -228,7 +228,7 @@ impl Studio {
                 (
                     l.id,
                     l.name.clone(),
-                    l.asset_ids.first().copied(),
+                    scroll_studio::thumbnails::image(&self.story, l.id),
                     l.asset_ids.len(),
                 )
             })
@@ -378,7 +378,10 @@ impl Studio {
                     }
                     response.dnd_set_drag_payload(id);
                     self.register_context(&response);
-                    appearance::context_menu(&response, |ui| self.asset_context_actions(ui, id));
+                    appearance::context_menu(&response, |ui| {
+                        self.card_thumbnail_action(ui, location.id, id);
+                        self.asset_context_actions(ui, id);
+                    });
                 }
             });
     }

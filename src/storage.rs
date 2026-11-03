@@ -329,6 +329,7 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
         );
     }
     crate::lore::validate_board(story)?;
+    crate::thumbnails::validate(story)?;
     for card in &story.lore_board.cards {
         insert_id(card.id)?;
     }

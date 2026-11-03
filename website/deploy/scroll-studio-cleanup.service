@@ -1,0 +1,13 @@
+[Unit]
+Description=Expire inactive Scroll Studio browser workspaces
+[Service]
+Type=oneshot
+User=scrollstudio
+Group=scrollstudio
+ExecStart=/usr/bin/php /usr/local/lib/scroll-studio/cleanup.php
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/scroll-studio-web
+

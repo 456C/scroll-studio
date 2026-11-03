@@ -323,15 +323,8 @@ impl Studio {
                                 break;
                             };
                             let asset = &self.story.assets[index];
-                            let portrait_id = if asset.width > 0 && asset.height > 0 {
-                                Some(asset.id)
-                            } else {
-                                asset
-                                    .character
-                                    .references
-                                    .first()
-                                    .map(|reference| reference.asset_id)
-                            };
+                            let portrait_id =
+                                scroll_studio::thumbnails::image(&self.story, asset.id);
                             let portrait = portrait_id
                                 .and_then(|id| {
                                     self.story.assets.iter().find(|asset| asset.id == id)

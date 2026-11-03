@@ -403,6 +403,7 @@ impl Studio {
     }
 
     fn changed(&mut self) {
+        scroll_studio::thumbnails::prune(&mut self.story);
         self.dirty = true;
         self.revision += 1;
     }

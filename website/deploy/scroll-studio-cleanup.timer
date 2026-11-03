@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly cleanup of temporary Scroll Studio workspaces
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=180
+Persistent=true
+[Install]
+WantedBy=timers.target
+

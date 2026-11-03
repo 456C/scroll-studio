@@ -288,8 +288,10 @@ impl Studio {
                                 rect.min + vec2(8.0, 8.0),
                                 rect.max - vec2(8.0, 64.0),
                             );
-                            if let Some(id) = group.reference_ids.first() {
-                                self.paint_character_reference(ui, ui.ctx(), *id, art, true);
+                            if let Some(id) =
+                                scroll_studio::thumbnails::image(&self.story, group.id)
+                            {
+                                self.paint_character_reference(ui, ui.ctx(), id, art, true);
                             } else {
                                 icons::draw(
                                     ui.painter(),
@@ -472,6 +474,7 @@ impl Studio {
                         self.pin_reference(ctx, id, None);
                     }
                     appearance::context_menu(&response, |ui| {
+                        self.card_thumbnail_action(ui, group.id, id);
                         if motion::button(ui, "Remove reference").clicked() {
                             remove = Some(id);
                             ui.close_menu();

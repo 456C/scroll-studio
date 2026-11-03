@@ -63,7 +63,7 @@ pub fn targets(story: &Story) -> HashMap<u64, Target<'_>> {
                 kind: Kind::Character,
                 title: &character.name,
                 text: &character.notes,
-                portrait: crate::characters::reference_ids(character).first().copied(),
+                portrait: crate::thumbnails::image(story, character.id),
             },
         );
     }
@@ -74,7 +74,7 @@ pub fn targets(story: &Story) -> HashMap<u64, Target<'_>> {
                 kind: Kind::Location,
                 title: &location.name,
                 text: &location.profile.description,
-                portrait: location.asset_ids.first().copied(),
+                portrait: crate::thumbnails::image(story, location.id),
             },
         );
     }
@@ -85,7 +85,7 @@ pub fn targets(story: &Story) -> HashMap<u64, Target<'_>> {
                 kind: Kind::Group,
                 title: &group.name,
                 text: &group.description,
-                portrait: group.reference_ids.first().copied(),
+                portrait: crate::thumbnails::image(story, group.id),
             },
         );
     }

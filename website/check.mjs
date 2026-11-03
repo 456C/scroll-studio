@@ -20,7 +20,8 @@ for(const page of pages){
       const relative=decodeURIComponent(file).replace(/^\/+/, '') || 'index.html';
       const resolved=path.resolve(root,relative);
       assert(resolved.startsWith(root+path.sep),'Link escapes public build');
-      assert((await stat(resolved)).isFile(),`${page}: missing ${file}`);
+      const info=await stat(resolved);
+      assert(info.isFile() || (info.isDirectory() && (await stat(path.join(resolved,'index.php'))).isFile()),`${page}: missing ${file}`);
     }else if(fragment)assert(ids.includes(fragment),`${page}: missing anchor ${fragment}`);
   }
 }

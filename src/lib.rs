@@ -16,4 +16,5 @@ pub mod recovery;
 pub mod snapping;
 pub mod spacing;
 pub mod storage;
+pub mod thumbnails;
 pub mod timeline;

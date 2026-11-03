@@ -534,6 +534,26 @@ impl Studio {
         }
     }
 
+    pub(super) fn card_thumbnail_action(&mut self, ui: &mut egui::Ui, target: u64, image: u64) {
+        let current = scroll_studio::thumbnails::selected(&self.story, target) == Some(image);
+        if action(
+            ui,
+            if current {
+                "Card thumbnail"
+            } else {
+                "Use as thumbnail"
+            },
+            !current,
+        )
+        .clicked()
+        {
+            self.checkpoint();
+            if scroll_studio::thumbnails::set(&mut self.story, target, image) {
+                self.changed();
+            }
+        }
+    }
+
     pub(super) fn reference_context_actions(
         &mut self,
         ui: &mut egui::Ui,
@@ -552,6 +572,7 @@ impl Studio {
         if !scroll_studio::characters::reference_ids(&character).contains(&reference_id) {
             return;
         }
+        self.card_thumbnail_action(ui, character_id, reference_id);
         if !self.assets_only && action(ui, "Place", true).clicked() {
             self.place_character_reference(character_id, reference_id);
         }

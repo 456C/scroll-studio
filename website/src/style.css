@@ -63,3 +63,5 @@
 @media (max-width:660px) {
   .hero-copy #download-note { margin-inline: auto; }
 }
+
+@media(max-width:420px){.nav nav>a[href="#studio"]{display:none}.nav nav{gap:14px}}
