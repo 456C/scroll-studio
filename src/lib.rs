@@ -10,6 +10,7 @@ pub mod groups;
 pub mod healing;
 pub mod locations;
 pub mod model;
+pub mod painting;
 pub mod recovery;
 pub mod snapping;
 pub mod spacing;

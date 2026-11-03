@@ -95,11 +95,29 @@ impl Studio {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     motion::menu_button(ui, "File", |ui| {
-                        if motion::button(ui, "New story          Ctrl+N").clicked() {
+                        if motion::button(
+                            ui,
+                            if self.assets_only {
+                                "New world          Ctrl+N"
+                            } else {
+                                "New story          Ctrl+N"
+                            },
+                        )
+                        .clicked()
+                        {
                             ui.close_menu();
                             self.request(Pending::New);
                         }
-                        if motion::button(ui, "Open story         Ctrl+O").clicked() {
+                        if motion::button(
+                            ui,
+                            if self.assets_only {
+                                "Open world         Ctrl+O"
+                            } else {
+                                "Open story         Ctrl+O"
+                            },
+                        )
+                        .clicked()
+                        {
                             ui.close_menu();
                             self.request(Pending::Open(None));
                         }
@@ -129,6 +147,10 @@ impl Studio {
                             self.save(true);
                         }
                         ui.separator();
+                        if !self.welcome && motion::button(ui, "Start screen").clicked() {
+                            ui.close_menu();
+                            self.request(Pending::Home);
+                        }
                         if motion::button(ui, "Settings          Ctrl+,").clicked() {
                             self.settings_open = true;
                             ui.close_menu();
@@ -139,7 +161,7 @@ impl Studio {
                     }
                     if !self.welcome && !self.settings_open {
                         motion::menu_button(ui, RichText::new("+ New").color(ACCENT), |ui| {
-                            if motion::button(ui, "Chapter").clicked() {
+                            if !self.assets_only && motion::button(ui, "Chapter").clicked() {
                                 self.dialog_name =
                                     format!("Chapter {:02}", self.story.chapters.len() + 1);
                                 self.dialog = Some(Dialog::Chapter);
@@ -159,7 +181,11 @@ impl Studio {
                                 self.new_group();
                                 ui.close_menu();
                             }
-                            if motion::button(ui, "Bubble preset").clicked() {
+                            if motion::button(ui, "Lore entry").clicked() {
+                                self.new_lore();
+                                ui.close_menu();
+                            }
+                            if !self.assets_only && motion::button(ui, "Bubble preset").clicked() {
                                 self.add_bubble_preset(false);
                                 ui.close_menu();
                             }
@@ -175,13 +201,14 @@ impl Studio {
                                 .on_hover_text("Unsaved changes");
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    self.job.is_none(),
-                                    motion::Button::new(RichText::new("Export").color(BG))
-                                        .fill(ACCENT),
-                                )
-                                .clicked()
+                            if !self.assets_only
+                                && ui
+                                    .add_enabled(
+                                        self.job.is_none(),
+                                        motion::Button::new(RichText::new("Export").color(BG))
+                                            .fill(ACCENT),
+                                    )
+                                    .clicked()
                             {
                                 self.export_dialog = true;
                             }
@@ -268,39 +295,97 @@ impl Studio {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG))
             .show(ctx, |ui| {
-                ui.add_space((ui.available_height() - 240.0).max(0.0) * 0.4);
-                ui.vertical_centered(|ui| {
-                    ui.image((self.app_icon.id(), vec2(72.0, 72.0)));
-                    ui.add_space(12.0);
-                    ui.heading(RichText::new("Your stories").size(32.0));
-                    ui.add_space(22.0);
+                let center = ui.max_rect().center();
+                let line = egui::Stroke::new(1.0_f32, CARD);
+                ui.painter()
+                    .line_segment([center - vec2(0.0, 132.0), center + vec2(0.0, 132.0)], line);
+                let column = |x, y, height| {
+                    egui::UiBuilder::new()
+                        .max_rect(egui::Rect::from_min_size(
+                            center + vec2(x, y),
+                            vec2(238.0, height),
+                        ))
+                        .layout(Layout::top_down(Align::Center))
+                };
+                ui.scope_builder(column(-294.0, -137.0, 274.0), |ui| {
+                    ui.image((self.app_icon.id(), vec2(56.0, 56.0)));
+                    ui.add_space(9.0);
+                    ui.heading(RichText::new("Your stories").size(28.0));
+                    ui.add_space(16.0);
                     if ui
                         .add_sized(
-                            [260.0, 46.0],
+                            [224.0, 42.0],
                             motion::Button::new(RichText::new("+ New story").color(BG))
                                 .fill(ACCENT),
                         )
                         .clicked()
                     {
+                        self.assets_only = false;
                         self.request(Pending::New);
                     }
                     if ui
-                        .add_sized([260.0, 42.0], motion::Button::new("Open story…"))
+                        .add_sized([224.0, 40.0], motion::Button::new("Open story…"))
                         .clicked()
                     {
+                        self.assets_only = false;
                         self.request(Pending::Open(None));
                     }
-                    ui.add_space(8.0);
-                    if ui
-                        .add(motion::Button::new("Open sample").frame(false))
-                        .clicked()
-                    {
+                    if motion::button(ui, "Open sample").clicked() {
+                        self.assets_only = false;
                         self.story = Story::demo();
                         self.assets.clear();
                         self.path = None;
                         self.reset_view();
                         self.welcome = false;
                         self.changed();
+                    }
+                });
+                ui.scope_builder(column(56.0, -70.0, 180.0), |ui| {
+                    if self.assets_only {
+                        ui.heading("Edit Assets");
+                        ui.add_space(8.0);
+                        if ui
+                            .add_sized([224.0, 40.0], motion::Button::new("Open .scro…"))
+                            .clicked()
+                        {
+                            self.request(Pending::Open(None));
+                        }
+                        if ui
+                            .add_sized([224.0, 40.0], motion::Button::new("+ New world"))
+                            .clicked()
+                        {
+                            self.request(Pending::New);
+                        }
+                        if motion::button(ui, "Back").clicked() {
+                            self.assets_only = false;
+                        }
+                    } else {
+                        for (label, icon) in [
+                            ("Edit Assets", icons::Icon::Groups),
+                            ("Image Editing", icons::Icon::Brush),
+                        ] {
+                            let response = ui.add_sized([224.0, 52.0], motion::Button::new(label));
+                            icons::draw(
+                                ui.painter(),
+                                egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        response.rect.left() + 25.0,
+                                        response.rect.center().y,
+                                    ),
+                                    vec2(19.0, 19.0),
+                                ),
+                                icon,
+                                MUTED,
+                            );
+                            if response.clicked() {
+                                if label == "Edit Assets" {
+                                    self.assets_only = true;
+                                } else {
+                                    self.paint = Some(paint_ui::PaintStudio::default());
+                                }
+                            }
+                            ui.add_space(3.0);
+                        }
                     }
                 });
             });
@@ -333,8 +418,21 @@ impl Studio {
                     ),
                     (LibraryTab::Groups, "Groups", icons::Icon::Groups),
                     (LibraryTab::Timeline, "Timeline", icons::Icon::Timeline),
+                    (LibraryTab::Lore, "Lore", icons::Icon::Lore),
                     (LibraryTab::Images, "Images", icons::Icon::Image),
                 ] {
+                    if self.assets_only
+                        && !matches!(
+                            tab,
+                            LibraryTab::Characters
+                                | LibraryTab::Backgrounds
+                                | LibraryTab::Groups
+                                | LibraryTab::Timeline
+                                | LibraryTab::Lore
+                        )
+                    {
+                        continue;
+                    }
                     if list_row(
                         ui,
                         label,
@@ -430,6 +528,8 @@ impl Studio {
                     self.character_list(ui);
                 } else if self.tab == LibraryTab::Backgrounds {
                     self.background_library(ui);
+                } else if self.tab == LibraryTab::Lore {
+                    self.lore_list(ui);
                 } else if matches!(self.tab, LibraryTab::Groups | LibraryTab::Timeline) {
                     // These workspaces own their lists; leave navigation uncluttered.
                 } else {
@@ -592,6 +692,16 @@ impl Studio {
         replacement.height = height;
         if original.width == 0 {
             self.story.assets[index] = replacement;
+            for link in self
+                .story
+                .lore
+                .iter_mut()
+                .flat_map(|entry| &mut entry.links)
+            {
+                if *link == original.id {
+                    *link = new_id;
+                }
+            }
             for folder in &mut self.story.locations {
                 folder.asset_ids.retain(|id| *id != original.id);
             }
@@ -938,6 +1048,7 @@ impl Studio {
             return;
         };
         let (title, mode, kind) = match dialog {
+            Dialog::World => ("New world", 4, AssetKind::Image),
             Dialog::Chapter => ("New chapter", 1, AssetKind::Image),
             Dialog::Asset(kind) => (
                 if *kind == AssetKind::Character {
@@ -1007,6 +1118,14 @@ impl Studio {
                     let name = self.dialog_name.trim().to_owned();
                     let (width, height) = [(1600, 9600), (800, 6400), (940, 8000)][self.preset];
                     match mode {
+                        4 => {
+                            self.story = Story::new(name);
+                            self.assets.clear();
+                            self.path = None;
+                            self.reset_view();
+                            self.welcome = false;
+                            self.changed();
+                        }
                         1 => {
                             self.checkpoint();
                             let id = self.story.alloc_id();

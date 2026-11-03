@@ -22,6 +22,7 @@ pub(super) enum Icon {
     Characters,
     Groups,
     Timeline,
+    Lore,
     Background,
     Image,
     Settings,
@@ -396,6 +397,33 @@ pub(super) fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color:
         Icon::ChevronLeft => line(&[[15.0, 6.0], [9.0, 12.0], [15.0, 18.0]]),
         Icon::ChevronRight => line(&[[9.0, 6.0], [15.0, 12.0], [9.0, 18.0]]),
         Icon::ChevronDown => line(&[[6.0, 9.0], [12.0, 15.0], [18.0, 9.0]]),
+        Icon::Lore => {
+            for (x, y) in [(0.2, 0.23), (0.78, 0.43), (0.32, 0.81)] {
+                let point = egui::pos2(
+                    rect.left() + rect.width() * x,
+                    rect.top() + rect.height() * y,
+                );
+                painter.circle_stroke(
+                    point,
+                    rect.width() * 0.12,
+                    egui::Stroke::new(1.5_f32, color),
+                );
+            }
+            let pt = |x: f32, y: f32| {
+                egui::pos2(
+                    rect.left() + rect.width() * x,
+                    rect.top() + rect.height() * y,
+                )
+            };
+            painter.line_segment(
+                [pt(0.32, 0.27), pt(0.66, 0.39)],
+                egui::Stroke::new(1.4_f32, color),
+            );
+            painter.line_segment(
+                [pt(0.68, 0.51), pt(0.42, 0.73)],
+                egui::Stroke::new(1.4_f32, color),
+            );
+        }
         Icon::Chapter => {
             frame(5.0, 2.0, 19.0, 22.0);
             line(&[[8.0, 7.0], [16.0, 7.0]]);

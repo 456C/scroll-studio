@@ -29,7 +29,7 @@ impl Studio {
                             "Arrange the story's events without changing chapter reading order",
                         );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if primary(ui, "+ Chapter").clicked() {
+                        if !self.assets_only && primary(ui, "+ Chapter").clicked() {
                             self.dialog = Some(Dialog::Chapter);
                             self.dialog_name =
                                 format!("Chapter {:02}", self.story.chapters.len() + 1);
@@ -80,13 +80,17 @@ impl Studio {
                                     continue;
                                 };
                                 let name = chapter.name.clone();
-                                let cover = chapter.layers.iter().find_map(|l| {
-                                    if let LayerKind::Image { asset_id, .. } = l.kind {
-                                        l.visible.then_some(asset_id)
-                                    } else {
-                                        None
-                                    }
-                                });
+                                let cover = chapter
+                                    .layers
+                                    .iter()
+                                    .filter(|_| !self.assets_only)
+                                    .find_map(|l| {
+                                        if let LayerKind::Image { asset_id, .. } = l.kind {
+                                            l.visible.then_some(asset_id)
+                                        } else {
+                                            None
+                                        }
+                                    });
                                 let (rect, response) = ui.allocate_exact_size(
                                     vec2(238.0, 246.0),
                                     Sense::click_and_drag(),
@@ -102,7 +106,7 @@ impl Studio {
                                 if response.clicked() {
                                     selected = entry.chapter_id;
                                 }
-                                if response.double_clicked() {
+                                if !self.assets_only && response.double_clicked() {
                                     self.open_timeline_chapter(entry.chapter_id);
                                 }
                                 if ui.is_rect_visible(rect) {
@@ -180,7 +184,9 @@ impl Studio {
                                     reorder = Some((payload.0, before));
                                 }
                                 appearance::context_menu(&response, |ui| {
-                                    if motion::button(ui, "Open chapter").clicked() {
+                                    if !self.assets_only
+                                        && motion::button(ui, "Open chapter").clicked()
+                                    {
                                         self.open_timeline_chapter(entry.chapter_id);
                                         ui.close_menu();
                                     }
@@ -249,7 +255,7 @@ impl Studio {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(name).size(20.0));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if motion::button(ui, "Open chapter").clicked() {
+                            if !self.assets_only && motion::button(ui, "Open chapter").clicked() {
                                 self.open_timeline_chapter(selected);
                             }
                         });
@@ -284,6 +290,9 @@ impl Studio {
             });
     }
     fn open_timeline_chapter(&mut self, id: u64) {
+        if self.assets_only {
+            return;
+        }
         if let Some(index) = self.story.chapters.iter().position(|c| c.id == id) {
             self.chapter = index;
             self.tab = LibraryTab::Chapters;
@@ -319,6 +328,27 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         }
     }
+    #[test]
+    fn assets_mode_lore_and_timeline_never_open_chapters_or_change_story_art() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.story = Story::demo();
+        studio.assets_only = true;
+        studio.reset_view();
+        let chapters = studio.story.chapters.clone();
+        assert!(studio.tab == LibraryTab::Characters);
+        studio.new_lore();
+        let id = studio.selected_lore.unwrap();
+        studio.undo();
+        assert!(studio.story.lore.is_empty());
+        studio.redo();
+        assert_eq!(studio.story.lore[0].id, id);
+        studio.tab = LibraryTab::Timeline;
+        studio.open_timeline_chapter(chapters[0].id);
+        assert!(studio.tab == LibraryTab::Timeline);
+        assert_eq!(studio.story.chapters, chapters);
+    }
+
     #[test]
     fn dragging_chapter_cards_reorders_chronology_with_one_undo_and_preserves_reading_order() {
         let ctx = egui::Context::default();

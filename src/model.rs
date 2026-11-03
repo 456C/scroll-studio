@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 pub const MAX_POINTER_OFFSET: f32 = 10_000_000.0;
 pub const MAX_BUBBLE_POINTERS: usize = 8;
 pub type AssetBytes = HashMap<u64, Arc<Vec<u8>>>;
@@ -23,7 +23,17 @@ pub struct Story {
     #[serde(default)]
     pub timeline: Vec<ChronologyEntry>,
     #[serde(default)]
+    pub lore: Vec<LoreEntry>,
+    #[serde(default)]
     pub bubble_presets: Vec<BubblePreset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoreEntry {
+    pub id: u64,
+    pub title: String,
+    pub text: String,
+    pub links: Vec<u64>,
 }
 
 /// A story-owned affiliation. References reuse existing original image assets.
@@ -632,6 +642,7 @@ impl Story {
             locations: Vec::new(),
             groups: Vec::new(),
             timeline: Vec::new(),
+            lore: Vec::new(),
             bubble_presets: Vec::new(),
         };
         let mut chapter = Chapter::new(story.alloc_id(), "Chapter 01", width, height);

@@ -25,7 +25,30 @@ const MAX_IMAGE_PIXELS: u64 = 32_000_000;
 const MAX_IMAGE_SIDE: u32 = 16_384;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FileStamp {
+    length: u64,
+    modified: std::time::SystemTime,
+}
+impl FileStamp {
+    fn read(metadata: fs::Metadata) -> Result<Self> {
+        Ok(Self {
+            length: metadata.len(),
+            modified: metadata.modified()?,
+        })
+    }
+}
+
 pub fn save_story(path: &Path, story: &Story, assets: &AssetBytes) -> Result<()> {
+    save_story_checked(path, story, assets, None).map(|_| ())
+}
+
+pub fn save_story_checked(
+    path: &Path,
+    story: &Story,
+    assets: &AssetBytes,
+    expected: Option<FileStamp>,
+) -> Result<FileStamp> {
     validate_story(story, assets)?;
     let manifest = serde_json::to_vec(story).context("Could not encode the story")?;
     ensure!(
@@ -33,7 +56,7 @@ pub fn save_story(path: &Path, story: &Story, assets: &AssetBytes) -> Result<()>
         "Story manifest is too large"
     );
     let (temporary_path, file) = create_temporary(path)?;
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<FileStamp> {
         let mut zip = ZipWriter::new(file);
         zip.start_file(
             "manifest.json",
@@ -52,7 +75,19 @@ pub fn save_story(path: &Path, story: &Story, assets: &AssetBytes) -> Result<()>
         let file = zip.finish().context("Could not finish the story archive")?;
         file.sync_all()
             .context("Could not flush the story archive")?;
+        let stamp = FileStamp::read(file.metadata()?)?;
         drop(file);
+        // Serialize cooperating editors on the original file while checking and replacing it.
+        let _guard = if let Some(expected) = expected {
+            let original = File::open(path)
+                .context("The original file is unavailable. Use Save as to keep your changes.")?;
+            original.lock()?;
+            ensure!(FileStamp::read(fs::metadata(path)?)? == expected,
+                "Another window changed this file. Use Save as to keep your edits in a separate copy.");
+            Some(original)
+        } else {
+            None
+        };
         // Same-directory rename replaces the old file only after the new archive is complete.
         fs::rename(&temporary_path, path).with_context(|| {
             format!(
@@ -60,7 +95,7 @@ pub fn save_story(path: &Path, story: &Story, assets: &AssetBytes) -> Result<()>
                 path.display()
             )
         })?;
-        Ok(())
+        Ok(stamp)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary_path);
@@ -69,9 +104,14 @@ pub fn save_story(path: &Path, story: &Story, assets: &AssetBytes) -> Result<()>
 }
 
 pub fn load_story(path: &Path) -> Result<(Story, AssetBytes)> {
+    load_story_with_stamp(path).map(|(story, assets, _)| (story, assets))
+}
+
+pub fn load_story_with_stamp(path: &Path) -> Result<(Story, AssetBytes, FileStamp)> {
     let file = File::open(path).with_context(|| format!("Could not open {}", path.display()))?;
+    let stamp = FileStamp::read(file.metadata()?)?;
     ensure!(
-        file.metadata()?.len() <= MAX_TOTAL_BYTES,
+        stamp.length <= MAX_TOTAL_BYTES,
         "Story file exceeds the 512 MiB safety limit"
     );
     let mut zip = ZipArchive::new(file).context("This is not a valid .scro story archive")?;
@@ -139,7 +179,7 @@ pub fn load_story(path: &Path) -> Result<(Story, AssetBytes)> {
     validate_story(&story, &assets)?;
     crate::bubbles::migrate_story_presets(&mut story)?;
     validate_story(&story, &assets)?;
-    Ok((story, assets))
+    Ok((story, assets, stamp))
 }
 
 fn parse_asset_path(name: &str) -> Option<u64> {
@@ -163,6 +203,21 @@ fn read_entry(zip: &mut ZipArchive<File>, name: &str, maximum: u64) -> Result<Ve
         "Archive entry exceeds its size limit"
     );
     Ok(bytes)
+}
+
+pub fn save_painting_png(path: &Path, image: &image::RgbaImage) -> Result<()> {
+    let (temporary, mut file) = create_temporary(path)?;
+    let result = (|| -> Result<()> {
+        image.write_to(&mut file, image::ImageFormat::Png)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }
 
 fn create_temporary(destination: &Path) -> Result<(PathBuf, File)> {
@@ -239,6 +294,36 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
         })
         .map(|asset| asset.id)
         .collect();
+    ensure!(story.lore.len() <= 4096, "Too many lore entries");
+    let link_targets: HashSet<_> = story
+        .lore
+        .iter()
+        .map(|e| e.id)
+        .chain(story.groups.iter().map(|g| g.id))
+        .chain(story.locations.iter().map(|l| l.id))
+        .chain(
+            story
+                .assets
+                .iter()
+                .filter(|a| a.kind == AssetKind::Character)
+                .map(|a| a.id),
+        )
+        .collect();
+    for entry in &story.lore {
+        insert_id(entry.id)?;
+        ensure!(
+            entry.title.len() <= 4096 && entry.text.len() <= 100_000,
+            "Lore entry is too long"
+        );
+        let mut unique = HashSet::new();
+        ensure!(
+            entry
+                .links
+                .iter()
+                .all(|id| *id != entry.id && link_targets.contains(id) && unique.insert(id)),
+            "Invalid lore connection"
+        );
+    }
     for preset in &story.bubble_presets {
         insert_id(preset.id)?;
         ensure!(
@@ -626,6 +711,45 @@ mod tests {
         let (loaded, loaded_assets) = load_story(&path).unwrap();
         assert_eq!(loaded, story);
         assert_eq!(loaded_assets, assets);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn editing_world_data_preserves_original_chapters_and_embedded_images() {
+        use crate::model::LoreEntry;
+        let path = test_path("world-round-trip");
+        let (original, assets) = image_story();
+        save_story(&path, &original, &assets).unwrap();
+        let (mut world, images, stamp) = load_story_with_stamp(&path).unwrap();
+        let location = crate::locations::add_location(&mut world, "Old bridge").unwrap();
+        let id = world.alloc_id();
+        world.lore.push(LoreEntry {
+            id,
+            title: "First crossing".into(),
+            text: "Mira remembers the flood.".into(),
+            links: vec![world.assets[0].id, location],
+        });
+        let updated = save_story_checked(&path, &world, &images, Some(stamp)).unwrap();
+        let (loaded, raw, actual) = load_story_with_stamp(&path).unwrap();
+        assert_eq!(updated, actual);
+        assert_eq!(loaded, world);
+        assert_eq!(loaded.chapters, original.chapters);
+        assert_eq!(raw, assets);
+        assert!(save_story_checked(&path, &original, &assets, Some(stamp)).is_err());
+        assert_eq!(load_story(&path).unwrap().0, world);
+        world.lore[0].links.push(999_999);
+        assert!(validate_story(&world, &images).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn painting_png_replaces_atomically_and_preserves_alpha() {
+        let path = test_path("painting").with_extension("png");
+        let mut source = RgbaImage::from_pixel(4, 4, Rgba([30, 90, 160, 0]));
+        save_painting_png(&path, &source).unwrap();
+        source[(2, 2)] = Rgba([200, 40, 10, 78]);
+        save_painting_png(&path, &source).unwrap();
+        assert_eq!(image::open(&path).unwrap().into_rgba8(), source);
         fs::remove_file(path).unwrap();
     }
 

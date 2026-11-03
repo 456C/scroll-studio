@@ -88,6 +88,9 @@ impl Studio {
     }
 
     pub(super) fn place_character_reference(&mut self, character_id: u64, reference_asset_id: u64) {
+        if self.assets_only {
+            return;
+        }
         if self
             .story
             .assets

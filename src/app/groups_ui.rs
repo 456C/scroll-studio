@@ -212,6 +212,7 @@ impl Studio {
                 if remove {
                     self.checkpoint();
                     self.story.groups.remove(index);
+                    self.unlink_lore_target(group.id);
                     self.selected_group = None;
                     self.changed();
                 } else if group != self.story.groups[index] {

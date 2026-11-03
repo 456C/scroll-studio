@@ -20,7 +20,9 @@ mod layers_ui;
 mod lettering_ui;
 mod location_workspace;
 mod locations_ui;
+mod lore_ui;
 mod motion;
+mod paint_ui;
 mod panels;
 mod previews;
 mod reader_ui;
@@ -75,22 +77,25 @@ pub(super) enum LibraryTab {
     Backgrounds,
     Groups,
     Timeline,
+    Lore,
     Images,
 }
 #[derive(Clone)]
 enum Pending {
+    Home,
     New,
     Open(Option<PathBuf>),
     Quit,
     Recover(recovery::RecoveryEntry),
 }
 enum Dialog {
+    World,
     Chapter,
     Asset(AssetKind),
     Unsaved,
 }
 enum JobResult {
-    Saved(PathBuf, u64, u64),
+    Saved(PathBuf, u64, u64, storage::FileStamp),
     Exported(export::ExportReport),
     CharacterSheetDone(String),
     Healed(healing_ui::HealingResult),
@@ -142,7 +147,11 @@ pub struct Studio {
     revision: u64,
     document_epoch: u64,
     path: Option<PathBuf>,
+    file_stamp: Option<storage::FileStamp>,
     welcome: bool,
+    assets_only: bool,
+    paint: Option<paint_ui::PaintStudio>,
+    selected_lore: Option<u64>,
     status: String,
     error: Option<String>,
     dialog: Option<Dialog>,
@@ -324,7 +333,11 @@ impl Studio {
             revision: 0,
             document_epoch: 0,
             path: None,
+            file_stamp: None,
             welcome: !demo,
+            assets_only: false,
+            paint: None,
+            selected_lore: None,
             status: String::new(),
             error: None,
             dialog: None,
@@ -448,6 +461,20 @@ impl Studio {
 
     fn perform_pending(&mut self) {
         match self.pending.take() {
+            Some(Pending::Home) => {
+                self.story = Story::new("Untitled story");
+                self.assets.clear();
+                self.path = None;
+                self.assets_only = false;
+                self.reset_view();
+                self.welcome = true;
+                self.dirty = false;
+                self.status.clear();
+            }
+            Some(Pending::New) if self.assets_only => {
+                self.dialog_name.clear();
+                self.dialog = Some(Dialog::World);
+            }
             Some(Pending::New) => {
                 self.begin_story_setup();
             }
@@ -470,8 +497,9 @@ impl Studio {
     }
 
     fn open_path(&mut self, path: PathBuf) {
-        match storage::load_story(&path) {
-            Ok((story, assets)) => {
+        match storage::load_story_with_stamp(&path) {
+            Ok((story, assets, stamp)) => {
+                self.file_stamp = Some(stamp);
                 self.story = story;
                 self.assets = assets;
                 self.path = Some(path);
@@ -487,6 +515,9 @@ impl Studio {
     fn reset_view(&mut self) {
         self.interrupt_preset_slider_edit();
         self.settings_open = false;
+        if self.path.is_none() {
+            self.file_stamp = None;
+        }
         self.retire_recovery();
         self.document_epoch += 1;
         self.zoom = 0.0;
@@ -511,7 +542,13 @@ impl Studio {
         self.character_scene.clear();
         self.style_prompt_open = false;
         self.setup = None;
-        self.tab = LibraryTab::Chapters;
+        self.tab = if self.assets_only {
+            LibraryTab::Characters
+        } else {
+            LibraryTab::Chapters
+        };
+        self.selected_lore = None;
+        self.canvas_rect = egui::Rect::NOTHING;
         self.active_panel = None;
         self.script_focus = None;
         self.script_lane = script_ui::ScriptLane::default();
@@ -535,7 +572,11 @@ impl Studio {
         let path = if save_as || self.path.is_none() {
             rfd::FileDialog::new()
                 .add_filter("Scroll Studio story", &["scro"])
-                .set_file_name("My story.scro")
+                .set_file_name(if self.assets_only {
+                    "My world.scro"
+                } else {
+                    "My story.scro"
+                })
                 .save_file()
         } else {
             self.path.clone()
@@ -544,14 +585,17 @@ impl Studio {
             return false;
         };
         path.set_extension("scro");
+        let expected = self
+            .file_stamp
+            .filter(|_| self.path.as_ref() == Some(&path));
         let story = self.story.clone();
         let assets = assets_for_story(&story, &self.assets);
         let revision = self.revision;
         let document_epoch = self.document_epoch;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = storage::save_story(&path, &story, &assets)
-                .map(|_| JobResult::Saved(path, revision, document_epoch));
+            let result = storage::save_story_checked(&path, &story, &assets, expected)
+                .map(|stamp| JobResult::Saved(path, revision, document_epoch, stamp));
             let _ = tx.send(result);
         });
         self.job = Some(rx);
@@ -601,7 +645,10 @@ impl Studio {
             if let Some(result) = result {
                 self.job = None;
                 match result {
-                    Ok(JobResult::Saved(path, revision, epoch)) if epoch == self.document_epoch => {
+                    Ok(JobResult::Saved(path, revision, epoch, stamp))
+                        if epoch == self.document_epoch =>
+                    {
+                        self.file_stamp = Some(stamp);
                         self.path = Some(path.clone());
                         if revision == self.revision {
                             self.dirty = false;
@@ -613,7 +660,7 @@ impl Studio {
                             self.perform_pending();
                         }
                     }
-                    Ok(JobResult::Saved(path, _, _)) => {
+                    Ok(JobResult::Saved(path, _, _, _)) => {
                         self.status = format!("Previous story saved to {}", path.display());
                     }
                     Ok(JobResult::Exported(report)) => {
@@ -677,6 +724,14 @@ impl Studio {
 
     fn import_bytes(&mut self, bytes: Vec<u8>, name: String, place: bool, pos: Option<[f32; 2]>) {
         self.sanitize_location_selection();
+        if self.assets_only
+            && !matches!(
+                self.tab,
+                LibraryTab::Characters | LibraryTab::Backgrounds | LibraryTab::Groups
+            )
+        {
+            return;
+        }
         if self.tab == LibraryTab::Groups {
             if let Some(group) = self.selected_group {
                 self.import_group_reference_bytes(group, bytes, name);
@@ -736,6 +791,9 @@ impl Studio {
     }
 
     fn place_asset(&mut self, asset_id: u64, pos: Option<[f32; 2]>) {
+        if self.assets_only {
+            return;
+        }
         let Some(asset) = self.story.assets.iter().find(|a| a.id == asset_id).cloned() else {
             return;
         };
@@ -1037,6 +1095,7 @@ impl Studio {
                 | LibraryTab::Backgrounds
                 | LibraryTab::Groups
                 | LibraryTab::Timeline
+                | LibraryTab::Lore
         ) || self.style_prompt_open
         {
             return;
@@ -1092,6 +1151,12 @@ impl eframe::App for Studio {
             self.paint_startup(ctx, 1.0);
             return;
         }
+        if let Some(paint) = self.paint.as_mut() {
+            if paint.update(ctx) {
+                self.paint = None;
+            }
+            return;
+        }
         self.begin_context_frame(ctx);
         self.poll_job(ctx);
         self.previews.begin_frame(ctx, _frame.info().cpu_usage);
@@ -1137,11 +1202,18 @@ impl eframe::App for Studio {
                 self.location_workspace(ctx);
             } else if self.tab == LibraryTab::Groups {
                 self.groups_workspace(ctx);
+            } else if self.tab == LibraryTab::Lore {
+                self.lore_workspace(ctx);
             } else if self.tab == LibraryTab::Timeline {
                 self.timeline_workspace(ctx);
             } else {
-                self.inspector(ctx);
-                self.workspace(ctx);
+                if self.assets_only {
+                    self.tab = LibraryTab::Characters;
+                    self.character_workspace(ctx);
+                } else {
+                    self.inspector(ctx);
+                    self.workspace(ctx);
+                }
             }
         }
         self.dialogs(ctx);

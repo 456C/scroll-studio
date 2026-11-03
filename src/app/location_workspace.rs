@@ -320,7 +320,7 @@ impl Studio {
                 self.import_picker();
             }
             if let Some(id) = view.reference.filter(|id| location.asset_ids.contains(id)) {
-                if motion::button(ui, "Place").clicked() {
+                if !self.assets_only && motion::button(ui, "Place").clicked() {
                     self.place_asset(id, None);
                     self.tab = LibraryTab::Chapters;
                 }

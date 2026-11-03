@@ -822,9 +822,10 @@ impl Studio {
             if copy.clicked() {
                 *action = Some(ReferenceAction::CopySheet);
             }
-            if motion::button(ui, "Place")
-                .on_hover_text("Place in chapter")
-                .clicked()
+            if !self.assets_only
+                && motion::button(ui, "Place")
+                    .on_hover_text("Place in chapter")
+                    .clicked()
             {
                 *action = Some(ReferenceAction::Place(reference_id));
             }

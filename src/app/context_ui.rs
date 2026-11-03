@@ -431,7 +431,7 @@ impl Studio {
             return;
         };
         let image = asset.width > 0 && asset.height > 0 && self.assets.contains_key(&id);
-        if action(ui, "Place", image).clicked() {
+        if !self.assets_only && action(ui, "Place", image).clicked() {
             self.place_asset(id, None);
         }
         if action(ui, "Copy image", image).clicked() {
@@ -552,7 +552,7 @@ impl Studio {
         if !scroll_studio::characters::reference_ids(&character).contains(&reference_id) {
             return;
         }
-        if action(ui, "Place", true).clicked() {
+        if !self.assets_only && action(ui, "Place", true).clicked() {
             self.place_character_reference(character_id, reference_id);
         }
         if action(ui, "Copy image", self.assets.contains_key(&reference_id)).clicked() {
@@ -863,8 +863,15 @@ impl Studio {
                             self.import_picker();
                         }
                     }
+                    LibraryTab::Lore => {
+                        if action(ui, "New entry", self.story.lore.len() < 4096).clicked() {
+                            self.new_lore();
+                        }
+                    }
                     LibraryTab::Timeline => {
-                        if action(ui, "New chapter…", self.story.chapters.len() < 1000).clicked()
+                        if !self.assets_only
+                            && action(ui, "New chapter…", self.story.chapters.len() < 1000)
+                                .clicked()
                         {
                             self.dialog = Some(Dialog::Chapter);
                             self.dialog_name =
@@ -901,10 +908,30 @@ impl Studio {
                 self.style_prompt_open = true;
             }
         } else {
-            if action(ui, "New story…", self.job.is_none()).clicked() {
+            if action(
+                ui,
+                if self.assets_only {
+                    "New world…"
+                } else {
+                    "New story…"
+                },
+                self.job.is_none(),
+            )
+            .clicked()
+            {
                 self.request(Pending::New);
             }
-            if action(ui, "Open story…", self.job.is_none()).clicked() {
+            if action(
+                ui,
+                if self.assets_only {
+                    "Open world…"
+                } else {
+                    "Open story…"
+                },
+                self.job.is_none(),
+            )
+            .clicked()
+            {
                 self.request(Pending::Open(None));
             }
         }
