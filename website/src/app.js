@@ -20,3 +20,26 @@ for (const tab of tabs) {
     event.preventDefault(); selectTab(tabs[index], true);
   });
 }
+
+const note = document.getElementById('download-note');
+if (note) {
+  let lastDownload;
+  let dismissed = false;
+  for (const link of document.querySelectorAll('a[download][href$=".exe"], a[download][href$=".zip"]')) {
+    link.addEventListener('click', event => {
+      if (dismissed || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      lastDownload = link;
+      const anchor = link.closest('.download-box')?.querySelector('.download-links')
+        ?? link.closest('.hero-copy')?.querySelector('.download-meta')
+        ?? link;
+      anchor.after(note);
+      note.hidden = false;
+      if (event.detail === 0) note.focus();
+    });
+  }
+  note.querySelector('.note-close').addEventListener('click', () => {
+    dismissed = true;
+    note.hidden = true;
+    lastDownload?.focus({preventScroll: true});
+  });
+}

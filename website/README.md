@@ -23,7 +23,7 @@ The public site is [scroll.project456.net](https://scroll.project456.net), hoste
 
 ## Optional support
 
-Keep downloading and using the full app free. Add a quiet **Support 456C** link only after an owner-controlled support URL is supplied and verified. Do not guess a payment destination. No donation popup or payment SDK is included. See [monetization research](../docs/monetization-research.md) for Ko-fi, itch.io and optional content-pack choices.
+Activating an installer or portable download reveals a dismissible note from 456C with an optional [Ko-fi link](https://ko-fi.com/456th). The build shares the note between the home page and release notes. Downloads work directly with or without JavaScript.
 
 ## Updating
 

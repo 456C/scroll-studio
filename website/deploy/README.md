@@ -6,7 +6,7 @@ The public website is a static Nginx site. The desktop application and private s
 
 - Public address: [scroll.project456.net](https://scroll.project456.net).
 - Squarespace DNS: an A record named `scroll` points to the owner's Contabo IPv4 address. Root-domain, `www` and mail records stay independent.
-- Active release: `v0.11.0-5b0d1242a846`, deployed November 1, 2026.
+- Active release: `v0.11.0-d48c377fbb9a`, deployed November 2, 2026.
 - Virtual host: `/etc/nginx/sites-available/scroll-studio`, linked from `sites-enabled`; it is not the default host.
 - Certificate: `/etc/letsencrypt/live/scroll.project456.net/`, renewed through the existing `certbot.timer` with a stored Nginx validation/reload hook.
 - ACME webroot: `/var/www/scroll-studio/acme`, available over HTTP even while ordinary requests redirect to HTTPS.

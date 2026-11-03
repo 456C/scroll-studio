@@ -20,7 +20,8 @@ for(const name of approved) await copyFile(path.join(source,name),path.join(dist
 const names=await readdir(path.join(dist,'downloads'));
 if(names.some(name=>!approved.includes(name))) throw new Error('Stale downloads found; build into a fresh website/dist directory');
 for(const [from,to] of [['scroll-studio-icon.png','app-icon.png'],['456c-author.png','456c-author.png'],['Karla.ttf','Karla.ttf'],['Karla-OFL.txt','Karla-OFL.txt']]) await copyFile(path.join(workspace,'assets',from),path.join(dist,'assets',to));
-const values={VERSION:version,INSTALLER:installer,PORTABLE:portable,CHECKSUM:checksum,SIZE:(bytes.length/1e6).toFixed(1)};
+const downloadNote = await readFile(path.join(root, 'download-note.html'), 'utf8');
+const values={VERSION:version,INSTALLER:installer,PORTABLE:portable,CHECKSUM:checksum,SIZE:(bytes.length/1e6).toFixed(1),DOWNLOAD_NOTE:downloadNote};
 for(const page of ['index.html','release-notes.html']){
   let html=await readFile(path.join(dist,page),'utf8');
   for(const [key,value]of Object.entries(values))html=html.replaceAll(`{{${key}}}`,value);

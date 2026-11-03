@@ -12,7 +12,8 @@ for(const page of pages){
   assert(/name="viewport"/.test(html),`${page}: missing viewport`);
   const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);
   assert.equal(ids.length,new Set(ids).size,`${page}: duplicate IDs`);
-  for(const [,url]of html.matchAll(/(?:href|src)="([^"]+)"/g)){
+  for(const [,attribute,url]of html.matchAll(/\b(href|src)="([^"]+)"/g)){
+    if (attribute === 'href' && url === 'https://ko-fi.com/456th') continue;
     assert(!url.startsWith('http'),`${page}: unexpected external dependency or link ${url}`);
     const [file,fragment]=url.split('#');
     if(file){
