@@ -692,6 +692,11 @@ impl Studio {
         replacement.height = height;
         if original.width == 0 {
             self.story.assets[index] = replacement;
+            for card in &mut self.story.lore_board.cards {
+                if card.target == original.id {
+                    card.target = new_id;
+                }
+            }
             for link in self
                 .story
                 .lore

@@ -1,5 +1,5 @@
 //! Isolated world-building and chronology fixture, generated locally for UI review.
-use scroll_studio::{groups, locations, model::*, storage};
+use scroll_studio::{groups, locations, lore, model::*, storage};
 use std::{io::Cursor, path::PathBuf, sync::Arc};
 fn main() -> anyhow::Result<()> {
     let directory = std::env::args_os()
@@ -86,6 +86,28 @@ fn main() -> anyhow::Result<()> {
         summary: summary.into(),
     })
     .to_vec();
+    let protagonist = lore::pin(&mut story, character, [0.0, 0.0]).unwrap();
+    let citadel = lore::pin(&mut story, location, [570.0, 90.0]).unwrap();
+    let dawn = lore::pin(&mut story, group_id, [280.0, -100.0]).unwrap();
+    let note = story.alloc_id();
+    story.lore.push(LoreEntry {id:note,title:"Who sent the signal?".into(),
+        text:"The tower lit up three years after the evacuation. Ari recognizes the pattern, but refuses to say why.".into(),links:vec![]});
+    let mystery = lore::pin(&mut story, note, [260.0, 270.0]).unwrap();
+    for (from, to, label) in [
+        (protagonist, dawn, "Raised by"),
+        (dawn, citadel, "Protects"),
+        (mystery, protagonist, "Knows the answer"),
+        (mystery, citadel, "The last sighting"),
+    ] {
+        let id = lore::connect(&mut story, from, to).unwrap();
+        story
+            .lore_board
+            .connections
+            .iter_mut()
+            .find(|e| e.id == id)
+            .unwrap()
+            .label = label.into();
+    }
     assert_eq!(story.groups[0].id, group_id);
     storage::save_story(&directory.join("World review.scro"), &story, &assets)?;
     storage::save_story(

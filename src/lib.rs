@@ -9,6 +9,7 @@ pub mod export;
 pub mod groups;
 pub mod healing;
 pub mod locations;
+pub mod lore;
 pub mod model;
 pub mod painting;
 pub mod recovery;

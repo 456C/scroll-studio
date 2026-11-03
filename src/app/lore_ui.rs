@@ -1,218 +1,993 @@
 use super::*;
+use egui::{pos2, vec2, Align2, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use scroll_studio::lore::{self, Kind};
+
+const CARD_WIDTH: f32 = 208.0;
+
+pub(super) struct BoardView {
+    pan: Vec2,
+    zoom: f32,
+    center: Pos2,
+    selected: Option<u64>,
+    connection: Option<u64>,
+    dragging: Option<(u64, Pos2, [f32; 2])>,
+    link_from: Option<u64>,
+    connecting: bool,
+    fit: bool,
+    menu_position: Pos2,
+    focus_note: bool,
+}
+impl Default for BoardView {
+    fn default() -> Self {
+        Self {
+            pan: Vec2::ZERO,
+            zoom: 1.0,
+            center: Pos2::ZERO,
+            selected: None,
+            connection: None,
+            dragging: None,
+            link_from: None,
+            connecting: false,
+            fit: true,
+            menu_position: Pos2::ZERO,
+            focus_note: false,
+        }
+    }
+}
+impl BoardView {
+    pub(super) fn cancel_gesture(&mut self) {
+        self.dragging = None;
+        self.link_from = None;
+        self.connecting = false;
+    }
+}
+
+struct CardVisual {
+    id: u64,
+    target: u64,
+    rect: Rect,
+    kind: Kind,
+    title: String,
+    text: String,
+    portrait: Option<u64>,
+    color: Color32,
+}
+
+fn text_in(painter: &egui::Painter, rect: Rect, text: &str, size: f32, color: Color32) {
+    let galley = painter.layout(text.into(), FontId::proportional(size), color, rect.width());
+    painter
+        .with_clip_rect(painter.clip_rect().intersect(rect))
+        .galley(rect.min, galley, color);
+}
+
+fn string_points(a: Rect, b: Rect) -> [Pos2; 4] {
+    let delta = b.center() - a.center();
+    let edge = |rect: Rect, direction: Vec2| {
+        let factor = (rect.width() * 0.5 / direction.x.abs().max(0.001))
+            .min(rect.height() * 0.5 / direction.y.abs().max(0.001));
+        rect.center() + direction * factor
+    };
+    let start = edge(a, delta);
+    let end = edge(b, -delta);
+    let sag = (start.distance(end) * 0.10).min(48.0);
+    [
+        start,
+        start.lerp(end, 0.33) + vec2(0.0, sag),
+        start.lerp(end, 0.67) + vec2(0.0, sag),
+        end,
+    ]
+}
+fn curve_point(points: [Pos2; 4], t: f32) -> Pos2 {
+    let a = points[0].lerp(points[1], t);
+    let b = points[1].lerp(points[2], t);
+    let c = points[2].lerp(points[3], t);
+    a.lerp(b, t).lerp(b.lerp(c, t), t)
+}
 
 impl Studio {
     pub(super) fn new_lore(&mut self) {
-        if self.story.lore.len() >= 4096 {
+        let at = self.lore_view.center - vec2(CARD_WIDTH * 0.5, 82.0);
+        self.add_lore_note(at);
+    }
+    fn add_lore_note(&mut self, at: Pos2) {
+        if self.story.lore.len() >= 4096 || self.story.lore_board.cards.len() >= lore::MAX_CARDS {
             return;
         }
         self.checkpoint();
         let id = self.story.alloc_id();
         self.story.lore.push(LoreEntry {
             id,
-            title: "Untitled entry".into(),
+            title: "Untitled note".into(),
             text: String::new(),
             links: Vec::new(),
         });
-        self.tab = LibraryTab::Lore;
+        self.lore_view.selected = lore::pin(&mut self.story, id, [at.x, at.y]);
+        self.lore_view.connection = None;
+        self.lore_view.focus_note = true;
+        self.lore_view.fit = false;
         self.selected_lore = Some(id);
-        self.search.clear();
+        self.tab = LibraryTab::Lore;
+        self.changed();
+    }
+    pub(super) fn unlink_lore_target(&mut self, id: u64) {
+        lore::unlink_target(&mut self.story, id);
+    }
+
+    fn pin_lore_target(&mut self, target: u64, at: Pos2) {
+        if let Some(card) = self
+            .story
+            .lore_board
+            .cards
+            .iter()
+            .find(|c| c.target == target)
+        {
+            self.lore_view.selected = Some(card.id);
+            self.lore_view.connection = None;
+            self.lore_view.pan = -(vec2(
+                card.position[0] + CARD_WIDTH * 0.5,
+                card.position[1] + 118.0,
+            )) * self.lore_view.zoom;
+            return;
+        }
+        self.checkpoint();
+        self.lore_view.selected = lore::pin(&mut self.story, target, [at.x, at.y]);
+        self.lore_view.connection = None;
+        self.lore_view.fit = false;
+        self.changed();
+    }
+    fn lore_card_menu(&mut self, ui: &mut egui::Ui, at: Pos2) {
+        for kind in [Kind::Character, Kind::Location, Kind::Group] {
+            motion::menu_button(ui, kind.name(), |ui| {
+                let mut choices: Vec<_> = lore::targets(&self.story)
+                    .into_iter()
+                    .filter(|(_, t)| t.kind == kind)
+                    .map(|(id, t)| (id, t.title.to_owned()))
+                    .collect();
+                choices.sort_by(|a, b| a.1.cmp(&b.1));
+                if choices.is_empty() {
+                    ui.label("No entries yet");
+                }
+                egui::ScrollArea::vertical().max_height(280.0).show_rows(
+                    ui,
+                    28.0,
+                    choices.len(),
+                    |ui, rows| {
+                        for (id, title) in &choices[rows] {
+                            if motion::button(ui, title).clicked() {
+                                self.pin_lore_target(*id, at);
+                                ui.close_menu();
+                            }
+                        }
+                    },
+                );
+            });
+        }
+    }
+    fn open_lore_card(&mut self, target: u64) {
+        let kind = lore::targets(&self.story).get(&target).map(|t| t.kind);
+        match kind {
+            Some(Kind::Character) => {
+                self.select_character(target);
+                self.tab = LibraryTab::Characters;
+            }
+            Some(Kind::Location) => {
+                self.selected_location = Some(target);
+                self.tab = LibraryTab::Backgrounds;
+            }
+            Some(Kind::Group) => {
+                self.selected_group = Some(target);
+                self.tab = LibraryTab::Groups;
+            }
+            Some(Kind::Note) => {
+                self.selected_lore = Some(target);
+                self.lore_view.focus_note = true;
+            }
+            None => {}
+        }
+    }
+    fn connect_lore_card(&mut self, to: u64) {
+        if let Some(from) = self.lore_view.link_from.take() {
+            if from != to {
+                self.checkpoint();
+                self.lore_view.connection = lore::connect(&mut self.story, from, to);
+                self.lore_view.selected = None;
+                self.changed();
+            }
+            self.lore_view.connecting = false;
+        } else {
+            self.lore_view.link_from = Some(to);
+            self.lore_view.connecting = true;
+        }
+    }
+    fn remove_lore_card(&mut self, id: u64, delete_note: bool) {
+        let target = self
+            .story
+            .lore_board
+            .cards
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.target);
+        self.checkpoint();
+        lore::unpin(&mut self.story, id);
+        if let Some(target) = target.filter(|_| delete_note) {
+            self.story.lore.retain(|n| n.id != target);
+            lore::unlink_target(&mut self.story, target);
+        }
+        self.lore_view.selected = None;
+        self.lore_view.cancel_gesture();
         self.changed();
     }
 
-    pub(super) fn unlink_lore_target(&mut self, id: u64) {
-        for entry in &mut self.story.lore {
-            entry.links.retain(|link| *link != id);
-        }
-    }
-
+    // The existing navigation panel becomes a compact inspector when an object is selected.
     pub(super) fn lore_list(&mut self, ui: &mut egui::Ui) {
-        if self.story.lore.is_empty() {
-            return;
-        }
-        if primary(ui, "+ Entry").clicked() {
-            self.new_lore();
-        }
-        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search lore"));
-        let query = self.search.to_lowercase();
-        let entries: Vec<_> = self
+        let mut remove_edge = None;
+        if let Some(index) = self
             .story
-            .lore
+            .lore_board
+            .connections
             .iter()
-            .filter(|e| e.title.to_lowercase().contains(&query))
-            .collect();
-        egui::ScrollArea::vertical().show_rows(ui, 30.0, entries.len(), |ui, rows| {
-            for entry in &entries[rows] {
-                if ui
-                    .selectable_label(self.selected_lore == Some(entry.id), &entry.title)
-                    .clicked()
-                {
-                    self.selected_lore = Some(entry.id);
-                }
+            .position(|e| Some(e.id) == self.lore_view.connection)
+        {
+            let mut edge = self.story.lore_board.connections[index].clone();
+            ui.label(RichText::new("Connection").color(MUTED));
+            ui.add_space(6.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut edge.label)
+                    .hint_text("Relationship")
+                    .desired_width(f32::INFINITY)
+                    .char_limit(1024),
+            );
+            ui.color_edit_button_srgb(&mut edge.color);
+            if motion::button(ui, "Remove connection").clicked() {
+                remove_edge = Some(edge.id);
             }
-        });
+            if edge != self.story.lore_board.connections[index] {
+                self.checkpoint();
+                self.story.lore_board.connections[index] = edge;
+                self.changed();
+            }
+        } else if let Some(index) = self
+            .story
+            .lore_board
+            .cards
+            .iter()
+            .position(|c| Some(c.id) == self.lore_view.selected)
+        {
+            let mut card = self.story.lore_board.cards[index].clone();
+            let targets = lore::targets(&self.story);
+            let Some(target) = targets.get(&card.target) else {
+                return;
+            };
+            let kind = target.kind;
+            let title = target.title.to_owned();
+            ui.label(RichText::new(kind.name()).color(MUTED));
+            ui.add_space(6.0);
+            if kind == Kind::Note {
+                let Some(note_index) = self.story.lore.iter().position(|n| n.id == card.target)
+                else {
+                    return;
+                };
+                let mut note = self.story.lore[note_index].clone();
+                let title = ui.add(
+                    egui::TextEdit::singleline(&mut note.title)
+                        .hint_text("Note title")
+                        .desired_width(f32::INFINITY)
+                        .char_limit(1024),
+                );
+                if self.lore_view.focus_note {
+                    title.request_focus();
+                    self.lore_view.focus_note = false;
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), title.id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(note.title.chars().count()),
+                            )));
+                        state.store(ui.ctx(), title.id);
+                    }
+                }
+                ui.color_edit_button_srgb(&mut card.color);
+                egui::ScrollArea::vertical()
+                    .id_salt(("note-body", card.id))
+                    .max_height((ui.available_height() - 52.0).max(60.0))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut note.text)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(12)
+                                .char_limit(25_000)
+                                .hint_text("Write a note…"),
+                        );
+                    });
+                if note != self.story.lore[note_index] {
+                    self.checkpoint();
+                    self.story.lore[note_index] = note;
+                    self.changed();
+                }
+            } else {
+                ui.add(egui::Label::new(RichText::new(title).strong()).wrap());
+                if motion::button(ui, "Open sheet").clicked() {
+                    self.open_lore_card(card.target);
+                }
+                ui.color_edit_button_srgb(&mut card.color);
+                ui.add_space(6.0);
+                ui.label(RichText::new("Board note").color(MUTED));
+                egui::ScrollArea::vertical()
+                    .id_salt(("card-body", card.id))
+                    .max_height((ui.available_height() - 52.0).max(60.0))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut card.note)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(9)
+                                .char_limit(25_000)
+                                .hint_text("Add a detail…"),
+                        );
+                    });
+            }
+            if card != self.story.lore_board.cards[index] {
+                self.checkpoint();
+                self.story.lore_board.cards[index] = card;
+                self.changed();
+            }
+        } else if !self.story.lore_board.cards.is_empty() {
+            ui.label(
+                RichText::new(format!(
+                    "{} cards · {} connections",
+                    self.story.lore_board.cards.len(),
+                    self.story.lore_board.connections.len()
+                ))
+                .size(12.0)
+                .color(MUTED),
+            );
+        }
+        if let Some(id) = remove_edge {
+            self.checkpoint();
+            self.story.lore_board.connections.retain(|e| e.id != id);
+            self.lore_view.connection = None;
+            self.changed();
+        }
     }
 
     pub(super) fn lore_workspace(&mut self, ctx: &egui::Context) {
-        self.canvas_rect = egui::Rect::NOTHING;
+        self.canvas_rect = Rect::NOTHING;
+        if !ctx.wants_keyboard_input() && !context_ui::context_menu_open(ctx) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.lore_view.cancel_gesture();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
+                if let Some(id) = self.lore_view.connection.take() {
+                    self.checkpoint();
+                    self.story.lore_board.connections.retain(|e| e.id != id);
+                    self.changed();
+                } else if let Some(id) = self.lore_view.selected {
+                    let is_note = self
+                        .story
+                        .lore_board
+                        .cards
+                        .iter()
+                        .find(|c| c.id == id)
+                        .is_some_and(|c| self.story.lore.iter().any(|n| n.id == c.target));
+                    self.remove_lore_card(id, is_note);
+                }
+            }
+        }
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG).inner_margin(22.0))
+            .frame(egui::Frame::new().fill(BG).inner_margin(0.0))
             .show(ctx, |ui| {
-                let Some(index) = self
+                egui::Frame::new()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Lore").size(20.0));
+                            ui.add_space(10.0);
+                            if !self.story.lore_board.cards.is_empty() {
+                                if motion::button(ui, "+ Note").clicked() {
+                                    self.new_lore();
+                                }
+                                let at = self.lore_view.center - vec2(CARD_WIDTH * 0.5, 118.0);
+                                motion::menu_button(ui, "+ Card", |ui| self.lore_card_menu(ui, at));
+                            }
+                            let connect = icons::button(
+                                ui,
+                                icons::Icon::Lore,
+                                self.lore_view.connecting,
+                                "Connect cards",
+                            );
+                            if connect.clicked() {
+                                self.lore_view.connecting = !self.lore_view.connecting;
+                                self.lore_view.link_from = self
+                                    .lore_view
+                                    .selected
+                                    .filter(|_| self.lore_view.connecting);
+                                self.lore_view.connection = None;
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if motion::button(ui, "Fit").clicked() {
+                                        self.lore_view.fit = true;
+                                    }
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{:.0}%",
+                                            self.lore_view.zoom * 100.0
+                                        ))
+                                        .color(MUTED),
+                                    );
+                                },
+                            );
+                        });
+                    });
+                let (view, canvas) =
+                    ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                self.register_context(&canvas);
+                #[cfg(test)]
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("lore_board_view"), view));
+                let sources = lore::targets(&self.story);
+                if self.lore_view.fit && !self.story.lore_board.cards.is_empty() {
+                    let bounds =
+                        self.story
+                            .lore_board
+                            .cards
+                            .iter()
+                            .fold(Rect::NOTHING, |bounds, c| {
+                                let height =
+                                    sources.get(&c.target).map_or(164.0, |t| t.kind.height());
+                                bounds.union(Rect::from_min_size(
+                                    pos2(c.position[0], c.position[1]),
+                                    vec2(CARD_WIDTH, height),
+                                ))
+                            });
+                    self.lore_view.zoom = ((view.width() - 96.0) / bounds.width())
+                        .min((view.height() - 96.0) / bounds.height())
+                        .clamp(0.25, 1.25);
+                    self.lore_view.pan = -bounds.center().to_vec2() * self.lore_view.zoom;
+                    self.lore_view.fit = false;
+                }
+                if ui.rect_contains_pointer(view)
+                    && !context_ui::context_menu_open(ctx)
+                    && self.lore_view.dragging.is_none()
+                {
+                    let factor = ui.input(|i| i.zoom_delta());
+                    let old = self.lore_view.zoom;
+                    self.lore_view.zoom = (old * factor).clamp(0.25, 2.25);
+                    let offset = ui.input(|i| i.pointer.hover_pos()).unwrap_or(view.center())
+                        - view.center();
+                    self.lore_view.pan =
+                        offset - (offset - self.lore_view.pan) * (self.lore_view.zoom / old);
+                    if factor == 1.0 {
+                        self.lore_view.pan += ui.input(|i| i.smooth_scroll_delta);
+                    }
+                }
+                let panning = ui.input(|i| i.key_down(egui::Key::Space) || i.pointer.middle_down());
+                if (canvas.dragged() && !self.lore_view.connecting)
+                    || (panning && ui.rect_contains_pointer(view))
+                {
+                    self.lore_view.pan += ui.input(|i| i.pointer.delta());
+                }
+                let zoom = self.lore_view.zoom;
+                let origin = view.center() + self.lore_view.pan;
+                self.lore_view.center = ((view.center() - origin) / zoom).to_pos2();
+                let painter = ui.painter_at(view);
+                let grid = 32.0 * zoom;
+                let grid = if grid < 20.0 { grid * 2.0 } else { grid };
+                for y in 0..(view.height() / grid).ceil() as i32 + 1 {
+                    for x in 0..(view.width() / grid).ceil() as i32 + 1 {
+                        let point = pos2(
+                            view.left()
+                                + (origin.x - view.left()).rem_euclid(grid)
+                                + x as f32 * grid,
+                            view.top() + (origin.y - view.top()).rem_euclid(grid) + y as f32 * grid,
+                        );
+                        painter.circle_filled(point, 0.8, Color32::from_gray(54));
+                    }
+                }
+                let rects: HashMap<_, _> = self
                     .story
-                    .lore
+                    .lore_board
+                    .cards
                     .iter()
-                    .position(|e| Some(e.id) == self.selected_lore)
-                    .or_else(|| (!self.story.lore.is_empty()).then_some(0))
-                else {
-                    ui.heading("Lore");
-                    let rect = egui::Rect::from_center_size(
-                        ui.available_rect_before_wrap().center(),
-                        egui::vec2(180.0, 95.0),
+                    .map(|c| {
+                        let height = sources.get(&c.target).map_or(164.0, |t| t.kind.height());
+                        (
+                            c.id,
+                            Rect::from_min_size(
+                                origin + vec2(c.position[0], c.position[1]) * zoom,
+                                vec2(CARD_WIDTH, height) * zoom,
+                            ),
+                        )
+                    })
+                    .collect();
+                let visuals: Vec<_> = self
+                    .story
+                    .lore_board
+                    .cards
+                    .iter()
+                    .filter(|c| rects[&c.id].intersects(view))
+                    .filter_map(|c| {
+                        let target = sources.get(&c.target)?;
+                        Some(CardVisual {
+                            id: c.id,
+                            target: c.target,
+                            rect: rects[&c.id],
+                            kind: target.kind,
+                            title: target.title.chars().take(140).collect(),
+                            text: if target.kind == Kind::Note {
+                                target.text
+                            } else {
+                                &c.note
+                            }
+                            .chars()
+                            .take(260)
+                            .collect(),
+                            portrait: target.portrait,
+                            color: Color32::from_rgb(c.color[0], c.color[1], c.color[2]),
+                        })
+                    })
+                    .collect();
+                let edges: Vec<_> = self
+                    .story
+                    .lore_board
+                    .connections
+                    .iter()
+                    .filter_map(|e| {
+                        Some((
+                            e.clone(),
+                            string_points(*rects.get(&e.from)?, *rects.get(&e.to)?),
+                        ))
+                    })
+                    .collect();
+                for (edge, points) in edges {
+                    if !Rect::from_points(&points).expand(30.0).intersects(view) {
+                        continue;
+                    }
+                    let color = Color32::from_rgb(edge.color[0], edge.color[1], edge.color[2]);
+                    let selected = Some(edge.id) == self.lore_view.connection;
+                    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                        points,
+                        false,
+                        Color32::TRANSPARENT,
+                        Stroke::new(
+                            if selected { 3.0_f32 } else { 1.7_f32 },
+                            if selected { ACCENT } else { color },
+                        ),
+                    ));
+                    let mid = curve_point(points, 0.5);
+                    let text = if edge.label.trim().is_empty() {
+                        "•"
+                    } else {
+                        edge.label.as_str()
+                    };
+                    let galley = painter.layout(
+                        text.chars().take(64).collect(),
+                        FontId::proportional((12.0 * zoom).max(10.0)),
+                        TEXT,
+                        160.0 * zoom,
                     );
+                    let label = Rect::from_center_size(mid, galley.size() + vec2(16.0, 10.0));
+                    let r =
+                        ui.interact(label, ui.id().with(("connection", edge.id)), Sense::click());
+                    painter.rect_filled(label, 6.0, if selected { CARD } else { PANEL });
+                    painter.galley(label.min + vec2(8.0, 5.0), galley, TEXT);
+                    if r.clicked() || r.secondary_clicked() {
+                        self.lore_view.connection = Some(edge.id);
+                        self.lore_view.selected = None;
+                    }
+                    self.register_context(&r);
+                    appearance::context_menu(&r, |ui| {
+                        if motion::button(ui, "Remove connection").clicked() {
+                            self.checkpoint();
+                            self.story
+                                .lore_board
+                                .connections
+                                .retain(|e| e.id != edge.id);
+                            self.lore_view.connection = None;
+                            self.changed();
+                            ui.close_menu();
+                        }
+                    });
+                }
+                if let Some(from) = self.lore_view.link_from.and_then(|id| rects.get(&id)) {
+                    if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                        let points =
+                            string_points(*from, Rect::from_center_size(pointer, vec2(1.0, 1.0)));
+                        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                            points,
+                            false,
+                            Color32::TRANSPARENT,
+                            Stroke::new(2.0_f32, ACCENT),
+                        ));
+                    }
+                }
+                for card in visuals {
+                    self.paint_lore_card(ui, &painter, &card, zoom);
+                    let r = ui.interact(
+                        card.rect,
+                        ui.id().with(("lore_card", card.id)),
+                        Sense::click_and_drag(),
+                    );
+                    #[cfg(test)]
+                    ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::new(("lore_card", card.id)), card.rect)
+                    });
+                    if r.clicked() || r.secondary_clicked() {
+                        self.lore_view.selected = Some(card.id);
+                        self.lore_view.connection = None;
+                        self.selected_lore = (card.kind == Kind::Note).then_some(card.target);
+                        if r.clicked() && self.lore_view.connecting {
+                            self.connect_lore_card(card.id);
+                        }
+                    }
+                    if r.double_clicked() && !self.lore_view.connecting {
+                        self.open_lore_card(card.target);
+                    }
+                    if r.drag_started_by(egui::PointerButton::Primary)
+                        && !panning
+                        && !self.lore_view.connecting
+                    {
+                        if let Some(position) = ui.input(|i| i.pointer.press_origin()) {
+                            let initial = self
+                                .story
+                                .lore_board
+                                .cards
+                                .iter()
+                                .find(|c| c.id == card.id)
+                                .unwrap()
+                                .position;
+                            self.checkpoint();
+                            self.lore_view.dragging = Some((card.id, position, initial));
+                            self.lore_view.selected = Some(card.id);
+                            self.lore_view.connection = None;
+                        }
+                    }
+                    let port = Rect::from_center_size(card.rect.right_center(), vec2(24.0, 24.0));
+                    let handle = ui
+                        .interact(
+                            port,
+                            ui.id().with(("lore_port", card.id)),
+                            Sense::click_and_drag(),
+                        )
+                        .on_hover_text("Connect");
+                    painter.circle_filled(
+                        port.center(),
+                        5.0,
+                        if handle.hovered() || self.lore_view.link_from == Some(card.id) {
+                            ACCENT
+                        } else {
+                            card.color
+                        },
+                    );
+                    painter.circle_stroke(port.center(), 5.0, Stroke::new(1.5_f32, BG));
+                    if handle.drag_started() {
+                        self.lore_view.link_from = Some(card.id);
+                        self.lore_view.connecting = true;
+                    }
+                    if handle.clicked() {
+                        self.connect_lore_card(card.id);
+                    }
+                    self.register_context(&r);
+                    appearance::context_menu(&r, |ui| {
+                        if motion::button(
+                            ui,
+                            if card.kind == Kind::Note {
+                                "Edit note"
+                            } else {
+                                "Open sheet"
+                            },
+                        )
+                        .clicked()
+                        {
+                            self.open_lore_card(card.target);
+                            ui.close_menu();
+                        }
+                        if motion::button(ui, "Connect to…").clicked() {
+                            self.lore_view.link_from = Some(card.id);
+                            self.lore_view.connecting = true;
+                            ui.close_menu();
+                        }
+                        if motion::button(
+                            ui,
+                            if card.kind == Kind::Note {
+                                "Delete note"
+                            } else {
+                                "Remove from board"
+                            },
+                        )
+                        .clicked()
+                        {
+                            self.remove_lore_card(card.id, card.kind == Kind::Note);
+                            ui.close_menu();
+                        }
+                    });
+                }
+                if let Some((id, start, initial)) = self.lore_view.dragging {
+                    if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
+                        let delta = (pointer - start) / zoom;
+                        if let Some(card) =
+                            self.story.lore_board.cards.iter_mut().find(|c| c.id == id)
+                        {
+                            let position = [
+                                (initial[0] + delta.x).clamp(-1_000_000.0, 1_000_000.0),
+                                (initial[1] + delta.y).clamp(-1_000_000.0, 1_000_000.0),
+                            ];
+                            if card.position != position {
+                                card.position = position;
+                                self.changed();
+                            }
+                        }
+                    }
+                    if !ui.input(|i| i.pointer.primary_down()) {
+                        self.lore_view.dragging = None;
+                    }
+                    ctx.request_repaint();
+                }
+                // A port drag can end anywhere on its destination card.
+                if ui.input(|i| i.pointer.primary_released() && i.pointer.is_decidedly_dragging())
+                    && self.lore_view.link_from.is_some()
+                {
+                    if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
+                        if let Some((&id, _)) = rects.iter().find(|(id, rect)| {
+                            Some(**id) != self.lore_view.link_from && rect.contains(pointer)
+                        }) {
+                            self.connect_lore_card(id);
+                        }
+                    }
+                }
+                if canvas.clicked() {
+                    self.lore_view.selected = None;
+                    self.lore_view.connection = None;
+                    self.lore_view.cancel_gesture();
+                }
+                if canvas.secondary_clicked() {
+                    if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
+                        self.lore_view.menu_position = ((pointer - origin) / zoom).to_pos2();
+                    }
+                }
+                let at = self.lore_view.menu_position;
+                appearance::context_menu(&canvas, |ui| {
+                    if motion::button(ui, "Add note").clicked() {
+                        self.add_lore_note(at);
+                        ui.close_menu();
+                    }
+                    motion::menu_button(ui, "Add card", |ui| self.lore_card_menu(ui, at));
+                    if motion::button(ui, "Fit board").clicked() {
+                        self.lore_view.fit = true;
+                        ui.close_menu();
+                    }
+                });
+                if self.story.lore_board.cards.is_empty() {
+                    let rect = Rect::from_center_size(view.center(), vec2(260.0, 150.0));
                     ui.scope_builder(
                         egui::UiBuilder::new()
                             .max_rect(rect)
                             .layout(egui::Layout::top_down(egui::Align::Center)),
                         |ui| {
-                            let (mark, _) = ui
-                                .allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::hover());
+                            let (mark, _) =
+                                ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
                             icons::draw(ui.painter(), mark, icons::Icon::Lore, MUTED);
-                            if primary(ui, "+ Entry").clicked() {
-                                self.new_lore();
-                            }
+                            ui.add_space(12.0);
+                            ui.allocate_ui_with_layout(
+                                vec2(132.0, 32.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    if primary(ui, "+ Note").clicked() {
+                                        self.new_lore();
+                                    }
+                                    motion::menu_button(ui, "+ Card", |ui| {
+                                        self.lore_card_menu(
+                                            ui,
+                                            self.lore_view.center - vec2(104.0, 118.0),
+                                        )
+                                    });
+                                },
+                            );
                         },
                     );
-                    return;
-                };
-                let mut entry = self.story.lore[index].clone();
-                self.selected_lore = Some(entry.id);
-                let mut remove = false;
-                ui.push_id(entry.id, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut entry.title)
-                                .font(egui::TextStyle::Heading)
-                                .desired_width((ui.available_width() - 70.0).max(80.0))
-                                .char_limit(1024)
-                                .hint_text("Entry title"),
-                        );
-                        motion::menu_button(ui, "•••", |ui| {
-                            if motion::button(ui, "Delete entry").clicked() {
-                                remove = true;
-                                ui.close_menu();
-                            }
-                        });
-                    });
-                    ui.add_space(8.0);
-                    let targets = self
-                        .story
-                        .lore
-                        .iter()
-                        .filter(|n| n.id != entry.id)
-                        .map(|n| (n.id, LibraryTab::Lore, n.title.as_str()))
-                        .chain(
-                            self.story
-                                .assets
-                                .iter()
-                                .filter(|a| a.kind == AssetKind::Character)
-                                .map(|a| (a.id, LibraryTab::Characters, a.name.as_str())),
-                        )
-                        .chain(
-                            self.story
-                                .locations
-                                .iter()
-                                .map(|l| (l.id, LibraryTab::Backgrounds, l.name.as_str())),
-                        )
-                        .chain(
-                            self.story
-                                .groups
-                                .iter()
-                                .map(|g| (g.id, LibraryTab::Groups, g.name.as_str())),
-                        )
-                        .collect::<Vec<_>>();
-                    let mut open = None;
-                    egui::ScrollArea::vertical()
-                        .id_salt("connections")
-                        .max_height(100.0)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                motion::menu_button(ui, "+ Link", |ui| {
-                                    if targets.is_empty() {
-                                        ui.label("No entries to link yet");
-                                    }
-                                    egui::ScrollArea::vertical()
-                                        .max_height(260.0)
-                                        .show(ui, |ui| {
-                                            for &(id, tab, name) in &targets {
-                                                let kind = match tab {
-                                                    LibraryTab::Lore => "Lore",
-                                                    LibraryTab::Characters => "Character",
-                                                    LibraryTab::Backgrounds => "Location",
-                                                    _ => "Group",
-                                                };
-                                                let mut linked = entry.links.contains(&id);
-                                                if ui
-                                                    .push_id(id, |ui| {
-                                                        ui.checkbox(
-                                                            &mut linked,
-                                                            format!("{kind} · {name}"),
-                                                        )
-                                                    })
-                                                    .inner
-                                                    .changed()
-                                                {
-                                                    if linked {
-                                                        entry.links.push(id);
-                                                    } else {
-                                                        entry.links.retain(|link| *link != id);
-                                                    }
-                                                }
-                                            }
-                                        });
-                                });
-                                for &(id, tab, name) in &targets {
-                                    if entry.links.contains(&id)
-                                        && ui.push_id(id, |ui| ui.link(name)).inner.clicked()
-                                    {
-                                        open = Some((id, tab));
-                                    }
-                                }
-                            });
-                        });
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .id_salt("lore_text")
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut entry.text)
-                                    .desired_rows(12)
-                                    .desired_width(f32::INFINITY)
-                                    .char_limit(25_000)
-                                    .hint_text("Write a note…"),
-                            );
-                        });
-                    if let Some((id, tab)) = open {
-                        self.tab = tab;
-                        self.search.clear();
-                        match tab {
-                            LibraryTab::Characters => self.select_character(id),
-                            LibraryTab::Backgrounds => self.selected_location = Some(id),
-                            LibraryTab::Groups => self.selected_group = Some(id),
-                            _ => self.selected_lore = Some(id),
-                        }
-                    }
-                });
-                if remove {
-                    self.checkpoint();
-                    self.story.lore.remove(index);
-                    self.unlink_lore_target(entry.id);
-                    self.selected_lore = None;
-                    self.changed();
-                } else if entry != self.story.lore[index] {
-                    self.checkpoint();
-                    self.story.lore[index] = entry;
-                    self.changed();
                 }
             });
+    }
+
+    fn paint_lore_card(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        card: &CardVisual,
+        zoom: f32,
+    ) {
+        let rect = card.rect;
+        let selected = self.lore_view.selected == Some(card.id);
+        painter.rect_filled(
+            rect.translate(vec2(0.0, 5.0)),
+            10.0,
+            Color32::from_black_alpha(50),
+        );
+        let fill = if card.kind == Kind::Note {
+            motion::mix(PANEL, card.color, 0.10)
+        } else {
+            PANEL
+        };
+        painter.rect_filled(rect, 8.0, fill);
+        painter.rect_stroke(
+            rect,
+            8.0,
+            Stroke::new(
+                if selected { 1.8_f32 } else { 1.0_f32 },
+                if selected {
+                    ACCENT
+                } else {
+                    Color32::from_gray(64)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let padding = 14.0 * zoom;
+        painter.line_segment(
+            [
+                rect.min + vec2(padding, 2.0),
+                pos2(rect.right() - padding, rect.top() + 2.0),
+            ],
+            Stroke::new(2.0_f32, card.color),
+        );
+        let inner = rect.shrink(padding);
+        painter.text(
+            inner.min,
+            Align2::LEFT_TOP,
+            card.kind.name().to_uppercase(),
+            FontId::proportional(9.0 * zoom),
+            card.color,
+        );
+        let title = Rect::from_min_size(
+            inner.min + vec2(0.0, 17.0 * zoom),
+            vec2(inner.width(), 40.0 * zoom),
+        );
+        text_in(
+            painter,
+            title,
+            if card.title.trim().is_empty() {
+                "Untitled"
+            } else {
+                &card.title
+            },
+            16.0 * zoom,
+            TEXT,
+        );
+        let text_top = if card.kind == Kind::Note { 66.0 } else { 176.0 };
+        if card.kind != Kind::Note {
+            let art = Rect::from_min_size(
+                rect.min + vec2(padding, 68.0 * zoom),
+                vec2(inner.width(), 96.0 * zoom),
+            );
+            if let Some(portrait) = card.portrait {
+                self.paint_character_reference(ui, ui.ctx(), portrait, art, true);
+            } else {
+                painter.rect_filled(art, 4.0, BG);
+                icons::draw(
+                    painter,
+                    Rect::from_center_size(art.center(), vec2(34.0, 34.0) * zoom),
+                    match card.kind {
+                        Kind::Character => icons::Icon::Characters,
+                        Kind::Location => icons::Icon::Background,
+                        _ => icons::Icon::Groups,
+                    },
+                    card.color,
+                );
+            }
+        }
+        let body = Rect::from_min_max(
+            rect.min + vec2(padding, text_top * zoom),
+            rect.max - vec2(padding, padding),
+        );
+        text_in(
+            painter,
+            body,
+            &card.text,
+            12.0 * zoom,
+            if card.kind == Kind::Note { TEXT } else { MUTED },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn frame(ctx: &egui::Context, studio: &mut Studio, events: Vec<egui::Event>) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 720.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                studio.library(ctx);
+                studio.lore_workspace(ctx);
+            },
+        );
+    }
+    fn button(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+    fn card(ctx: &egui::Context, id: u64) -> Rect {
+        ctx.data(|d| d.get_temp(egui::Id::new(("lore_card", id))).unwrap())
+    }
+    #[test]
+    fn cards_move_with_one_undo_and_ports_connect_without_moving_destinations() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.welcome = false;
+        studio.tab = LibraryTab::Lore;
+        studio.add_lore_note(pos2(-260.0, -50.0));
+        studio.add_lore_note(pos2(80.0, -50.0));
+        studio.lore_view.focus_note = false;
+        studio.undo.clear();
+        let ids: Vec<_> = studio.story.lore_board.cards.iter().map(|c| c.id).collect();
+        for _ in 0..3 {
+            frame(&ctx, &mut studio, vec![]);
+        }
+        let original = studio.story.clone();
+        let from = card(&ctx, ids[0]).center();
+        let to = from + vec2(-25.0, 60.0);
+        frame(&ctx, &mut studio, vec![egui::Event::PointerMoved(from)]);
+        frame(&ctx, &mut studio, vec![button(from, true)]);
+        frame(&ctx, &mut studio, vec![egui::Event::PointerMoved(to)]);
+        frame(&ctx, &mut studio, vec![button(to, false)]);
+        assert_ne!(
+            studio.story.lore_board.cards[0].position,
+            original.lore_board.cards[0].position
+        );
+        assert_eq!(studio.undo.len(), 1);
+        studio.undo();
+        assert_eq!(studio.story, original);
+        studio.redo();
+        frame(&ctx, &mut studio, vec![]);
+        let positions: Vec<_> = studio
+            .story
+            .lore_board
+            .cards
+            .iter()
+            .map(|c| c.position)
+            .collect();
+        let from = card(&ctx, ids[0]).right_center();
+        let to = card(&ctx, ids[1]).center();
+        frame(&ctx, &mut studio, vec![egui::Event::PointerMoved(from)]);
+        frame(&ctx, &mut studio, vec![button(from, true)]);
+        frame(
+            &ctx,
+            &mut studio,
+            vec![egui::Event::PointerMoved(from + vec2(35.0, 0.0))],
+        );
+        frame(&ctx, &mut studio, vec![egui::Event::PointerMoved(to)]);
+        frame(&ctx, &mut studio, vec![button(to, false)]);
+        assert_eq!(studio.story.lore_board.connections.len(), 1);
+        assert_eq!(
+            studio
+                .story
+                .lore_board
+                .cards
+                .iter()
+                .map(|c| c.position)
+                .collect::<Vec<_>>(),
+            positions
+        );
+        studio.undo();
+        assert!(studio.story.lore_board.connections.is_empty());
+        assert_eq!(studio.story.chapters, original.chapters);
+        frame(&ctx, &mut studio, vec![]);
+        let pointer = card(&ctx, ids[0]).center();
+        frame(&ctx, &mut studio, vec![egui::Event::PointerMoved(pointer)]);
+        let view: Rect = ctx.data(|d| d.get_temp(egui::Id::new("lore_board_view")).unwrap());
+        let before = (pointer - view.center() - studio.lore_view.pan) / studio.lore_view.zoom;
+        let zoom = studio.lore_view.zoom;
+        frame(&ctx, &mut studio, vec![egui::Event::Zoom(1.25)]);
+        let after = (pointer - view.center() - studio.lore_view.pan) / studio.lore_view.zoom;
+        assert!(studio.lore_view.zoom > zoom);
+        assert!((before - after).length() < 0.01);
     }
 }

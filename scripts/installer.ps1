@@ -40,7 +40,7 @@ if ($manifest -notmatch '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"') { throw
 $packageVersion = $Matches[1]
 $packageDirectory = Join-Path $workspace "dist\Scroll Studio $packageVersion"
 $outputFile = Join-Path $workspace "dist\Scroll-Studio-$packageVersion-Setup-x64.exe"
-$packageFiles = @('Scroll Studio.exe','README.md','LICENSE','font-research.md','icon-generation.md','ui-review.md','workflow-research.md',
+$packageFiles = @('Scroll Studio.exe','README.md','LICENSE','font-research.md','icon-generation.md','ui-review.md','workflow-research.md','painting-performance.md',
     'Karla-OFL.txt','ComicNeue-OFL.txt','PatrickHand-OFL.txt','DeliusUnicase-OFL.txt','Lato-OFL.txt','BalsamiqSans-OFL.txt','KomikaHand-LICENSE.txt',
     'Lettering playground.scro','Bubble presets playground.scro','Character studio playground.scro','Layout playground.scro','After the rain.scro')
 $totalBytes = 0

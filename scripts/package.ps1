@@ -59,7 +59,8 @@ $packageSources = @(
     @{ Source = $letteringResearch; Name = 'font-research.md' },
     @{ Source = $iconResearch; Name = 'icon-generation.md' },
     @{ Source = $uiResearch; Name = 'ui-review.md' },
-    @{ Source = $workflowResearch; Name = 'workflow-research.md' }
+    @{ Source = $workflowResearch; Name = 'workflow-research.md' },
+    @{ Source = (Join-Path $workspace 'docs\painting-performance.md'); Name = 'painting-performance.md' }
 )
 foreach ($fontLicense in $fontLicenses) {
     $packageSources += @{ Source = $fontLicense; Name = (Split-Path -Leaf $fontLicense) }
@@ -83,6 +84,7 @@ $packagedFiles = foreach ($item in $packageSources) {
         $portableReadme = $portableReadme.Replace('](docs/icon-generation.md)', '](icon-generation.md)')
         $portableReadme = $portableReadme.Replace('](docs/ui-review.md)', '](ui-review.md)')
         $portableReadme = $portableReadme.Replace('](docs/workflow-research.md)', '](workflow-research.md)')
+        $portableReadme = $portableReadme.Replace('](docs/painting-performance.md)', '](painting-performance.md)')
         [IO.File]::WriteAllText($destination, $portableReadme, [Text.UTF8Encoding]::new($false))
     }
     $destination

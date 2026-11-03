@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 11;
 pub const MAX_POINTER_OFFSET: f32 = 10_000_000.0;
 pub const MAX_BUBBLE_POINTERS: usize = 8;
 pub type AssetBytes = HashMap<u64, Arc<Vec<u8>>>;
@@ -25,6 +25,8 @@ pub struct Story {
     #[serde(default)]
     pub lore: Vec<LoreEntry>,
     #[serde(default)]
+    pub lore_board: LoreBoard,
+    #[serde(default)]
     pub bubble_presets: Vec<BubblePreset>,
 }
 
@@ -34,6 +36,31 @@ pub struct LoreEntry {
     pub title: String,
     pub text: String,
     pub links: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoreBoard {
+    pub cards: Vec<LoreCard>,
+    pub connections: Vec<LoreConnection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoreCard {
+    pub id: u64,
+    pub target: u64,
+    pub position: [f32; 2],
+    pub note: String,
+    pub color: [u8; 3],
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoreConnection {
+    pub id: u64,
+    pub from: u64,
+    pub to: u64,
+    pub label: String,
+    pub color: [u8; 3],
 }
 
 /// A story-owned affiliation. References reuse existing original image assets.
@@ -643,6 +670,7 @@ impl Story {
             groups: Vec::new(),
             timeline: Vec::new(),
             lore: Vec::new(),
+            lore_board: LoreBoard::default(),
             bubble_presets: Vec::new(),
         };
         let mut chapter = Chapter::new(story.alloc_id(), "Chapter 01", width, height);

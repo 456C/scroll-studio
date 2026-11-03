@@ -152,6 +152,7 @@ pub struct Studio {
     assets_only: bool,
     paint: Option<paint_ui::PaintStudio>,
     selected_lore: Option<u64>,
+    lore_view: lore_ui::BoardView,
     status: String,
     error: Option<String>,
     dialog: Option<Dialog>,
@@ -338,6 +339,7 @@ impl Studio {
             assets_only: false,
             paint: None,
             selected_lore: None,
+            lore_view: lore_ui::BoardView::default(),
             status: String::new(),
             error: None,
             dialog: None,
@@ -406,6 +408,7 @@ impl Studio {
     }
 
     fn undo(&mut self) {
+        self.lore_view.cancel_gesture();
         self.interrupt_preset_slider_edit();
         if let Some(story) = self.undo.pop_back() {
             self.redo.push(std::mem::replace(&mut self.story, story));
@@ -426,6 +429,7 @@ impl Studio {
     }
 
     fn redo(&mut self) {
+        self.lore_view.cancel_gesture();
         self.interrupt_preset_slider_edit();
         if let Some(story) = self.redo.pop() {
             self.undo
@@ -548,6 +552,7 @@ impl Studio {
             LibraryTab::Chapters
         };
         self.selected_lore = None;
+        self.lore_view = lore_ui::BoardView::default();
         self.canvas_rect = egui::Rect::NOTHING;
         self.active_panel = None;
         self.script_focus = None;

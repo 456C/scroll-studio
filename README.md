@@ -2,7 +2,16 @@
 
 A native Rust desktop editor for composing vertical comics. A story contains its chapters, script beats, character sheets, backgrounds, image assets, and editable layers in one `.scro` file.
 
-This is an early desktop editor, currently version 0.12.0. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+This is an early desktop editor, currently version 0.13.0. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+
+## Changes in 0.13.0
+
+- **Lore** is an investigation board. Pin characters, locations and groups, drag cards freely, and join them with colored, labeled connections. Click a port and a destination, or drag the port onto a card. Right-click empty space to add a note there.
+- Notes and card-specific details stay editable in the sidebar. Double-click a character, location or group to open its sheet. Pan empty space, Ctrl+wheel to zoom around the cursor, and **Fit** to see the whole board. Additions, moves and connections support undo/redo.
+- **Image Editing** now consumes every delivered pointer sample, preserving fast corners instead of skipping to the last point in a frame. Supported pen input controls size and flow, with minimum size and response under **Brush settings**. Smoothing defaults to zero and remains optional.
+- Cached, antialiased brush tips, bounded changed-region texture updates and reusable texture handles reduce painting work while keeping the full-resolution pixels. Stroke opacity is separate from flow, so translucent strokes build predictably across separate strokes.
+- A reproducible CPU benchmark measured large 256 px ink/airbrush batches about **2.7× / 3.6× faster** on the development machine. This is rasterization timing, not measured pen-to-display latency. Research, methodology and limitations are in [painting-performance.md](docs/painting-performance.md).
+- Stories now use **format 11**. Older lore notes and links become a board automatically. Original assets and chapter content stay intact. Files saved by this version require **Scroll Studio 0.13.0 or newer**.
 
 ## Changes in 0.12.0
 
@@ -213,11 +222,11 @@ The design rule for this project is a simple first view with deeper controls ava
 - PNG or JPEG export with a quality control, automatic splitting to satisfy each image's size limit, episode warnings, and an export report.
 - Corrected **Fit** zoom and removed full layer-list cloning during canvas repaint.
 
-The Windows package is versioned (`dist/Scroll Studio 0.12.0`) so updating does not overwrite an older executable that may still be running. The archive is `dist/Scroll-Studio-0.12.0-windows-x64.zip`.
+The Windows package is versioned (`dist/Scroll Studio 0.13.0`) so updating does not overwrite an older executable that may still be running. The archive is `dist/Scroll-Studio-0.13.0-windows-x64.zip`.
 
 ## Install on Windows
 
-Run `dist/Scroll-Studio-0.12.0-Setup-x64.exe` for Windows 10/11 x64. Setup installs for your account under `%LOCALAPPDATA%\Programs\Scroll Studio` without administrator access. It adds a Start menu shortcut; sample stories, Windows Open with integration for `.scro`, and a desktop shortcut are selectable. Your existing default file association is not changed.
+Run `dist/Scroll-Studio-0.13.0-Setup-x64.exe` for Windows 10/11 x64. Setup installs for your account under `%LOCALAPPDATA%\Programs\Scroll Studio` without administrator access. It adds a Start menu shortcut; sample stories, Windows Open with integration for `.scro`, and a desktop shortcut are selectable. Your existing default file association is not changed.
 
 Remove the app from Windows Installed apps or run `Uninstall.exe` in its folder. Uninstall preserves sample stories, other saved files, preferences and recovery copies. Upgrades keep any sample you have edited. The installer is currently unsigned.
 

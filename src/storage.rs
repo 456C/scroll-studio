@@ -163,6 +163,7 @@ pub fn load_story_with_stamp(path: &Path) -> Result<(Story, AssetBytes, FileStam
     // Missing lettering settings use their legacy defaults. Current saves reject
     // older applications rather than silently losing fonts, fitting behavior,
     // location membership or explicit character gender.
+    let migrate_lore = story.version < 11;
     story.version = FORMAT_VERSION;
     let mut assets = AssetBytes::new();
     let asset_ids: HashSet<_> = story.assets.iter().map(|asset| asset.id).collect();
@@ -178,6 +179,9 @@ pub fn load_story_with_stamp(path: &Path) -> Result<(Story, AssetBytes, FileStam
     }
     validate_story(&story, &assets)?;
     crate::bubbles::migrate_story_presets(&mut story)?;
+    if migrate_lore {
+        crate::lore::migrate_board(&mut story)?;
+    }
     validate_story(&story, &assets)?;
     Ok((story, assets, stamp))
 }
@@ -323,6 +327,13 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
                 .all(|id| *id != entry.id && link_targets.contains(id) && unique.insert(id)),
             "Invalid lore connection"
         );
+    }
+    crate::lore::validate_board(story)?;
+    for card in &story.lore_board.cards {
+        insert_id(card.id)?;
+    }
+    for connection in &story.lore_board.connections {
+        insert_id(connection.id)?;
     }
     for preset in &story.bubble_presets {
         insert_id(preset.id)?;
@@ -785,6 +796,49 @@ mod tests {
             ZipArchive::new(File::open(&path).unwrap()).unwrap().len(),
             assets.len() + 1
         );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_notes_become_connected_cards_and_board_saves_keep_source_images() {
+        use crate::model::LoreEntry;
+        let path = test_path("legacy-lore-board");
+        let (mut original, images) = image_story();
+        let note_id = original.alloc_id();
+        original.lore.push(LoreEntry {
+            id: note_id,
+            title: "A clue".into(),
+            text: "Keep the original text.".into(),
+            links: vec![original.assets[0].id],
+        });
+        let mut manifest = serde_json::to_value(&original).unwrap();
+        manifest["version"] = 10.into();
+        manifest.as_object_mut().unwrap().remove("lore_board");
+        let mut zip = ZipWriter::new(File::create(&path).unwrap());
+        zip.start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        for (id, bytes) in &images {
+            zip.start_file(format!("assets/{id}.bin"), SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let (mut loaded, raw) = load_story(&path).unwrap();
+        assert_eq!(loaded.lore, original.lore);
+        assert_eq!(loaded.chapters, original.chapters);
+        assert_eq!(raw, images);
+        assert_eq!(loaded.lore_board.cards.len(), 2);
+        assert_eq!(loaded.lore_board.connections.len(), 1);
+        loaded.lore_board.cards[0].position = [-600.5, 830.0];
+        loaded.lore_board.connections[0].label = "Siblings".into();
+        save_story(&path, &loaded, &raw).unwrap();
+        assert_eq!(load_story(&path).unwrap(), (loaded.clone(), raw));
+        let target = loaded.lore_board.cards[0].target;
+        crate::lore::unlink_target(&mut loaded, target);
+        assert!(loaded.lore_board.connections.is_empty());
+        assert_eq!(loaded.lore_board.cards.len(), 1);
         fs::remove_file(path).unwrap();
     }
 
