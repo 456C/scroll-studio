@@ -87,6 +87,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(metadata["seriesTitle"]["maxLength"], LIMITS["maxTitleChars"])
         self.assertEqual(metadata["synopsis"]["maxLength"], LIMITS["maxSynopsisChars"])
         self.assertEqual(SCHEMA["$defs"]["errorObject"]["properties"]["code"]["enum"], PROTOCOL["errorCodes"])
+        self.assertEqual(SCHEMA["$defs"]["errorObject"]["properties"]["retryable"]["const"], False)
         self.assertNotIn("termsAccepted", SCHEMA["$defs"]["confirmBody"]["properties"])
         self.assertNotIn("loginHint", SCHEMA["$defs"]["beginBody"]["properties"])
         self.assertNotIn("fixture", SCHEMA["properties"])
@@ -94,6 +95,31 @@ class ContractTests(unittest.TestCase):
         commands = set(PROTOCOL["commands"])
         self.assertEqual(commands, set(PROTOCOL["mutatingCommands"]) | set(PROTOCOL["readCommands"]))
         self.assertFalse(set(PROTOCOL["mutatingCommands"]) & set(PROTOCOL["readCommands"]))
+
+    def test_busy_503_is_the_only_retryable_limit(self):
+        self.assertEqual(SPEC["errorStatus"]["limit_exceeded"], 413)
+        self.assertEqual(SPEC["busy"]["status"], 503)
+        self.assertEqual(SPEC["busy"]["code"], "limit_exceeded")
+        self.assertIs(SPEC["busy"]["retryable"], True)
+        command_limit = {
+            "protocol": PROTOCOL["protocol"],
+            "ok": False,
+            "command": "episode.upload",
+            "idempotentReplay": False,
+            "error": {"code": "limit_exceeded", "retryable": False, "detail": "limit"},
+        }
+        busy = {
+            "protocol": PROTOCOL["protocol"],
+            "ok": False,
+            "command": None,
+            "idempotentReplay": False,
+            "error": {"code": "limit_exceeded", "retryable": True},
+        }
+        self.assertEqual(validate({"$ref": "#/$defs/response"}, command_limit, SCHEMA), [])
+        self.assertTrue(validate({"$ref": "#/$defs/busyResponse"}, command_limit, SCHEMA))
+        self.assertEqual(validate({"$ref": "#/$defs/busyResponse"}, busy, SCHEMA), [])
+        self.assertEqual(validate({"$ref": "#/$defs/response"}, busy, SCHEMA), [])
+        self.assertTrue(validate({"$ref": "#/$defs/errorObject"}, busy["error"], SCHEMA))
 
     def test_desktop_numbers_still_match_the_contract(self):
         reader = (ROOT / "src" / "app" / "reader_ui.rs").read_text(encoding="utf-8")

@@ -591,6 +591,7 @@
         {"$ref": "#/$defs/okWithdraw"},
         {"$ref": "#/$defs/okRead"},
         {"$ref": "#/$defs/okCancelOp"},
+        {"$ref": "#/$defs/busyResponse"},
         {
           "type": "object",
           "required": ["protocol", "ok", "command", "idempotentReplay", "error"],
@@ -643,6 +644,26 @@
         },
         "retryable": {"const": false},
         "detail": {"enum": ["schema", "magic", "hash", "dimensions", "utf8", "bom", "controls", "order", "type", "limit", "decode"]}
+      }
+    },
+    "busyResponse": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "error"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": false},
+        "command": {"const": null},
+        "idempotentReplay": {"const": false},
+        "error": {
+          "type": "object",
+          "required": ["code", "retryable"],
+          "additionalProperties": false,
+          "properties": {
+            "code": {"const": "limit_exceeded"},
+            "retryable": {"const": true}
+          }
+        }
       }
     }
   }

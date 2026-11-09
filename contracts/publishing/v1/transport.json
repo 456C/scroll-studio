@@ -39,6 +39,13 @@
     "withdrawn": 410,
     "exchange_consumed": 401
   },
+  "busy": {
+    "status": 503,
+    "code": "limit_exceeded",
+    "retryable": true,
+    "schema": "#/$defs/busyResponse",
+    "when": "All four request workers are busy. This does not replace errorStatus.limit_exceeded, which stays HTTP 413 with retryable false."
+  },
   "cookie": {
     "name": "ss_publish_fixture",
     "httpOnly": true,

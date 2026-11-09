@@ -52,7 +52,7 @@ A request contains `protocol`, `command`, `idempotencyKey`, and `body`.
 
 The network envelope has no `fixture` object. Clock, pause, `loginHint`, and `testOnlyRedirect` belong to the oracle harness in `prototypes/publishing/fixture_harness.py`. A live listener uses `runtime_rules.server_now`, `runtime_rules.new_credential`, and `runtime_rules.new_authorization_code`. It must not call `FixtureHarness`.
 
-A success response has `ok: true`, `command`, `idempotentReplay`, and `result`. A failure has `ok: false` and `error.code`. `error.retryable` is false. Resend the same key and the same body only while the credential is still live. The idempotency hash ignores `episode.upload` field `completion`.
+A success response has `ok: true`, `command`, `idempotentReplay`, and `result`. A command failure has `ok: false` and `error.code`. Its `error.retryable` is false. The one exception is the transport busy response in `transport.json`: HTTP 503, `error.code` `limit_exceeded`, and `error.retryable` true. A command `limit_exceeded` stays HTTP 413 with `retryable` false. Resend the same key and the same body only while the credential is still live. The idempotency hash ignores `episode.upload` field `completion`.
 
 The idempotency key is not authorization and does not cache a credential. `auth.exchange` returns the secret on the first success only.
 
@@ -128,7 +128,7 @@ An operator hold is stored beside the publication and does not change revision b
 
 An operator removal is a tombstone. It sets `withdrawn` and does not rewrite revision bytes or hashes. Upload, confirm, preview, and read do not return those bytes, and the service does not present an emptied document as the revision. The publication routes answer `410`. The exact preview routes answer `404`.
 
-Every response sends `Connection: close`. The process handles one request on each accepted connection. A `Content-Length` above 28000000 bytes is HTTP `413` with command error `limit_exceeded` and `retryable: false`, and the body is not read. HTTP `503` with the same error code and `retryable: true` means the four request workers are busy. `503` is not in `transport.json` `errorStatus`. It is not a publication-size failure. A duplicate or malformed `Content-Length` or `Host`, and any `Transfer-Encoding`, are HTTP `400` and the connection is closed. A partial body or a silent client is cut off by the 15 second timeout and does not run a command. Four workers do not cap the listen backlog. The backlog is eight connections; past that, the operating system refuses the connection instead of returning JSON.
+Every response sends `Connection: close`. The process handles one request on each accepted connection. A `Content-Length` above 28000000 bytes is HTTP `413` with command error `limit_exceeded` and `retryable: false`, and the body is not read. HTTP `503` is the `busy` object in `transport.json`: the same error code, `retryable: true`, and schema `#/$defs/busyResponse`. It means the four request workers are busy. It is not a publication-size failure and it does not change `errorStatus.limit_exceeded`. A duplicate or malformed `Content-Length` or `Host`, and any `Transfer-Encoding`, are HTTP `400` and the connection is closed. A partial body or a silent client is cut off by the 15 second timeout and does not run a command. Four workers do not cap the listen backlog. The backlog is eight connections; past that, the operating system refuses the connection instead of returning JSON.
 
 There is no pause control, so cancelling a finished upload returns `already_terminal`.
 

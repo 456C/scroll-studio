@@ -20,7 +20,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 from prototypes.publishing.image_decode import decode_size
 from prototypes.publishing.listener import HOST, MAX_IN_FLIGHT, PORT, TIMEOUT_SECONDS, Listener, assert_loopback, live_world
 from prototypes.publishing.media import facts
-from prototypes.publishing.oracle import PROTOCOL, pkce_s256
+from prototypes.publishing.oracle import PROTOCOL, SCHEMA, pkce_s256
+from prototypes.publishing.schema_validate import validate
+from prototypes.publishing.transport import SPEC
 
 ORIGIN = "http://127.0.0.1:19427"
 REDIRECT = "http://127.0.0.1:43121/ss-publish/callback"
@@ -645,7 +647,11 @@ class ListenerTests(unittest.TestCase):
         )
         self.assertTrue(oversized.startswith(b"HTTP/1.1 413 "))
         self.assertIn(b"connection: close", oversized.lower())
-        self.assertIn(b'"retryable": false', oversized)
+        limited = _json_body(oversized)
+        self.assertEqual(limited["error"], {"code": "limit_exceeded", "retryable": False})
+        self.assertEqual(SPEC["errorStatus"]["limit_exceeded"], 413)
+        self.assertEqual(validate({"$ref": "#/$defs/response"}, limited, SCHEMA), [])
+        self.assertTrue(validate({"$ref": "#/$defs/busyResponse"}, limited, SCHEMA))
         chunked = raw_response(
             b"POST /ss-publish/commands HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n"
             b"Transfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n1\r\nZ\r\n"
@@ -690,7 +696,13 @@ class ListenerTests(unittest.TestCase):
             busy = raw_response(b"GET /ss-publish/browser/series HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n\r\n")
             self.assertTrue(busy.startswith(b"HTTP/1.1 503 "))
             self.assertIn(b"connection: close", busy.lower())
-            self.assertIn(b'"retryable": true', busy)
+            admitted = _json_body(busy)
+            self.assertEqual(admitted["error"], {"code": "limit_exceeded", "retryable": True})
+            self.assertEqual(SPEC["busy"]["status"], 503)
+            self.assertEqual(SPEC["busy"]["retryable"], True)
+            self.assertEqual(validate({"$ref": "#/$defs/busyResponse"}, admitted, SCHEMA), [])
+            self.assertEqual(validate({"$ref": "#/$defs/response"}, admitted, SCHEMA), [])
+            self.assertTrue(validate({"$ref": "#/$defs/errorObject"}, admitted["error"], SCHEMA))
         finally:
             for holder in holders:
                 holder.close()
@@ -747,6 +759,10 @@ def _affirm_next(csrf, nxt, account_id):
         {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
     )
     return status
+
+
+def _json_body(raw):
+    return json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
 
 
 def raw_response(payload):
