@@ -1,0 +1,20 @@
+{
+  "name": "retry-finish",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "retry-begin-00000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "retry-exchange-00001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "paused", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "retry-upload-0000001", "credentialFrom": "exchange", "pauseBeforeCommit": true, "expect": {"ok": true, "idempotentReplay": false, "equals": {"result.operation": "in_progress"}}},
+    {"id": "paused-again", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "retry-upload-0000001", "credentialFrom": "exchange", "pauseBeforeCommit": true, "expect": {"ok": true, "idempotentReplay": true, "equals": {"result.operation": "in_progress"}}},
+    {"id": "discover-empty", "command": "account.discover", "idempotencyKey": "retry-discover-00001", "credentialFrom": "exchange", "body": {}, "expect": {"ok": true, "equals": {"result.account.series.0.episodes.0.publication": null}}},
+    {"id": "finish", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "retry-upload-0000001", "credentialFrom": "exchange", "expect": {"ok": true, "idempotentReplay": false, "equals": {"result.episodeStatus": "draft"}}},
+    {"id": "finish-again", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "retry-upload-0000001", "credentialFrom": "exchange", "expect": {"ok": true, "idempotentReplay": true, "equals": {"result.revisionId": "{{step:finish.result.revisionId}}"}}}
+  ]
+}

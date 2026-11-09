@@ -1,0 +1,16 @@
+{
+  "name": "pkce-mismatch",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "pkce-begin-000000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange-bad", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "pkce-exchange-00001", "credentialFrom": null, "body": {"codeVerifier": "{{verifier:ownerB}}"}, "expect": {"ok": false, "errorCode": "pkce_rejected"}},
+    {"id": "exchange-late", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "pkce-exchange-00002", "credentialFrom": null, "expect": {"ok": false, "errorCode": "code_replayed"}}
+  ]
+}

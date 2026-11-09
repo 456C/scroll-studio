@@ -1,0 +1,101 @@
+{
+  "name": "prose",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {
+      "id": "begin",
+      "use": "begin-owner-a",
+      "command": "auth.begin",
+      "idempotencyKey": "prose-begin-000001",
+      "credentialFrom": null,
+      "expect": {"ok": true}
+    },
+    {
+      "id": "exchange",
+      "use": "exchange-owner-a",
+      "command": "auth.exchange",
+      "idempotencyKey": "prose-exchange-0001",
+      "credentialFrom": null,
+      "expect": {"ok": true}
+    },
+    {
+      "id": "upload",
+      "use": "upload-prose",
+      "command": "episode.upload",
+      "idempotencyKey": "prose-upload-000001",
+      "credentialFrom": "exchange",
+      "expect": {"ok": true, "equals": {"result.episodeStatus": "draft", "result.localOriginals": "untouched"}}
+    },
+    {
+      "id": "preview",
+      "command": "episode.preview",
+      "idempotencyKey": "prose-preview-000001",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_02",
+        "revisionId": "{{step:upload.result.revisionId}}"
+      },
+      "expect": {
+        "ok": true,
+        "equals": {"result.content.text": "A synthetic prose episode.\n雪 <script>alert(1)</script>", "result.content.kind": "prose"}
+      }
+    },
+    {
+      "id": "confirm",
+      "command": "publication.confirm",
+      "idempotencyKey": "prose-confirm-00001",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_02",
+        "revisionId": "{{step:upload.result.revisionId}}",
+        "policyEligibility": "private-prototype-only"
+      },
+      "expect": {"ok": true, "equals": {"result.status": "published", "result.publicInternet": false}}
+    },
+    {
+      "id": "read",
+      "command": "publication.read",
+      "idempotencyKey": "prose-read-00000001",
+      "credentialFrom": "exchange",
+      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "expect": {
+        "ok": true,
+        "equals": {
+          "result.presentation.widthPx": 360,
+          "result.content.text": "A synthetic prose episode.\n雪 <script>alert(1)</script>",
+          "result.content.mediaType": "text/plain; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "withdraw",
+      "command": "publication.withdraw",
+      "idempotencyKey": "prose-withdraw-0001",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_02",
+        "publicationId": "{{step:confirm.result.publicationId}}",
+        "revisionId": "{{step:confirm.result.revisionId}}"
+      },
+      "expect": {"ok": true, "equals": {"result.status": "withdrawn"}}
+    },
+    {
+      "id": "read-withdrawn",
+      "command": "publication.read",
+      "idempotencyKey": "prose-read-00000002",
+      "credentialFrom": "exchange",
+      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "expect": {"ok": false, "errorCode": "withdrawn"}
+    }
+  ]
+}

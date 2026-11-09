@@ -1,0 +1,172 @@
+{
+  "protocol": "scroll-studio.publishing.private-prototype.v1",
+  "checkpoint": "contract-only",
+  "service": false,
+  "listens": false,
+  "phoneViewportWidthPx": 360,
+  "defaultClock": "2026-11-09T18:00:00Z",
+  "clientId": "scroll-studio-desktop-test",
+  "exampleRedirect": "http://127.0.0.1:43121/ss-publish/callback",
+  "selectionMode": "selected-episode-only",
+  "policyEligibilityPrivate": "private-prototype-only",
+  "identityProof": "fixture-login-hint",
+  "genericBypassAccepted": false,
+  "issuer": {
+    "exact": "http://127.0.0.1:19427/ss-publish/test-issuer",
+    "role": "prototype-test-issuer",
+    "distinctFromProductionProvider": true
+  },
+  "reader": {
+    "host": "127.0.0.1",
+    "port": 19428,
+    "pathPrefix": "/ss-publish/reader/"
+  },
+  "redirect": {
+    "scheme": "http",
+    "host": "127.0.0.1",
+    "path": "/ss-publish/callback",
+    "forbidPorts": [19427, 19428]
+  },
+  "transport": {
+    "enabledProfile": "local-http-isolated-fixture",
+    "disabledProfile": "production-secure-transport",
+    "localHttp": "Loopback HTTP is the only transport this protocol accepts. The issuer, the redirect, and the reader URL use http, the host 127.0.0.1, and an explicit port.",
+    "futureProduction": "A production reader would need a secure transport and a new protocol id. This id rejects production-secure-transport."
+  },
+  "recovery": {
+    "commands": [],
+    "refreshToken": false,
+    "expiredOrLostCredential": "Send auth.begin again.",
+    "productionRecoveryProvider": "This prototype does not call one."
+  },
+  "publicMetadataAllowlist": ["seriesTitle", "episodeTitle", "synopsis", "language"],
+  "limits": {
+    "maxSlices": 100,
+    "maxSliceBytes": 2000000,
+    "maxEpisodeBytes": 20000000,
+    "maxSliceWidth": 4096,
+    "maxSliceHeight": 4096,
+    "maxSlicePixels": 4000000,
+    "maxProseBytes": 65536,
+    "maxTitleChars": 120,
+    "maxSynopsisChars": 2000,
+    "minIdempotencyKeyChars": 16,
+    "maxIdempotencyKeyChars": 128,
+    "minStateChars": 43,
+    "maxStateChars": 128,
+    "minCodeVerifierChars": 43,
+    "maxCodeVerifierChars": 128,
+    "authorizationTtlSeconds": 120,
+    "credentialTtlSeconds": 3600,
+    "pngDecompressCapBytes": 32000000
+  },
+  "jpegDecode": "The contract checks JPEG SOI, EOI, and SOF0 or SOF2 dimensions. It does not expand the scan. A later service has to cap JPEG decompression before it stores a slice.",
+  "prose": "UTF-8 text is new in this protocol. The desktop Story type has chapters and no prose document.",
+  "commands": [
+    "auth.begin",
+    "auth.cancel",
+    "auth.exchange",
+    "auth.revoke",
+    "account.discover",
+    "episode.upload",
+    "episode.preview",
+    "publication.confirm",
+    "publication.withdraw",
+    "publication.read",
+    "operation.cancel"
+  ],
+  "mutatingCommands": [
+    "auth.begin",
+    "auth.cancel",
+    "auth.exchange",
+    "auth.revoke",
+    "episode.upload",
+    "publication.confirm",
+    "publication.withdraw",
+    "operation.cancel"
+  ],
+  "readCommands": ["account.discover", "episode.preview", "publication.read"],
+  "pausableCommands": ["episode.upload", "publication.confirm", "publication.withdraw"],
+  "credentialRequired": [
+    "auth.revoke",
+    "account.discover",
+    "episode.upload",
+    "episode.preview",
+    "publication.confirm",
+    "publication.withdraw",
+    "publication.read",
+    "operation.cancel"
+  ],
+  "scope": ["prototype:creator"],
+  "errorCodes": [
+    "invalid_request",
+    "unauthorized",
+    "credential_expired",
+    "credential_revoked",
+    "not_owner",
+    "not_found",
+    "stale_revision",
+    "unknown_command",
+    "idempotency_conflict",
+    "cancelled",
+    "already_terminal",
+    "code_replayed",
+    "state_mismatch",
+    "redirect_rejected",
+    "issuer_rejected",
+    "pkce_rejected",
+    "authorization_expired",
+    "authorization_cancelled",
+    "unsupported_grant",
+    "public_launch_gate",
+    "limit_exceeded",
+    "media_rejected",
+    "metadata_rejected",
+    "asset_not_addressable",
+    "production_transport_not_enabled",
+    "withdrawn"
+  ],
+  "errorDetails": ["schema", "magic", "hash", "dimensions", "utf8", "bom", "controls", "order", "type", "limit"],
+  "clientErrors": ["plaintext_forbidden", "missing_label", "persistence", "unknown_mode", "plaintext_fallback", "callback_forbidden"],
+  "forbiddenCallbackParams": ["access_token", "refresh_token", "id_token", "token", "bearer", "secret", "code_verifier"],
+  "authorizationQueryKeys": ["response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method"],
+  "clientStorage": {
+    "forbiddenModes": ["plaintext-file"],
+    "modes": {
+      "os-credential-store": {
+        "plaintextFallback": false,
+        "label": null,
+        "persistence": null
+      },
+      "session-memory-only": {
+        "plaintextFallback": false,
+        "label": "session-memory-only",
+        "persistence": "process-memory"
+      }
+    }
+  },
+  "clientObligations": {
+    "browser": "system-browser",
+    "forbiddenBrowsers": ["embedded-webview"],
+    "publicTunnel": false,
+    "tokenExchange": "service-channel",
+    "credentialInUrl": false,
+    "logCredentialSecret": false,
+    "logAuthorizationCode": false,
+    "stateSource": "csprng-in-the-desktop",
+    "fixtureStateSource": "synthetic-fixture-not-csprng",
+    "authorizationTimeoutSeconds": 120,
+    "singleUseCode": true,
+    "pkce": "S256"
+  },
+  "idempotency": {
+    "appliesTo": "mutatingCommands",
+    "excludedFromHash": ["fixture", "episode.upload.completion"],
+    "keyIsSecret": true,
+    "sameKeySameBody": "Replay the stored result.",
+    "sameKeyDifferentBody": "idempotency_conflict",
+    "cancelledKey": "Stay cancelled. A later retry does not seal the upload or publish.",
+    "inProgressFinish": "The same key without pauseBeforeCommit commits once."
+  },
+  "localOriginals": "untouched"
+}

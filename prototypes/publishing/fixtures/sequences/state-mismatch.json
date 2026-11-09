@@ -1,0 +1,16 @@
+{
+  "name": "state-mismatch",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "state-begin-00000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange-bad", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "state-exchange-00001", "credentialFrom": null, "body": {"state": "synthetic-state-owner-b-not-for-production-0001"}, "expect": {"ok": false, "errorCode": "state_mismatch"}},
+    {"id": "exchange-late", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "state-exchange-00002", "credentialFrom": null, "expect": {"ok": false, "errorCode": "code_replayed"}}
+  ]
+}

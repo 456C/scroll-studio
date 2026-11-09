@@ -1,0 +1,151 @@
+{
+  "name": "comic",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {
+      "id": "begin",
+      "use": "begin-owner-a",
+      "command": "auth.begin",
+      "idempotencyKey": "comic-begin-000001",
+      "credentialFrom": null,
+      "expect": {"ok": true, "idempotentReplay": false}
+    },
+    {
+      "id": "exchange",
+      "use": "exchange-owner-a",
+      "command": "auth.exchange",
+      "idempotencyKey": "comic-exchange-0001",
+      "credentialFrom": null,
+      "expect": {"ok": true, "equals": {"result.credential.accountId": "acct_test_owner_a"}}
+    },
+    {
+      "id": "discover",
+      "use": null,
+      "command": "account.discover",
+      "idempotencyKey": "comic-discover-0001",
+      "credentialFrom": "exchange",
+      "body": {},
+      "expect": {"ok": true, "seriesIds": ["ser_test_lane"]}
+    },
+    {
+      "id": "upload",
+      "use": "upload-comic",
+      "command": "episode.upload",
+      "idempotencyKey": "comic-upload-000001",
+      "credentialFrom": "exchange",
+      "expect": {
+        "ok": true,
+        "equals": {
+          "result.private": true,
+          "result.localOriginals": "untouched",
+          "result.episodeStatus": "draft",
+          "result.episodeId": "ep_test_lane_01"
+        }
+      }
+    },
+    {
+      "id": "discover-draft",
+      "command": "account.discover",
+      "idempotencyKey": "comic-discover-0002",
+      "credentialFrom": "exchange",
+      "body": {},
+      "expect": {
+        "ok": true,
+        "equals": {
+          "result.account.series.0.episodes.0.publication.status": "draft",
+          "result.account.series.0.episodes.1.publication": null
+        }
+      }
+    },
+    {
+      "id": "preview",
+      "command": "episode.preview",
+      "idempotencyKey": "comic-preview-000001",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_01",
+        "revisionId": "{{step:upload.result.revisionId}}"
+      },
+      "expect": {"ok": true, "matchesMedia": "png", "equals": {"result.private": true, "result.localOriginals": "untouched"}}
+    },
+    {
+      "id": "confirm",
+      "command": "publication.confirm",
+      "idempotencyKey": "comic-confirm-00001",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_01",
+        "revisionId": "{{step:upload.result.revisionId}}",
+        "policyEligibility": "private-prototype-only"
+      },
+      "expect": {
+        "ok": true,
+        "equals": {
+          "result.status": "published",
+          "result.publicInternet": false,
+          "result.revisionId": "{{step:upload.result.revisionId}}"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "command": "publication.read",
+      "idempotencyKey": "comic-read-00000001",
+      "credentialFrom": "exchange",
+      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "expect": {
+        "ok": true,
+        "matchesMedia": "png",
+        "equals": {
+          "result.presentation.viewport": "phone",
+          "result.presentation.widthPx": 360,
+          "result.presentation.ordered": true,
+          "result.publicInternet": false,
+          "result.revisionId": "{{step:upload.result.revisionId}}"
+        }
+      }
+    },
+    {
+      "id": "withdraw",
+      "command": "publication.withdraw",
+      "idempotencyKey": "comic-withdraw-0001",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_01",
+        "publicationId": "{{step:confirm.result.publicationId}}",
+        "revisionId": "{{step:confirm.result.revisionId}}"
+      },
+      "expect": {"ok": true, "equals": {"result.status": "withdrawn", "result.publicInternet": false}}
+    },
+    {
+      "id": "read-withdrawn",
+      "command": "publication.read",
+      "idempotencyKey": "comic-read-00000002",
+      "credentialFrom": "exchange",
+      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "expect": {"ok": false, "errorCode": "withdrawn"}
+    },
+    {
+      "id": "preview-after",
+      "command": "episode.preview",
+      "idempotencyKey": "comic-preview-000002",
+      "credentialFrom": "exchange",
+      "body": {
+        "seriesId": "ser_test_lane",
+        "episodeId": "ep_test_lane_01",
+        "revisionId": "{{step:upload.result.revisionId}}"
+      },
+      "expect": {"ok": true, "matchesMedia": "png"}
+    }
+  ]
+}

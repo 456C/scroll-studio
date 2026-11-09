@@ -1,0 +1,27 @@
+{
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "cases": [
+    {"name": "localhost", "overlay": {"redirectUri": "http://localhost:43121/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "ipv6", "overlay": {"redirectUri": "http://[::1]:43121/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "any-interface", "overlay": {"redirectUri": "http://0.0.0.0:43121/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "wrong-path", "overlay": {"redirectUri": "http://127.0.0.1:43121/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "https", "overlay": {"redirectUri": "https://127.0.0.1:43121/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "query", "overlay": {"redirectUri": "http://127.0.0.1:43121/ss-publish/callback?x=1"}, "errorCode": "redirect_rejected"},
+    {"name": "missing-port", "overlay": {"redirectUri": "http://127.0.0.1/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "issuer-port", "overlay": {"redirectUri": "http://127.0.0.1:19427/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "reader-port", "overlay": {"redirectUri": "http://127.0.0.1:19428/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "userinfo", "overlay": {"redirectUri": "http://user@127.0.0.1:43121/ss-publish/callback"}, "errorCode": "redirect_rejected"},
+    {"name": "fragment", "overlay": {"redirectUri": "http://127.0.0.1:43121/ss-publish/callback#z"}, "errorCode": "redirect_rejected"},
+    {"name": "trailing-slash", "overlay": {"redirectUri": "http://127.0.0.1:43121/ss-publish/callback/"}, "errorCode": "redirect_rejected"},
+    {"name": "issuer-path", "overlay": {"issuer": "http://127.0.0.1:19427/ss-publish/other-issuer"}, "errorCode": "issuer_rejected"},
+    {"name": "issuer-https", "overlay": {"issuer": "https://127.0.0.1:19427/ss-publish/test-issuer"}, "errorCode": "issuer_rejected"},
+    {"name": "issuer-public", "overlay": {"issuer": "https://accounts.example/issuer"}, "errorCode": "issuer_rejected"},
+    {"name": "production-profile", "overlay": {"transportProfile": "production-secure-transport"}, "errorCode": "production_transport_not_enabled"},
+    {"name": "pkce-plain", "overlay": {"codeChallengeMethod": "plain"}, "errorCode": "pkce_rejected"},
+    {"name": "bad-client", "overlay": {"clientId": "scroll-studio-desktop"}, "errorCode": "unauthorized"},
+    {"name": "missing-account", "overlay": {"loginHint": "acct_test_nobody"}, "errorCode": "unauthorized"},
+    {"name": "admin-hint", "overlay": {"loginHint": "admin"}, "errorCode": "invalid_request", "detail": "schema"},
+    {"name": "short-state", "overlay": {"state": "short-state"}, "errorCode": "invalid_request", "detail": "schema"},
+    {"name": "star-scope", "overlay": {"scope": ["*"]}, "errorCode": "invalid_request", "detail": "schema"}
+  ]
+}
