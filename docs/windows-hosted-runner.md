@@ -2,9 +2,9 @@
 
 This is the local procedure. It is not a physical Windows desktop test of the egui window. The hosted runner executed `scripts/windows-demo.ps1` and did not start `Scroll Studio.exe`.
 
-The pair these commands were written for:
+The pair the hosted script run used:
 
-- Desktop sources that produced the passing hosted run: `72c0ed65c671fab099a7203a74f43695a9288685`
+- Desktop sources: `e70248036f1180a96fcd0b9a585960f406a72613`
 - Service pin: `464766d97087cb26a12de6e009323951c43e1596`
 
 A later documentation commit does not move the Linux window onto that service pin. The Linux window that showed comic withdrawal used listener `e3eb462a63b86f793cdf9de5a37a07090ccbc8b7`.
@@ -74,4 +74,6 @@ Download the Actions artifact whose name starts with `scroll-studio-0.13.2-` and
 
 ## What the hosted run already showed
 
-Run https://github.com/456C/scroll-studio/actions/runs/42722190076 at desktop `72c0ed65c671fab099a7203a74f43695a9288685` logged Python 3.12.10, the FFmpeg hash above, service directory `D:\a\scroll-studio\scroll-studio\service-464766d`, `Ran 30 tests` / `OK`, and Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` completing authorize, affirm, preview, reader, and withdraw. That run did not use `scripts/windows-demo.ps1`. The next hosted run of this branch executes the script and uploads `scroll-studio-service-464766d`.
+Run https://github.com/456C/scroll-studio/actions/runs/42723986006 at desktop `e70248036f1180a96fcd0b9a585960f406a72613` executed `scripts/windows-demo.ps1`. It logged Python 3.12.10 at `C:\hostedtoolcache\windows\Python\3.12.10\x64\python.exe`, png decoder True, mjpeg decoder True, `Ran 30 tests in 6.171s` / `OK`, and Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` with the lines `opened fixture authorize page`, `affirm reached the callback with code and state only`, `preview showed the uploaded paragraph`, `reader showed the published paragraph`, and `reader showed unavailable after withdraw`. Those browser lines share one log timestamp. The job uploaded `scroll-studio-service-464766d` (artifact id 13720169582, 11607074 bytes) and `scroll-studio-0.13.2-e702480-windows-portable` (artifact id 13720274253, 5760452 bytes). It did not start `Scroll Studio.exe`.
+
+Run https://github.com/456C/scroll-studio/actions/runs/42722190076 at desktop `72c0ed65c671fab099a7203a74f43695a9288685` passed the same 30 tests and the same Chrome route before `scripts/windows-demo.ps1` existed.
