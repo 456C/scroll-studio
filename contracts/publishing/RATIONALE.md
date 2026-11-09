@@ -64,8 +64,8 @@ Should the desktop be able to create a series, or will the prototype keep seedin
 
 The OS credential store is desktop work. This contract states the allowed storage records and refuses a plaintext file.
 
-Operator report, hold, and remove controls belong to the later private service, along with a loopback listener that passes these sequences.
+Operator report, hold, and remove are local browser forms on the loopback listener. They are not desktop commands.
 
 ## Next implementation step
 
-Stop here for review. The next build is a loopback service that runs these sequences, after the desktop owner accepts the command shapes.
+The loopback listener is `python3 -m prototypes.publishing.listener` on `127.0.0.1:19427`. The accepted command wire is unchanged. Desktop integration uses the pinned client branch without merging it.

@@ -110,6 +110,22 @@ Cookies ignore port, so the issuer and the reader share `http://127.0.0.1:19427`
 
 Open `canonicalUrl` or `browserPreviewUrl` in the system browser. Do not put `credential.secret` on those URLs. The browser session cookie is the reader proof. `GET` reader and asset routes send `Cache-Control: no-store` and check the live session and the current publication status. `withdrawn` and `held` return 410 and no episode bytes. Another account's session returns 404. No session returns 401 and the TEST ONLY sign-in form. `POST /ss-publish/browser/session/revoke` clears that browser session and does not revoke the desktop credential.
 
+## Running the listener
+
+From the repository root:
+
+```
+python3 -m prototypes.publishing.listener
+```
+
+The process binds only `http://127.0.0.1:19427`. It has no environment variables and no extra Python packages. `ffmpeg` and `ffprobe` must be on `PATH`. An image upload is rejected when they are missing. Restarting the process clears publications. The accounts are the synthetic `TEST-ONLY` fixtures plus `acct_test_operator` for the local operator page.
+
+Send `POST http://127.0.0.1:19427/ss-publish/commands` with `Content-Type: application/json` and `Host: 127.0.0.1:19427`. Omit `Origin`, or set it to `http://127.0.0.1:19427`. A different `Origin` is rejected. The desktop credential stays in the JSON body. Open `browserPreviewUrl` and `canonicalUrl` in the system browser after the fixture sign-in. Do not put the credential secret on those URLs.
+
+The listener also serves three routes that are not part of the accepted command contract: `GET /ss-publish/browser/series`, `GET /ss-publish/browser/operator`, and the report, hold, and remove forms under `/ss-publish/browser/`. A held publication is `410` in the browser and `not_found` on `publication.read`, because that command has no `held` error. `account.discover` reports `status: held`. There is no pause control, so cancelling a finished upload returns `already_terminal`.
+
+Prove the process with `python3 -m unittest prototypes.publishing.test_listener`. The contract checks stay `python3 -m unittest prototypes.publishing.test_contract`.
+
 ## Limits
 
 Comic caps copied from `src/export.rs` are 100 slices, 2,000,000 bytes for one slice, and 20,000,000 bytes for one episode. Prototype caps are 4096 by 4096 pixels and 4,000,000 pixels for one slice. PNG IDAT inflation stops at the image's expected byte count. Acceptance of PNG and JPEG also requires a bounded decoder to return a pixel buffer of the declared width and height. The checkpoint runs that decode with ffmpeg. A JPEG marker parse is not acceptance. The renderable fixtures are `prototypes/publishing/fixtures/media/north.png` and `north.jpg`, each 120 by 160. Prose stops at 65536 UTF-8 bytes. A string of fewer than 65536 characters can still exceed that byte cap. The schema keyword is `x-maxUtf8Bytes`. A BOM, a UTF-16 media type, and C0 controls other than tab and line feed are `media_rejected`.

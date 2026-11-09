@@ -1,0 +1,824 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import http.client
+import json
+import os
+import secrets
+import socket
+import struct
+import subprocess
+import threading
+import time
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit
+
+from prototypes.publishing.image_decode import decode_size
+from prototypes.publishing.listener import HOST, PORT, Listener, assert_loopback, live_world
+from prototypes.publishing.media import facts
+from prototypes.publishing.oracle import PROTOCOL, pkce_s256
+
+ORIGIN = "http://127.0.0.1:19427"
+REDIRECT = "http://127.0.0.1:43121/ss-publish/callback"
+EPISODES = {
+    "ep_test_lane_01": ("ser_test_lane", "Fixture Lane", "North door"),
+    "ep_test_lane_02": ("ser_test_lane", "Fixture Lane", "South stair"),
+    "ep_test_other_01": ("ser_test_other", "Other Lane", "Their door"),
+}
+
+
+class ListenerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = Listener()
+        cls.thread = threading.Thread(target=cls.server.serve, daemon=True)
+        cls.thread.start()
+        for _ in range(50):
+            try:
+                status, _headers, body = request("GET", "/ss-publish/browser/series")
+                if status == 401 and b"TEST ONLY" in body:
+                    return
+            except OSError:
+                pass
+        raise RuntimeError("listener did not accept a loopback connection")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        with self.server.state_lock:
+            self.server.world = live_world()
+
+    def test_bind_refuses_non_loopback(self):
+        with self.assertRaises(RuntimeError):
+            assert_loopback("0.0.0.0")
+        self.assertEqual(self.server.server_address[:2], (HOST, PORT))
+        source = (Path(__file__).resolve().parents[2] / "prototypes" / "publishing" / "listener.py").read_text()
+        self.assertNotIn("FixtureHarness", source)
+        self.assertNotIn("loginHint", source)
+        self.assertNotIn("testOnlyRedirect", source)
+
+    def test_publish_preview_reader_and_pixels(self):
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        png = facts("png")
+        jpeg = facts("jpeg")
+        uploaded = upload_comic(credential, "ep_test_lane_01", png)
+        preview = uploaded["result"]["acknowledgement"]["browserPreviewUrl"]
+        revision = uploaded["result"]["acknowledgement"]["revisionId"]
+        self.assertNotIn(credential["secret"], preview)
+        status, headers, body = request("GET", urlsplit(preview).path, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn(b"width=360", body)
+        self.assertIn(b"North door", body)
+        self.assertIn(b"South stair", body)
+        self.assertNotIn(credential["secret"].encode(), body)
+        asset = f"/ss-publish/browser/preview-assets/ser_test_lane/ep_test_lane_01/{revision}/1"
+        status, headers, raw = request("GET", asset, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "image/png")
+        self.assertEqual(decode_size(raw, 4_000_000), (120, 160))
+        second = upload_comic(credential, "ep_test_lane_01", jpeg)
+        second_revision = second["result"]["acknowledgement"]["revisionId"]
+        self.assertNotEqual(revision, second_revision)
+        status, _headers, first_bytes = request("GET", asset, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertTrue(first_bytes.startswith(b"\x89PNG"))
+        jpeg_asset = f"/ss-publish/browser/preview-assets/ser_test_lane/ep_test_lane_01/{second_revision}/1"
+        status, headers, jpeg_bytes = request("GET", jpeg_asset, cookie=cookie)
+        self.assertEqual(headers["content-type"], "image/jpeg")
+        self.assertEqual(decode_size(jpeg_bytes, 4_000_000), (120, 160))
+        confirmed = confirm(credential, "ep_test_lane_01", second_revision)
+        canonical = confirmed["result"]["acknowledgement"]["canonicalUrl"]
+        self.assertTrue(canonical.startswith(ORIGIN + "/ss-publish/browser/reader/"))
+        publication_id = confirmed["result"]["acknowledgement"]["publicationId"]
+        status, headers, page = request("GET", "/ss-publish/browser/reader/" + publication_id, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn(b"TEST ONLY", page)
+        reader_asset = f"/ss-publish/browser/assets/{publication_id}/1"
+        status, _headers, served = request("GET", reader_asset, cookie=cookie)
+        self.assertEqual(decode_size(served, 4_000_000), (120, 160))
+        status, stale = command(
+            "publication.confirm",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(stale["error"]["code"], "stale_revision")
+        status, page_headers, series = request("GET", "/ss-publish/browser/series", cookie=cookie)
+        self.assertEqual(status, 200)
+        text = series.decode("utf-8")
+        self.assertLess(text.index("North door"), text.index("South stair"))
+        self.assertNotIn("Other Lane", text)
+        self.assertIn("not published", text)
+        status, _headers, guessed = request("GET", f"/ss-publish/browser/assets/{publication_id}/9", cookie=cookie)
+        self.assertEqual(status, 404)
+        self.assertNotIn(b"\xff\xd8", guessed)
+        status, denied = command(
+            "publication.read",
+            {"canonicalUrl": f"{ORIGIN}/ss-publish/browser/assets/{publication_id}/1"},
+            credential,
+        )
+        self.assertEqual(denied["error"]["code"], "asset_not_addressable")
+        _other_cookie, other, _other_location = sign_in("acct_test_owner_b")
+        status, hidden = command("publication.read", {"canonicalUrl": canonical}, other)
+        self.assertEqual(status, 403)
+        self.assertEqual(hidden["error"]["code"], "not_owner")
+        status, _headers, foreign = request("GET", "/ss-publish/browser/reader/" + publication_id, cookie=_other_cookie)
+        self.assertEqual(status, 404)
+        self.assertFalse(foreign.startswith(b"\xff\xd8"))
+        self.assertNotIn(b"\x89PNG", foreign)
+
+    def test_prose_unicode_preview_and_byte_cap(self):
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        first = "first snow 雪"
+        second = "second snow 雪"
+        opened = upload_prose(credential, "ep_test_lane_02", first)
+        revision = opened["result"]["acknowledgement"]["revisionId"]
+        again = upload_prose(credential, "ep_test_lane_02", second)
+        preview = opened["result"]["acknowledgement"]["browserPreviewUrl"]
+        status, _headers, page = request("GET", urlsplit(preview).path, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(first.encode(), page)
+        self.assertNotIn(second.encode(), page)
+        self.assertIn(revision, preview)
+        self.assertNotIn(again["result"]["acknowledgement"]["revisionId"], preview)
+        status, rejected = upload_prose(credential, "ep_test_lane_02", "雪" * 21846, expect_ok=False)
+        self.assertEqual(status, 400)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(rejected["error"]["detail"], "schema")
+
+    def test_replay_revoke_expiry_cancel_and_recovery(self):
+        state = "state-" + secrets.token_hex(24)
+        verifier = secrets.token_urlsafe(48)
+        status, opened = command(
+            "auth.begin",
+            {
+                "transportProfile": "local-http-isolated-fixture",
+                "issuer": PROTOCOL["issuer"]["exact"],
+                "redirectUri": REDIRECT,
+                "codeChallengeMethod": "S256",
+                "codeChallenge": pkce_s256(verifier),
+                "state": state,
+                "clientId": PROTOCOL["clientId"],
+                "scope": ["prototype:creator"],
+            },
+        )
+        self.assertEqual(status, 200)
+        parts = urlsplit(opened["result"]["authorizationUrl"])
+        _status, _headers, page = request("GET", parts.path + "?" + parts.query)
+        _status, headers, _body = request(
+            "POST",
+            "/ss-publish/browser/affirm",
+            urlencode({"csrf": hidden(page, "csrf"), "state": state, "accountId": "acct_test_owner_a"}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+        )
+        query = dict(parse_qsl(urlsplit(headers["location"]).query))
+        exchange_body = {
+            "code": query["code"],
+            "codeVerifier": verifier,
+            "redirectUri": REDIRECT,
+            "state": query["state"],
+            "issuer": PROTOCOL["issuer"]["exact"],
+        }
+        status, exchanged = command("auth.exchange", exchange_body, key="exchange-replay-key01")
+        self.assertEqual(status, 200)
+        credential = {
+            "credentialId": exchanged["result"]["credential"]["credentialId"],
+            "secret": exchanged["result"]["credential"]["secret"],
+        }
+        status, replayed = command("auth.exchange", exchange_body, key="exchange-replay-key01")
+        self.assertEqual(status, 401)
+        self.assertEqual(replayed["error"]["code"], "exchange_consumed")
+        self.assertNotIn("result", replayed)
+        self.assertNotIn(credential["secret"], json.dumps(replayed))
+        status, discovered = command("account.discover", {}, credential)
+        self.assertEqual(status, 200)
+        self.assertTrue(discovered["result"]["account"]["series"])
+        status, same = command("account.discover", {}, credential, key="discover-live-key-0001")
+        self.assertEqual(status, 200)
+        with self.server.state_lock:
+            stored = self.server.world["runtime"]["credentials"][credential["credentialId"]]
+            stored["expiresAt"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        status, expired = command("account.discover", {}, credential, key="discover-live-key-0001")
+        self.assertEqual(status, 401)
+        self.assertEqual(expired["error"]["code"], "credential_expired")
+        self.assertNotIn("result", expired)
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        status, revoked = command("auth.revoke", {}, credential)
+        self.assertTrue(revoked["result"]["revoked"])
+        status, after = command("account.discover", {}, credential)
+        self.assertEqual(after["error"]["code"], "credential_revoked")
+        status, page_headers, page = request("GET", "/ss-publish/browser/series", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Fixture Lane", page)
+        csrf = hidden(page, "csrf")
+        status, headers, body = request(
+            "POST",
+            "/ss-publish/browser/session/revoke",
+            urlencode({"csrf": csrf}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(b"Session revoked", body)
+        status, _headers, signed_out = request("GET", "/ss-publish/browser/series", cookie=cookie)
+        self.assertEqual(status, 401)
+        self.assertIn(b"TEST ONLY", signed_out)
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        uploaded = upload_comic(credential, "ep_test_lane_01", facts("png"))
+        status, cancelled = command(
+            "operation.cancel",
+            {"targetIdempotencyKey": "upload-finished-key01"},
+            credential,
+        )
+        self.assertEqual(cancelled["error"]["code"], "not_found")
+        status, terminal = command(
+            "operation.cancel",
+            {"targetIdempotencyKey": uploaded["idempotencyKey"]},
+            credential,
+        )
+        self.assertEqual(terminal["error"]["code"], "already_terminal")
+        status, missing = command("auth.recover", {}, credential)
+        self.assertEqual(missing["error"]["code"], "unknown_command")
+        status, refresh = command(
+            "auth.exchange",
+            {
+                "code": "not-a-live-code",
+                "codeVerifier": "b" * 43,
+                "redirectUri": REDIRECT,
+                "state": "synthetic-state-does-not-exist-000000000000",
+                "issuer": PROTOCOL["issuer"]["exact"],
+                "grantType": "refresh_token",
+            },
+        )
+        self.assertEqual(refresh["error"]["code"], "unsupported_grant")
+        self.assertNotIn(credential["secret"], json.dumps(refresh))
+
+    def test_browser_csrf_host_origin_and_withdrawal(self):
+        status, rejected = command(
+            "auth.begin",
+            begin_body("owner-a-state-00000000000000000000000000000001"),
+            origin="http://evil.example",
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(rejected["error"]["code"], "unauthorized")
+        status, _headers, bad_host = request(
+            "POST",
+            "/ss-publish/commands",
+            b"{}",
+            {"content-type": "application/json", "host": "127.0.0.1:9"},
+        )
+        self.assertEqual(status, 400)
+        status, hinted = command(
+            "auth.begin",
+            {**begin_body("owner-a-state-00000000000000000000000000000002"), "loginHint": "acct_test_owner_a"},
+        )
+        self.assertEqual(hinted["error"]["detail"], "schema")
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        status, _headers, page = request("GET", "/ss-publish/browser/authorize?state=nope")
+        self.assertEqual(status, 400)
+        uploaded = upload_comic(credential, "ep_test_lane_01", facts("png"))
+        revision = uploaded["result"]["acknowledgement"]["revisionId"]
+        confirmed = confirm(credential, "ep_test_lane_01", revision)
+        publication_id = confirmed["result"]["acknowledgement"]["publicationId"]
+        canonical = confirmed["result"]["acknowledgement"]["canonicalUrl"]
+        asset = f"/ss-publish/browser/assets/{publication_id}/1"
+        status, headers, raw = request("GET", asset, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertTrue(raw.startswith(b"\x89PNG"))
+        command(
+            "publication.withdraw",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "publicationId": publication_id,
+            },
+            credential,
+        )
+        status, replayed = command(
+            "publication.confirm",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+            key=confirmed["idempotencyKey"],
+        )
+        self.assertTrue(replayed["idempotentReplay"])
+        self.assertFalse(replayed["result"]["acknowledgement"]["authoritative"])
+        self.assertNotIn("status", replayed["result"]["acknowledgement"])
+        status, current = command("publication.read", {"canonicalUrl": canonical}, credential)
+        self.assertEqual(status, 410)
+        self.assertEqual(current["error"]["code"], "withdrawn")
+        status, _headers, gone = request("GET", asset, cookie=cookie)
+        self.assertEqual(status, 410)
+        self.assertEqual(gone, b"")
+        status, _headers, html = request("GET", "/ss-publish/browser/reader/" + publication_id, cookie=cookie)
+        self.assertEqual(status, 410)
+        self.assertNotIn(b"\x89PNG", html)
+        preview = uploaded["result"]["acknowledgement"]["browserPreviewUrl"]
+        status, _headers, still = request("GET", f"/ss-publish/browser/preview-assets/ser_test_lane/ep_test_lane_01/{revision}/1", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertTrue(still.startswith(b"\x89PNG"))
+        self.assertIn(revision, preview)
+        status, _headers, form = request("GET", "/ss-publish/browser/series", cookie=cookie)
+        csrf = hidden(form, "csrf")
+        status, _headers, _body = request(
+            "POST",
+            "/ss-publish/browser/affirm",
+            urlencode({"csrf": "not-the-token", "state": "state-0000000000000000000000000000000000000000", "accountId": "acct_test_owner_a"}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": "https://evil.example"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 403)
+        status, _headers, _body = request(
+            "POST",
+            "/ss-publish/browser/session/revoke",
+            urlencode({"csrf": csrf}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": "http://127.0.0.1:1"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 403)
+
+    def test_operator_report_hold_remove(self):
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        uploaded = upload_comic(credential, "ep_test_lane_01", facts("png"))
+        revision = uploaded["result"]["acknowledgement"]["revisionId"]
+        confirmed = confirm(credential, "ep_test_lane_01", revision)
+        publication_id = confirmed["result"]["acknowledgement"]["publicationId"]
+        canonical = confirmed["result"]["acknowledgement"]["canonicalUrl"]
+        status, _headers, page = request("GET", "/ss-publish/browser/reader/" + publication_id, cookie=cookie)
+        csrf = hidden(page, "csrf")
+        status, _headers, reported = request(
+            "POST",
+            "/ss-publish/browser/report",
+            urlencode({"csrf": csrf, "publicationId": publication_id, "reason": "synthetic report"}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(b"Report recorded", reported)
+        status, _headers, hidden_page = request("GET", "/ss-publish/browser/operator", cookie=cookie)
+        self.assertEqual(status, 404)
+        operator_cookie, _operator, _location = sign_in("acct_test_operator")
+        status, _headers, board = request("GET", "/ss-publish/browser/operator", cookie=operator_cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"synthetic report", board)
+        self.assertIn(publication_id.encode(), board)
+        operator_csrf = hidden(board, "csrf")
+        status, _headers, held = request(
+            "POST",
+            "/ss-publish/browser/operator/hold",
+            urlencode({"csrf": operator_csrf, "publicationId": publication_id}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+            cookie=operator_cookie,
+        )
+        self.assertEqual(status, 200)
+        status, discovered = command("account.discover", {}, credential)
+        episode = discovered["result"]["account"]["series"][0]["episodes"][0]
+        self.assertEqual(episode["publication"]["status"], "held")
+        status, unreadable = command("publication.read", {"canonicalUrl": canonical}, credential)
+        self.assertEqual(unreadable["error"]["code"], "not_found")
+        status, _headers, blocked = request("GET", f"/ss-publish/browser/assets/{publication_id}/1", cookie=cookie)
+        self.assertEqual(status, 410)
+        self.assertEqual(blocked, b"")
+        status, _headers, held_page = request("GET", "/ss-publish/browser/reader/" + publication_id, cookie=cookie)
+        self.assertEqual(status, 410)
+        self.assertNotIn(b"\x89PNG", held_page)
+        status, _headers, board = request("GET", "/ss-publish/browser/operator", cookie=operator_cookie)
+        operator_csrf = hidden(board, "csrf")
+        status, _headers, removed = request(
+            "POST",
+            "/ss-publish/browser/operator/remove",
+            urlencode({"csrf": operator_csrf, "publicationId": publication_id}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+            cookie=operator_cookie,
+        )
+        self.assertEqual(status, 200)
+        status, gone = command("publication.read", {"canonicalUrl": canonical}, credential)
+        self.assertEqual(gone["error"]["code"], "withdrawn")
+        status, preview = command(
+            "episode.preview",
+            {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": revision},
+            credential,
+        )
+        self.assertEqual(preview["error"]["code"], "not_found")
+        status, _headers, asset = request(
+            "GET",
+            f"/ss-publish/browser/preview-assets/ser_test_lane/ep_test_lane_01/{revision}/1",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(asset, b"")
+        status, withdrawn = command(
+            "publication.withdraw",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "publicationId": publication_id,
+            },
+            credential,
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(withdrawn["result"]["acknowledgement"]["authoritative"])
+
+    def test_body_cap_closes_before_the_payload(self):
+        conn = http.client.HTTPConnection(HOST, PORT, timeout=5)
+        conn.putrequest("POST", "/ss-publish/commands")
+        conn.putheader("Host", "127.0.0.1:19427")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "28000001")
+        conn.endheaders()
+        status = conn.getresponse().status
+        conn.close()
+        self.assertEqual(status, 413)
+
+    def test_phone_viewport_screenshot(self):
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        uploaded = upload_comic(credential, "ep_test_lane_01", facts("png"))
+        revision = uploaded["result"]["acknowledgement"]["revisionId"]
+        confirmed = confirm(credential, "ep_test_lane_01", revision)
+        publication_id = confirmed["result"]["acknowledgement"]["publicationId"]
+        url = f"{ORIGIN}/ss-publish/browser/reader/{publication_id}"
+        out = Path("/tmp/scroll-reader-360.png")
+        text = capture(url, cookie, out)
+        self.assertIn("North door", text)
+        self.assertIn("TEST ONLY", text)
+        self.assertGreater(out.stat().st_size, 1000)
+        artifact = Path("/opt/cursor/artifacts/reader-360.png")
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(out.read_bytes())
+
+
+def begin_body(state):
+    verifier = "verifier-scroll-studio-live-listener-0000000001"
+    return {
+        "transportProfile": "local-http-isolated-fixture",
+        "issuer": PROTOCOL["issuer"]["exact"],
+        "redirectUri": REDIRECT,
+        "codeChallengeMethod": "S256",
+        "codeChallenge": pkce_s256(verifier),
+        "state": state,
+        "clientId": PROTOCOL["clientId"],
+        "scope": ["prototype:creator"],
+    }
+
+
+def sign_in(account_id):
+    state = "state-" + secrets.token_hex(24)
+    verifier = secrets.token_urlsafe(48)
+    status, opened = command(
+        "auth.begin",
+        {
+            "transportProfile": "local-http-isolated-fixture",
+            "issuer": PROTOCOL["issuer"]["exact"],
+            "redirectUri": REDIRECT,
+            "codeChallengeMethod": "S256",
+            "codeChallenge": pkce_s256(verifier),
+            "state": state,
+            "clientId": PROTOCOL["clientId"],
+            "scope": ["prototype:creator"],
+        },
+    )
+    if status != 200:
+        raise AssertionError(opened)
+    parts = urlsplit(opened["result"]["authorizationUrl"])
+    status, _headers, page = request("GET", parts.path + "?" + parts.query)
+    if status != 200 or b"TEST ONLY" not in page or account_id.encode() not in page:
+        raise AssertionError(page[:200])
+    status, headers, _body = request(
+        "POST",
+        "/ss-publish/browser/affirm",
+        urlencode({"csrf": hidden(page, "csrf"), "state": state, "accountId": account_id}).encode(),
+        {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+    )
+    if status != 302:
+        raise AssertionError(status)
+    location = headers["location"]
+    query = dict(parse_qsl(urlsplit(location).query))
+    cookie = headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+    status, exchanged = command(
+        "auth.exchange",
+        {
+            "code": query["code"],
+            "codeVerifier": verifier,
+            "redirectUri": REDIRECT,
+            "state": query["state"],
+            "issuer": PROTOCOL["issuer"]["exact"],
+        },
+    )
+    if status != 200:
+        raise AssertionError(exchanged)
+    credential = exchanged["result"]["credential"]
+    proof = {"credentialId": credential["credentialId"], "secret": credential["secret"]}
+    if not proof["credentialId"].startswith("cred_live_") or not proof["secret"].startswith("sek_live_"):
+        raise AssertionError("credential was not minted by the live helper")
+    return cookie, proof, location
+
+
+def upload_comic(credential, episode_id, media):
+    series_id, series_title, episode_title = EPISODES[episode_id]
+    status, response = command(
+        "episode.upload",
+        {
+            "seriesId": series_id,
+            "episodeId": episode_id,
+            "selection": {"mode": "selected-episode-only", "localStoryRef": "local-story", "localEpisodeRef": episode_id},
+            "publicMetadata": {
+                "seriesTitle": series_title,
+                "episodeTitle": episode_title,
+                "synopsis": "Synthetic episode.",
+                "language": "en",
+            },
+            "completion": "seal",
+            "expectedSha256": media["sha256"],
+            "content": {
+                "kind": "comic",
+                "slices": [
+                    {
+                        "ordinal": 1,
+                        "mediaType": media["mediaType"],
+                        "width": media["width"],
+                        "height": media["height"],
+                        "byteLength": media["byteLength"],
+                        "sha256": media["sha256"],
+                        "bytesBase64": media["bytesBase64"],
+                    }
+                ],
+            },
+        },
+        credential,
+    )
+    if status != 200:
+        raise AssertionError(response)
+    return response
+
+
+def upload_prose(credential, episode_id, text, expect_ok=True):
+    series_id, series_title, episode_title = EPISODES[episode_id]
+    raw = text.encode("utf-8")
+    status, response = command(
+        "episode.upload",
+        {
+            "seriesId": series_id,
+            "episodeId": episode_id,
+            "selection": {"mode": "selected-episode-only"},
+            "publicMetadata": {
+                "seriesTitle": series_title,
+                "episodeTitle": episode_title,
+                "synopsis": "Synthetic episode.",
+                "language": "en",
+            },
+            "completion": "seal",
+            "expectedSha256": hashlib.sha256(raw).hexdigest(),
+            "content": {"kind": "prose", "mediaType": "text/plain; charset=utf-8", "text": text},
+        },
+        credential,
+    )
+    if expect_ok and status != 200:
+        raise AssertionError(response)
+    if expect_ok:
+        return response
+    return status, response
+
+
+def confirm(credential, episode_id, revision_id):
+    series_id = EPISODES[episode_id][0]
+    status, response = command(
+        "publication.confirm",
+        {
+            "seriesId": series_id,
+            "episodeId": episode_id,
+            "revisionId": revision_id,
+            "policyEligibility": "private-prototype-only",
+        },
+        credential,
+    )
+    if status != 200:
+        raise AssertionError(response)
+    return response
+
+
+def command(name, body, credential=None, key=None, origin=None):
+    envelope = {
+        "protocol": PROTOCOL["protocol"],
+        "command": name,
+        "idempotencyKey": key or secrets.token_hex(16),
+        "body": body,
+    }
+    if credential is not None:
+        envelope["credential"] = credential
+    data = json.dumps(envelope).encode("utf-8")
+    headers = {"content-type": "application/json"}
+    if origin is not None:
+        headers["origin"] = origin
+    status, _headers, raw = request("POST", "/ss-publish/commands", data, headers)
+    parsed = json.loads(raw.decode("utf-8"))
+    parsed["idempotencyKey"] = envelope["idempotencyKey"]
+    return status, parsed
+
+
+def request(method, path, body=None, headers=None, cookie=None):
+    conn = http.client.HTTPConnection(HOST, PORT, timeout=20)
+    sent = dict(headers or {})
+    sent.setdefault("host", "127.0.0.1:19427")
+    if cookie is not None:
+        sent["cookie"] = "ss_publish_fixture=" + cookie
+    conn.request(method, path, body=body, headers=sent)
+    response = conn.getresponse()
+    payload = response.read()
+    header_map = {key.lower(): value for key, value in response.getheaders()}
+    conn.close()
+    return response.status, header_map, payload
+
+
+def hidden(page, name):
+    marker = f'name="{name}" value="'.encode()
+    start = page.find(marker)
+    if start < 0:
+        raise AssertionError(name)
+    rest = page[start + len(marker) :]
+    return rest.split(b'"', 1)[0].decode("ascii")
+
+
+def capture(url, cookie, out):
+    profile = Path("/tmp/ss-chrome-profile")
+    profile.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(
+        [
+            "google-chrome",
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            f"--user-data-dir={profile}",
+            "--window-size=360,780",
+            "--remote-debugging-port=9333",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        version = None
+        for _ in range(80):
+            try:
+                with urllib_get("http://127.0.0.1:9333/json/version") as raw:
+                    version = json.loads(raw.read().decode())
+                    break
+            except OSError:
+                time.sleep(0.1)
+        if version is None:
+            raise AssertionError("chrome did not open a debugging port")
+        browser = ws_connect(version["webSocketDebuggerUrl"])
+        target = cdp(browser, "Target.createTarget", {"url": "about:blank"})
+        session = cdp(browser, "Target.attachToTarget", {"targetId": target["result"]["targetId"], "flatten": True})
+        session_id = session["result"]["sessionId"]
+        cdp(browser, "Network.enable", {}, session_id)
+        cdp(browser, "Page.enable", {}, session_id)
+        cdp(
+            browser,
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 360, "height": 780, "deviceScaleFactor": 1, "mobile": True},
+            session_id,
+        )
+        cdp(
+            browser,
+            "Network.setCookie",
+            {
+                "name": "ss_publish_fixture",
+                "value": cookie,
+                "url": ORIGIN,
+                "path": "/ss-publish/browser",
+                "httpOnly": True,
+                "sameSite": "Strict",
+            },
+            session_id,
+        )
+        cdp(browser, "Page.navigate", {"url": url}, session_id)
+        time.sleep(0.8)
+        text = cdp(
+            browser,
+            "Runtime.evaluate",
+            {"expression": "document.body.innerText", "returnByValue": True},
+            session_id,
+        )
+        shot = cdp(browser, "Page.captureScreenshot", {"format": "png"}, session_id)
+        out.write_bytes(base64.b64decode(shot["result"]["data"]))
+        browser.close()
+        return text["result"]["result"]["value"]
+    finally:
+        try:
+            os.killpg(proc.pid, 15)
+            proc.wait(timeout=3)
+        except ProcessLookupError:
+            pass
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, 9)
+            proc.wait(timeout=3)
+
+
+def urllib_get(url):
+    import urllib.request
+
+    return urllib.request.urlopen(url, timeout=0.2)
+
+
+def cdp(sock, method, params, session_id=None):
+    cdp.next_id += 1
+    message = {"id": cdp.next_id, "method": method, "params": params}
+    if session_id is not None:
+        message["sessionId"] = session_id
+    ws_send(sock, json.dumps(message))
+    while True:
+        opcode, payload = ws_read(sock)
+        if opcode != 1:
+            continue
+        parsed = json.loads(payload)
+        if parsed.get("id") == cdp.next_id:
+            if "error" in parsed:
+                raise AssertionError(parsed["error"])
+            return parsed
+
+
+cdp.next_id = 0
+
+
+def ws_connect(url):
+    parts = urlsplit(url)
+    sock = socket.create_connection((parts.hostname, parts.port), 5)
+    key = base64.b64encode(os.urandom(16)).decode()
+    request = (
+        f"GET {parts.path} HTTP/1.1\r\nHost: {parts.hostname}:{parts.port}\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    sock.sendall(request.encode())
+    data = b""
+    while b"\r\n\r\n" not in data:
+        data += sock.recv(4096)
+    return sock
+
+
+def ws_send(sock, text):
+    payload = text.encode()
+    mask = os.urandom(4)
+    header = bytearray([0x81])
+    length = len(payload)
+    if length < 126:
+        header.append(0x80 | length)
+    else:
+        header.append(0x80 | 126)
+        header.extend(struct.pack(">H", length))
+    header.extend(mask)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    sock.sendall(header + masked)
+
+
+def ws_read(sock):
+    header = _read(sock, 2)
+    opcode = header[0] & 0x0F
+    length = header[1] & 0x7F
+    if length == 126:
+        length = struct.unpack(">H", _read(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack(">Q", _read(sock, 8))[0]
+    if header[1] & 0x80:
+        mask = _read(sock, 4)
+        data = bytes(byte ^ mask[index % 4] for index, byte in enumerate(_read(sock, length)))
+    else:
+        data = _read(sock, length)
+    return opcode, data
+
+
+def _read(sock, length):
+    data = b""
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise OSError("socket closed")
+        data += chunk
+    return data
+
+
+if __name__ == "__main__":
+    unittest.main()

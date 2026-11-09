@@ -470,6 +470,9 @@ def _preview(world, cred, body):
     episode, problem = _owned_episode(world, cred, body["seriesId"], body["episodeId"])
     if problem:
         return _fail("episode.preview", problem)
+    record = world["runtime"]["records"].get(episode["episodeId"])
+    if record is not None and record.get("removed"):
+        return _fail("episode.preview", "not_found")
     revision = _revision(world, episode["episodeId"], body["revisionId"])
     if revision is None:
         return _fail("episode.preview", "not_found")
@@ -572,7 +575,7 @@ def _prepare_withdraw(world, cred, body):
         return ("error", _fail("publication.withdraw", "not_found"))
     if body["revisionId"] != record["publishedRevisionId"]:
         return ("error", _fail("publication.withdraw", "stale_revision"))
-    if record["status"] not in ("published", "withdrawn"):
+    if record["status"] not in ("published", "withdrawn", "held"):
         return ("error", _fail("publication.withdraw", "not_found"))
     return ("ok", record)
 

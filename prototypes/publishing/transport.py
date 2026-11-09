@@ -39,6 +39,16 @@ def dispatch(world, request, harness=None):
     clock = harness.now() if harness is not None else server_now()
     if path == SPEC["command"]["path"]:
         return _command(world, method, headers, body, harness)
+    if path == "/ss-publish/browser/series" and method == "GET":
+        return _series(world, headers, clock, harness)
+    if path == "/ss-publish/browser/operator" and method == "GET":
+        return _operator_page(world, headers, clock, harness)
+    if path == "/ss-publish/browser/report" and method == "POST":
+        return _report(world, headers, body, clock)
+    if path == "/ss-publish/browser/operator/hold" and method == "POST":
+        return _operator_hold(world, headers, body, clock)
+    if path == "/ss-publish/browser/operator/remove" and method == "POST":
+        return _operator_remove(world, headers, body, clock)
     if path == SPEC["routes"]["authorize"] and method == "GET":
         return _authorize(world, query, headers, clock, harness)
     if path == SPEC["routes"]["affirm"] and method == "POST":
@@ -115,6 +125,9 @@ def cookie_sent(cookie_path, request_path):
 def _command(world, method, headers, body, harness):
     if method != "POST":
         return _json_error(405, "invalid_request", {"allow": "POST"})
+    origin = headers.get("origin")
+    if origin is not None and origin != ORIGIN:
+        return _json_error(403, "unauthorized")
     if len(body) > SPEC["command"]["maxBodyBytes"]:
         return _json_error(413, "limit_exceeded")
     if headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
@@ -205,7 +218,7 @@ def _reader(world, publication_id, headers, clock, harness):
     if session is None:
         return _sign_in(world, path, clock, harness)
     record = _record_by_publication(world, publication_id)
-    if record is None or _owner(world, record) != session["accountId"]:
+    if record is None or record.get("removed") or _owner(world, record) != session["accountId"]:
         return _html(404, _bare("Not found."))
     if record["status"] in SPEC["deniedReaderStatuses"]:
         return _html(410, _bare("Unavailable."))
@@ -229,7 +242,13 @@ def _preview(world, rest, headers, clock, harness):
     record = world["runtime"]["records"].get(episode_id)
     if record is not None:
         revision = next((item for item in record["revisions"] if item["revisionId"] == revision_id), None)
-    if episode is None or episode["seriesId"] != series_id or episode["ownerAccountId"] != session["accountId"] or revision is None:
+    if (
+        episode is None
+        or episode["seriesId"] != series_id
+        or episode["ownerAccountId"] != session["accountId"]
+        or revision is None
+        or record.get("removed")
+    ):
         return _html(404, _bare("Not found."))
     return _html(200, _episode_html(world, record, revision, preview=True, csrf=session["csrf"]))
 
@@ -243,7 +262,7 @@ def _reader_asset(world, rest, headers, clock):
         return HttpResult(404, {"cache-control": "no-store"}, b"")
     publication_id, ordinal = parts
     record = _record_by_publication(world, publication_id)
-    if record is None or _owner(world, record) != session["accountId"]:
+    if record is None or record.get("removed") or _owner(world, record) != session["accountId"]:
         return HttpResult(404, {"cache-control": "no-store"}, b"")
     if record["status"] in SPEC["deniedReaderStatuses"] or record["status"] != "published":
         return HttpResult(410, {"cache-control": "no-store"}, b"")
@@ -268,6 +287,7 @@ def _preview_asset(world, rest, headers, clock):
         or episode["seriesId"] != series_id
         or episode["ownerAccountId"] != session["accountId"]
         or revision is None
+        or record.get("removed")
     ):
         return HttpResult(404, {"cache-control": "no-store"}, b"")
     return _slice_response(world, record, revision, ordinal)
@@ -286,19 +306,18 @@ def _picker(world, csrf, state, nxt):
         hidden += f'<input type="hidden" name="state" value="{escape(state)}">'
     if nxt:
         hidden += f'<input type="hidden" name="next" value="{escape(nxt)}">'
-    return (
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<title>TEST ONLY fixture sign-in</title></head><body>"
+    return _page(
+        "TEST ONLY fixture sign-in",
         "<p>TEST ONLY. These accounts are synthetic publishing fixtures. "
         "They are not production identities.</p>"
-        f'<form method="post" action="{SPEC["routes"]["affirm"]}">{hidden}{"".join(buttons)}</form>'
-        "</body></html>"
+        f'<form method="post" action="{SPEC["routes"]["affirm"]}">{hidden}{"".join(buttons)}</form>',
     )
 
 
 def _episode_html(world, record, revision, preview, csrf):
     content = revision["content"]
-    series_id = world["episodes"][record["episodeId"]]["seriesId"]
+    episode = world["episodes"][record["episodeId"]]
+    series_id = episode["seriesId"]
     if content["kind"] == "prose":
         body = f"<pre>{escape(content['text'])}</pre>"
     else:
@@ -319,11 +338,206 @@ def _episode_html(world, record, revision, preview, csrf):
         f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
         '<button type="submit">Revoke session</button></form>'
     )
+    report = ""
+    if not preview and record.get("publicationId"):
+        report = (
+            f'<form method="post" action="/ss-publish/browser/report">'
+            f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
+            f'<input type="hidden" name="publicationId" value="{escape(record["publicationId"])}">'
+            '<label>Report <input name="reason" maxlength="400" required></label>'
+            '<button type="submit">Send report</button></form>'
+        )
+    return _page(
+        f"TEST ONLY {kind}",
+        "<p>TEST ONLY private fixture reader.</p>"
+        f"<p>{escape(episode['seriesTitle'])}</p>"
+        f"{_episode_nav(world, episode, preview)}"
+        f"<h1>{escape(episode['title'])}</h1>"
+        f"{body}{report}{revoke}",
+    )
+
+
+def _episode_nav(world, episode, preview):
+    series = world["series"][episode["seriesId"]]
+    ordered = sorted(series["episodes"], key=lambda item: item["ordinal"])
+    links = []
+    previous = ""
+    nxt = ""
+    for item in ordered:
+        href = _episode_href(world, item["episodeId"], preview)
+        label = f"{item['ordinal']}. {item['title']}"
+        if href is None:
+            links.append(f"<li>{escape(label)} <span>not published</span></li>")
+            continue
+        links.append(f'<li><a href="{escape(href)}">{escape(label)}</a></li>')
+    index = [item["episodeId"] for item in ordered].index(episode["episodeId"])
+    if index > 0:
+        href = _episode_href(world, ordered[index - 1]["episodeId"], preview)
+        if href:
+            previous = f'<a href="{escape(href)}">Previous</a>'
+    if index + 1 < len(ordered):
+        href = _episode_href(world, ordered[index + 1]["episodeId"], preview)
+        if href:
+            nxt = f'<a href="{escape(href)}">Next</a>'
+    return (
+        '<p><a href="/ss-publish/browser/series">Series</a></p>'
+        f"<ol>{''.join(links)}</ol><p>{previous} {nxt}</p>"
+    )
+
+
+def _episode_href(world, episode_id, preview):
+    record = world["runtime"]["records"].get(episode_id)
+    if record is None or record.get("removed") or not record["revisions"]:
+        return None
+    if preview:
+        revision = record["revisions"][-1]
+        episode = world["episodes"][episode_id]
+        return f"{SPEC['routes']['preview']}{episode['seriesId']}/{episode_id}/{revision['revisionId']}"
+    if record["status"] == "published" and record.get("publicationId"):
+        return SPEC["routes"]["reader"] + record["publicationId"]
+    return None
+
+
+def _series(world, headers, clock, harness):
+    session = _session(world, headers, clock)
+    path = "/ss-publish/browser/series"
+    if session is None:
+        return _sign_in(world, path, clock, harness)
+    blocks = []
+    for series in sorted(world["series"].values(), key=lambda item: item["seriesId"]):
+        if series["ownerAccountId"] != session["accountId"]:
+            continue
+        items = []
+        for episode in sorted(series["episodes"], key=lambda item: item["ordinal"]):
+            href = _episode_href(world, episode["episodeId"], preview=False)
+            label = f"{episode['ordinal']}. {episode['title']}"
+            if href is None:
+                items.append(f"<li>{escape(label)} <span>not published</span></li>")
+            else:
+                items.append(f'<li><a href="{escape(href)}">{escape(label)}</a></li>')
+        blocks.append(f"<section><h1>{escape(series['title'])}</h1><ol>{''.join(items)}</ol></section>")
+    if not blocks:
+        blocks.append("<p>No series.</p>")
+    revoke = (
+        f'<form method="post" action="{SPEC["routes"]["revokeSession"]}">'
+        f'<input type="hidden" name="csrf" value="{escape(session["csrf"])}">'
+        '<button type="submit">Revoke session</button></form>'
+    )
+    return _html(200, _page("TEST ONLY series", "<p>TEST ONLY private fixture reader.</p>" + "".join(blocks) + revoke))
+
+
+def _operator_page(world, headers, clock, harness):
+    session = _session(world, headers, clock)
+    if session is None:
+        return _sign_in(world, "/ss-publish/browser/operator", clock, harness)
+    if not _operator(world, session):
+        return _html(404, _bare("Not found."))
+    reports = []
+    for report in world["runtime"].get("reports", []):
+        reports.append(
+            "<li>"
+            f"{escape(report['publicationId'])} {escape(report['accountId'])} {escape(report['reason'])}"
+            "</li>"
+        )
+    actions = []
+    for record in world["runtime"]["records"].values():
+        if record.get("publicationId") is None:
+            continue
+        actions.append(
+            "<li>"
+            f"{escape(record['publicationId'])} {escape(str(record['status']))}"
+            f'{_operator_form(session["csrf"], record["publicationId"], "hold", "Hold")}'
+            f'{_operator_form(session["csrf"], record["publicationId"], "remove", "Remove")}'
+            "</li>"
+        )
+    body = (
+        "<p>TEST ONLY local operator. These controls stay on this loopback service.</p>"
+        f"<ul>{''.join(reports) or '<li>No reports.</li>'}</ul>"
+        f"<ul>{''.join(actions) or '<li>No publications.</li>'}</ul>"
+    )
+    return _html(200, _page("TEST ONLY operator", body))
+
+
+def _operator_form(csrf, publication_id, action, label):
+    return (
+        f'<form method="post" action="/ss-publish/browser/operator/{action}">'
+        f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
+        f'<input type="hidden" name="publicationId" value="{escape(publication_id)}">'
+        f"<button type=\"submit\">{label}</button></form>"
+    )
+
+
+def _report(world, headers, body, clock):
+    session, form, problem = _cookie_form(world, headers, body, clock)
+    if problem:
+        return problem
+    publication_id = form.get("publicationId", "")
+    reason = form.get("reason", "").strip()
+    record = _record_by_publication(world, publication_id)
+    if record is None or _owner(world, record) != session["accountId"] or len(reason) < 1 or len(reason) > 400:
+        return _html(400, _bare("Report refused."))
+    world["runtime"].setdefault("reports", []).append(
+        {"publicationId": publication_id, "accountId": session["accountId"], "reason": reason}
+    )
+    return _html(200, _page("TEST ONLY report", "<p>TEST ONLY. Report recorded.</p>"))
+
+
+def _operator_hold(world, headers, body, clock):
+    session, form, problem = _cookie_form(world, headers, body, clock)
+    if problem:
+        return problem
+    if not _operator(world, session):
+        return _html(404, _bare("Not found."))
+    record = _record_by_publication(world, form.get("publicationId", ""))
+    if record is None or record["status"] not in ("published", "held"):
+        return _html(404, _bare("Not found."))
+    record["status"] = "held"
+    return _html(200, _page("TEST ONLY operator", "<p>TEST ONLY. Publication held.</p>"))
+
+
+def _operator_remove(world, headers, body, clock):
+    session, form, problem = _cookie_form(world, headers, body, clock)
+    if problem:
+        return problem
+    if not _operator(world, session):
+        return _html(404, _bare("Not found."))
+    record = _record_by_publication(world, form.get("publicationId", ""))
+    if record is None or record.get("publicationId") is None:
+        return _html(404, _bare("Not found."))
+    record["removed"] = True
+    record["status"] = "withdrawn"
+    for revision in record["revisions"]:
+        content = revision["content"]
+        if content["kind"] == "comic":
+            for item in content["slices"]:
+                item["bytesBase64"] = ""
+        else:
+            content["text"] = ""
+    return _html(200, _page("TEST ONLY operator", "<p>TEST ONLY. Publication removed.</p>"))
+
+
+def _cookie_form(world, headers, body, clock):
+    if headers.get("origin") != ORIGIN:
+        return None, None, _json_error(403, "unauthorized")
+    session = _session(world, headers, clock)
+    form = dict(parse_qsl(body.decode("utf-8", errors="replace"), keep_blank_values=True))
+    if session is None or not session.get("csrf") or form.get("csrf") != session["csrf"]:
+        return None, None, _json_error(403, "unauthorized")
+    return session, form, None
+
+
+def _operator(world, session):
+    account = world["accounts"].get(session["accountId"])
+    return bool(account and account.get("operator") is True)
+
+
+def _page(title, body):
     return (
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        f"<title>TEST ONLY {kind}</title></head><body>"
-        "<p>TEST ONLY private fixture reader.</p>"
-        f"{body}{revoke}</body></html>"
+        '<meta name="viewport" content="width=360">'
+        "<style>body{margin:0;font:16px/1.4 sans-serif}main{max-width:360px;margin:0 auto;padding:12px}"
+        "img{width:100%;height:auto;display:block}pre{white-space:pre-wrap}</style>"
+        f"<title>{escape(title)}</title></head><body><main>{body}</main></body></html>"
     )
 
 
@@ -388,6 +602,8 @@ def _safe_next(nxt):
         return False
     if nxt.startswith("//") or "\\" in nxt or "?" in nxt or "#" in nxt:
         return False
+    if nxt in ("/ss-publish/browser/series", "/ss-publish/browser/operator"):
+        return True
     return nxt.startswith(SPEC["routes"]["reader"]) or nxt.startswith(SPEC["routes"]["preview"])
 
 
