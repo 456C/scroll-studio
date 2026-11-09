@@ -175,9 +175,10 @@ def _affirm(world, headers, body, clock, harness):
             return _json_error(403, "unauthorized")
         if not issue_browser_code(world, state, account_id, harness):
             return _json_error(400, "invalid_request")
+        txn["csrf"] = None
         location = txn["redirectUri"] + "?" + urlencode([("code", txn["code"]), ("state", state)])
     elif nxt and _safe_next(nxt):
-        if not _csrf_ok(world, form.get("csrf")):
+        if not _consume_form_csrf(world, form.get("csrf"), nxt, clock):
             return _json_error(403, "unauthorized")
         location = ORIGIN + nxt
     else:
@@ -218,9 +219,9 @@ def _reader(world, publication_id, headers, clock, harness):
     if session is None:
         return _sign_in(world, path, clock, harness)
     record = _record_by_publication(world, publication_id)
-    if record is None or record.get("removed") or _owner(world, record) != session["accountId"]:
+    if record is None or _owner(world, record) != session["accountId"]:
         return _html(404, _bare("Not found."))
-    if record["status"] in SPEC["deniedReaderStatuses"]:
+    if record.get("operatorRemoved") or record.get("operatorHold") or record["status"] in SPEC["deniedReaderStatuses"]:
         return _html(410, _bare("Unavailable."))
     if record["status"] != "published":
         return _html(404, _bare("Not found."))
@@ -247,7 +248,7 @@ def _preview(world, rest, headers, clock, harness):
         or episode["seriesId"] != series_id
         or episode["ownerAccountId"] != session["accountId"]
         or revision is None
-        or record.get("removed")
+        or record.get("operatorRemoved")
     ):
         return _html(404, _bare("Not found."))
     return _html(200, _episode_html(world, record, revision, preview=True, csrf=session["csrf"]))
@@ -262,9 +263,9 @@ def _reader_asset(world, rest, headers, clock):
         return HttpResult(404, {"cache-control": "no-store"}, b"")
     publication_id, ordinal = parts
     record = _record_by_publication(world, publication_id)
-    if record is None or record.get("removed") or _owner(world, record) != session["accountId"]:
+    if record is None or _owner(world, record) != session["accountId"]:
         return HttpResult(404, {"cache-control": "no-store"}, b"")
-    if record["status"] in SPEC["deniedReaderStatuses"] or record["status"] != "published":
+    if record.get("operatorRemoved") or record.get("operatorHold") or record["status"] in SPEC["deniedReaderStatuses"] or record["status"] != "published":
         return HttpResult(410, {"cache-control": "no-store"}, b"")
     return _slice_response(world, record, _revision(world, record), ordinal)
 
@@ -287,7 +288,7 @@ def _preview_asset(world, rest, headers, clock):
         or episode["seriesId"] != series_id
         or episode["ownerAccountId"] != session["accountId"]
         or revision is None
-        or record.get("removed")
+        or record.get("operatorRemoved")
     ):
         return HttpResult(404, {"cache-control": "no-store"}, b"")
     return _slice_response(world, record, revision, ordinal)
@@ -387,7 +388,9 @@ def _episode_nav(world, episode, preview):
 
 def _episode_href(world, episode_id, preview):
     record = world["runtime"]["records"].get(episode_id)
-    if record is None or record.get("removed") or not record["revisions"]:
+    if record is None or record.get("operatorRemoved") or not record["revisions"]:
+        return None
+    if record.get("operatorHold") and not preview:
         return None
     if preview:
         revision = record["revisions"][-1]
@@ -489,8 +492,9 @@ def _operator_hold(world, headers, body, clock):
     if not _operator(world, session):
         return _html(404, _bare("Not found."))
     record = _record_by_publication(world, form.get("publicationId", ""))
-    if record is None or record["status"] not in ("published", "held"):
+    if record is None or record.get("operatorRemoved") or record["status"] not in ("published", "held"):
         return _html(404, _bare("Not found."))
+    record["operatorHold"] = True
     record["status"] = "held"
     return _html(200, _page("TEST ONLY operator", "<p>TEST ONLY. Publication held.</p>"))
 
@@ -504,15 +508,9 @@ def _operator_remove(world, headers, body, clock):
     record = _record_by_publication(world, form.get("publicationId", ""))
     if record is None or record.get("publicationId") is None:
         return _html(404, _bare("Not found."))
-    record["removed"] = True
+    record["operatorRemoved"] = True
+    record["operatorHold"] = False
     record["status"] = "withdrawn"
-    for revision in record["revisions"]:
-        content = revision["content"]
-        if content["kind"] == "comic":
-            for item in content["slices"]:
-                item["bytesBase64"] = ""
-        else:
-            content["text"] = ""
     return _html(200, _page("TEST ONLY operator", "<p>TEST ONLY. Publication removed.</p>"))
 
 
@@ -592,9 +590,18 @@ def _txn_for_query(world, query):
     return txn
 
 
-def _csrf_ok(world, csrf):
+def _consume_form_csrf(world, csrf, nxt, clock):
     forms = world["runtime"].get("csrf_forms", {})
-    return bool(csrf) and csrf in forms
+    record = forms.get(csrf)
+    if not isinstance(record, dict):
+        return False
+    if clock >= record.get("expiresAt", clock):
+        forms.pop(csrf, None)
+        return False
+    if record.get("next") != nxt:
+        return False
+    forms.pop(csrf, None)
+    return True
 
 
 def _safe_next(nxt):

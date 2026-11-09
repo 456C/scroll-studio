@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import http.client
 import json
@@ -17,7 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from prototypes.publishing.image_decode import decode_size
-from prototypes.publishing.listener import HOST, PORT, Listener, assert_loopback, live_world
+from prototypes.publishing.listener import HOST, MAX_IN_FLIGHT, PORT, TIMEOUT_SECONDS, Listener, assert_loopback, live_world
 from prototypes.publishing.media import facts
 from prototypes.publishing.oracle import PROTOCOL, pkce_s256
 
@@ -53,6 +54,9 @@ class ListenerTests(unittest.TestCase):
     def setUp(self):
         with self.server.state_lock:
             self.server.world = live_world()
+
+    def tearDown(self):
+        self.server.timeout_seconds = TIMEOUT_SECONDS
 
     def test_bind_refuses_non_loopback(self):
         with self.assertRaises(RuntimeError):
@@ -442,13 +446,257 @@ class ListenerTests(unittest.TestCase):
     def test_body_cap_closes_before_the_payload(self):
         conn = http.client.HTTPConnection(HOST, PORT, timeout=5)
         conn.putrequest("POST", "/ss-publish/commands")
-        conn.putheader("Host", "127.0.0.1:19427")
         conn.putheader("Content-Type", "application/json")
         conn.putheader("Content-Length", "28000001")
         conn.endheaders()
         status = conn.getresponse().status
         conn.close()
         self.assertEqual(status, 413)
+
+    def test_hold_and_remove_do_not_yield_to_the_owner(self):
+        cookie, credential, _location = sign_in("acct_test_owner_a")
+        png = facts("png")
+        uploaded = upload_comic(credential, "ep_test_lane_01", png)
+        revision = uploaded["result"]["acknowledgement"]["revisionId"]
+        confirmed = confirm(credential, "ep_test_lane_01", revision)
+        publication_id = confirmed["result"]["acknowledgement"]["publicationId"]
+        canonical = confirmed["result"]["acknowledgement"]["canonicalUrl"]
+        original = _stored_revision(self, "ep_test_lane_01", revision)
+        _operator_cookie, _operator_credential, _operator_location = sign_in("acct_test_operator")
+        board = _post_operator(self, _operator_cookie, "hold", publication_id)
+        self.assertIn(b"Publication held", board)
+        status, replayed = command(
+            "publication.confirm",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+            key=confirmed["idempotencyKey"],
+        )
+        self.assertTrue(replayed["idempotentReplay"])
+        self.assertFalse(replayed["result"]["acknowledgement"]["authoritative"])
+        status, blocked = command(
+            "publication.confirm",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(blocked["error"]["code"], "not_found")
+        self.assertNotIn("content", blocked)
+        self._assert_held(cookie, credential, publication_id, canonical)
+        jpeg = facts("jpeg")
+        uploaded_again = upload_comic(credential, "ep_test_lane_01", jpeg)
+        new_revision = uploaded_again["result"]["acknowledgement"]["revisionId"]
+        status, still = command(
+            "publication.confirm",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": new_revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+        )
+        self.assertEqual(still["error"]["code"], "not_found")
+        self._assert_held(cookie, credential, publication_id, canonical)
+        status, headers, preview = request(
+            "GET",
+            f"/ss-publish/browser/preview-assets/ser_test_lane/ep_test_lane_01/{revision}/1",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "image/png")
+        self.assertEqual(preview, base64.b64decode(original["content"]["slices"][0]["bytesBase64"]))
+        status, shown = command(
+            "episode.preview",
+            {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": revision},
+            credential,
+        )
+        self.assertEqual(shown["result"]["content"]["slices"][0]["bytesBase64"], original["content"]["slices"][0]["bytesBase64"])
+        self.assertEqual(shown["result"]["contentSha256"], original["contentSha256"])
+        removed = _post_operator(self, _operator_cookie, "remove", publication_id)
+        self.assertIn(b"Publication removed", removed)
+        self.assertEqual(_stored_revision(self, "ep_test_lane_01", revision), original)
+        self.assertEqual(_stored_revision(self, "ep_test_lane_01", new_revision)["content"]["slices"][0]["sha256"], jpeg["sha256"])
+        before = len(self.server.world["runtime"]["records"]["ep_test_lane_01"]["revisions"])
+        status, uploaded_after = upload_prose(credential, "ep_test_lane_01", "should not seal", expect_ok=False)
+        self.assertEqual(uploaded_after["error"]["code"], "withdrawn")
+        self.assertEqual(len(self.server.world["runtime"]["records"]["ep_test_lane_01"]["revisions"]), before)
+        status, confirm_after = command(
+            "publication.confirm",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": new_revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+        )
+        self.assertEqual(confirm_after["error"]["code"], "withdrawn")
+        status, withheld = command(
+            "episode.preview",
+            {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": revision},
+            credential,
+        )
+        self.assertEqual(withheld["error"]["code"], "not_found")
+        self.assertNotIn("content", withheld)
+        status, read = command("publication.read", {"canonicalUrl": canonical}, credential)
+        self.assertEqual(read["error"]["code"], "withdrawn")
+        self.assertNotIn("content", read)
+        status, _headers, asset = request("GET", f"/ss-publish/browser/assets/{publication_id}/1", cookie=cookie)
+        self.assertEqual(status, 410)
+        self.assertEqual(asset, b"")
+        status, _headers, exact = request(
+            "GET",
+            f"/ss-publish/browser/preview-assets/ser_test_lane/ep_test_lane_01/{revision}/1",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(exact, b"")
+        status, _headers, page = request("GET", "/ss-publish/browser/series", cookie=cookie)
+        status, _headers, refused = request(
+            "POST",
+            "/ss-publish/browser/operator/hold",
+            urlencode({"csrf": hidden(page, "csrf"), "publicationId": publication_id}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 404)
+        status, _headers, anonymous = request(
+            "POST",
+            "/ss-publish/browser/operator/remove",
+            urlencode({"csrf": "missing", "publicationId": publication_id}).encode(),
+            {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn(b"unauthorized", anonymous)
+        status, outsider = command(
+            "episode.upload",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "selection": {"mode": "selected-episode-only"},
+                "publicMetadata": {
+                    "seriesTitle": "Fixture Lane",
+                    "episodeTitle": "North door",
+                    "synopsis": "Synthetic episode.",
+                    "language": "en",
+                },
+                "completion": "seal",
+                "content": {"kind": "prose", "mediaType": "text/plain; charset=utf-8", "text": "nope"},
+            },
+            _operator_credential,
+        )
+        self.assertEqual(outsider["error"]["code"], "not_owner")
+
+    def _assert_held(self, cookie, credential, publication_id, canonical):
+        status, discovered = command("account.discover", {}, credential)
+        episode = next(
+            item
+            for series in discovered["result"]["account"]["series"]
+            for item in series["episodes"]
+            if item["episodeId"] == "ep_test_lane_01"
+        )
+        self.assertEqual(episode["publication"]["status"], "held")
+        status, current = command("publication.read", {"canonicalUrl": canonical}, credential)
+        self.assertEqual(current["error"]["code"], "not_found")
+        self.assertNotIn("content", current)
+        status, _headers, asset = request("GET", f"/ss-publish/browser/assets/{publication_id}/1", cookie=cookie)
+        self.assertEqual(status, 410)
+        self.assertEqual(asset, b"")
+        record = self.server.world["runtime"]["records"]["ep_test_lane_01"]
+        self.assertTrue(record["operatorHold"])
+        self.assertEqual(record["status"], "held")
+
+    def test_sign_in_csrf_expires_once_and_matches_next(self):
+        status, _headers, page = request("GET", "/ss-publish/browser/series")
+        self.assertEqual(status, 401)
+        csrf = hidden(page, "csrf")
+        self.assertIn(b'name="next" value="/ss-publish/browser/series"', page)
+        mismatch = _affirm_next(csrf, "/ss-publish/browser/operator", "acct_test_owner_a")
+        self.assertEqual(mismatch, 403)
+        self.assertIn(csrf, self.server.world["runtime"]["csrf_forms"])
+        opened = _affirm_next(csrf, "/ss-publish/browser/series", "acct_test_owner_a")
+        self.assertEqual(opened, 302)
+        self.assertNotIn(csrf, self.server.world["runtime"]["csrf_forms"])
+        replayed = _affirm_next(csrf, "/ss-publish/browser/series", "acct_test_owner_a")
+        self.assertEqual(replayed, 403)
+        status, _headers, page = request("GET", "/ss-publish/browser/series")
+        csrf = hidden(page, "csrf")
+        with self.server.state_lock:
+            self.server.world["runtime"]["csrf_forms"][csrf]["expiresAt"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        expired = _affirm_next(csrf, "/ss-publish/browser/series", "acct_test_owner_a")
+        self.assertEqual(expired, 403)
+        self.assertNotIn(csrf, self.server.world["runtime"]["csrf_forms"])
+
+    def test_rejected_connections_close(self):
+        self.server.timeout_seconds = 1
+        oversized = raw_response(
+            b"POST /ss-publish/commands HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n"
+            b"Content-Type: application/json\r\nContent-Length: 28000001\r\n\r\n"
+        )
+        self.assertTrue(oversized.startswith(b"HTTP/1.1 413 "))
+        self.assertIn(b"connection: close", oversized.lower())
+        self.assertIn(b'"retryable": false', oversized)
+        chunked = raw_response(
+            b"POST /ss-publish/commands HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n"
+            b"Transfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n1\r\nZ\r\n"
+        )
+        self.assertTrue(chunked.startswith(b"HTTP/1.1 400 "))
+        self.assertIn(b"connection: close", chunked.lower())
+        duplicate_length = raw_response(
+            b"POST /ss-publish/commands HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n"
+            b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"
+        )
+        self.assertTrue(duplicate_length.startswith(b"HTTP/1.1 400 "))
+        duplicate_host = raw_response(
+            b"GET /ss-publish/browser/series HTTP/1.1\r\nHost: 127.0.0.1:19427\r\nHost: 127.0.0.1:19427\r\n\r\n"
+        )
+        self.assertTrue(duplicate_host.startswith(b"HTTP/1.1 400 "))
+        malformed = raw_response(
+            b"POST /ss-publish/commands HTTP/1.1\r\nHost: 127.0.0.1:19427\r\nContent-Length: 12x\r\n\r\n"
+        )
+        self.assertTrue(malformed.startswith(b"HTTP/1.1 400 "))
+        partial = raw_response(
+            b"POST /ss-publish/commands HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n"
+            b"Content-Type: application/json\r\nContent-Length: 400\r\n\r\n"
+            b'{"idempotencyKey":"partial-body-key-0001"'
+        )
+        self.assertTrue(partial.startswith(b"HTTP/1.1 400 "))
+        self.assertNotIn("partial-body-key-0001", self.server.world["runtime"]["operations"])
+        silent = socket.create_connection((HOST, PORT), timeout=3)
+        silent.settimeout(3)
+        try:
+            data = silent.recv(200)
+        except socket.timeout:
+            data = b""
+        silent.close()
+        self.assertTrue(data == b"" or data.startswith(b"HTTP/1.1 400 "))
+        self.server.timeout_seconds = 5
+        holders = [socket.create_connection((HOST, PORT), timeout=3) for _ in range(MAX_IN_FLIGHT)]
+        try:
+            deadline = time.time() + 2
+            while time.time() < deadline and self.server.entered < MAX_IN_FLIGHT:
+                time.sleep(0.05)
+            self.assertEqual(self.server.entered, MAX_IN_FLIGHT)
+            busy = raw_response(b"GET /ss-publish/browser/series HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n\r\n")
+            self.assertTrue(busy.startswith(b"HTTP/1.1 503 "))
+            self.assertIn(b"connection: close", busy.lower())
+            self.assertIn(b'"retryable": true', busy)
+        finally:
+            for holder in holders:
+                holder.close()
+            deadline = time.time() + 2
+            while time.time() < deadline and self.server.entered:
+                time.sleep(0.05)
 
     def test_phone_viewport_screenshot(self):
         cookie, credential, _location = sign_in("acct_test_owner_a")
@@ -465,6 +713,57 @@ class ListenerTests(unittest.TestCase):
         artifact = Path("/opt/cursor/artifacts/reader-360.png")
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(out.read_bytes())
+
+
+def _stored_revision(test, episode_id, revision_id):
+    with test.server.state_lock:
+        for revision in test.server.world["runtime"]["records"][episode_id]["revisions"]:
+            if revision["revisionId"] == revision_id:
+                return copy.deepcopy(revision)
+    raise AssertionError(revision_id)
+
+
+def _post_operator(test, cookie, action, publication_id):
+    status, _headers, page = request("GET", "/ss-publish/browser/operator", cookie=cookie)
+    if status != 200:
+        raise AssertionError(page)
+    status, _headers, body = request(
+        "POST",
+        f"/ss-publish/browser/operator/{action}",
+        urlencode({"csrf": hidden(page, "csrf"), "publicationId": publication_id}).encode(),
+        {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+        cookie=cookie,
+    )
+    if status != 200:
+        raise AssertionError(body)
+    return body
+
+
+def _affirm_next(csrf, nxt, account_id):
+    status, _headers, _body = request(
+        "POST",
+        "/ss-publish/browser/affirm",
+        urlencode({"csrf": csrf, "next": nxt, "accountId": account_id}).encode(),
+        {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
+    )
+    return status
+
+
+def raw_response(payload):
+    sock = socket.create_connection((HOST, PORT), timeout=5)
+    sock.settimeout(5)
+    sock.sendall(payload)
+    data = b""
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        data += chunk
+    sock.close()
+    return data
 
 
 def begin_body(state):

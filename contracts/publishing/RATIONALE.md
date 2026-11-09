@@ -64,7 +64,7 @@ Should the desktop be able to create a series, or will the prototype keep seedin
 
 The OS credential store is desktop work. This contract states the allowed storage records and refuses a plaintext file.
 
-Operator report, hold, and remove are local browser forms on the loopback listener. They are not desktop commands.
+Operator report, hold, and remove are local browser forms on the loopback listener. They are not desktop commands. Hold and removal sit beside the publication. They do not rewrite an immutable revision, and a later confirm cannot clear them.
 
 ## Next implementation step
 

@@ -446,6 +446,9 @@ def _prepare_upload(world, cred, body):
     episode, problem = _owned_episode(world, cred, body["seriesId"], body["episodeId"])
     if problem:
         return ("error", _fail("episode.upload", problem))
+    record = world["runtime"]["records"].get(episode["episodeId"])
+    if record is not None and record.get("operatorRemoved"):
+        return ("error", _fail("episode.upload", "withdrawn"))
     metadata = body["publicMetadata"]
     if metadata["seriesTitle"] != episode["seriesTitle"] or metadata["episodeTitle"] != episode["title"]:
         return ("error", _fail("episode.upload", "metadata_rejected"))
@@ -471,7 +474,7 @@ def _preview(world, cred, body):
     if problem:
         return _fail("episode.preview", problem)
     record = world["runtime"]["records"].get(episode["episodeId"])
-    if record is not None and record.get("removed"):
+    if record is not None and record.get("operatorRemoved"):
         return _fail("episode.preview", "not_found")
     revision = _revision(world, episode["episodeId"], body["revisionId"])
     if revision is None:
@@ -532,6 +535,10 @@ def _prepare_confirm(world, cred, body):
     record = world["runtime"]["records"].get(episode["episodeId"])
     head = record["revisions"][-1]["revisionId"] if record and record["revisions"] else None
     if head is None:
+        return ("error", _fail("publication.confirm", "not_found"))
+    if record.get("operatorRemoved"):
+        return ("error", _fail("publication.confirm", "withdrawn"))
+    if record.get("operatorHold"):
         return ("error", _fail("publication.confirm", "not_found"))
     if body["revisionId"] != head:
         if _revision(world, episode["episodeId"], body["revisionId"]) is None:
@@ -594,8 +601,10 @@ def _read(world, cred, body):
     episode = world["episodes"][found["episodeId"]]
     if episode["ownerAccountId"] != cred["accountId"]:
         return _fail("publication.read", "not_owner")
-    if found["status"] == "withdrawn":
+    if found.get("operatorRemoved") or found["status"] == "withdrawn":
         return _fail("publication.read", "withdrawn")
+    if found.get("operatorHold"):
+        return _fail("publication.read", "not_found")
     if found["status"] != "published" or found["publishedRevisionId"] is None:
         return _fail("publication.read", "not_found")
     revision = _revision(world, found["episodeId"], found["publishedRevisionId"])

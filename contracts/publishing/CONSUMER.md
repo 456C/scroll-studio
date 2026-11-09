@@ -17,7 +17,7 @@ The previous head returned cached command results, including credential secrets 
 - Success results are command-specific. A result that omits its acknowledgement fields fails validation.
 - The only service origin is `http://127.0.0.1:19427`. Canonical reader URLs use `/ss-publish/browser/reader/`.
 
-The desktop client sends one JSON command at a time. The shared files are the protocol, the envelope schema, and the fixtures. `prototypes/publishing/oracle.py` is the executable check for those files. It keeps state in memory. A later service has to accept the same fixtures. This checkpoint does not open a port.
+The desktop client sends one JSON command at a time. The shared files are the protocol, the envelope schema, and the fixtures. `prototypes/publishing/oracle.py` checks those files. `prototypes/publishing/listener.py` is the loopback process. `protocol.json` fields `service`, `listens`, and `checkpoint` are metadata. The command names, envelope, and `transport.json` routes are unchanged.
 
 ## Files the desktop reads
 
@@ -98,7 +98,7 @@ The exchange result credential has `tokenType` `prototype-credential`, `delivery
 
 `publication.read` is authoritative. It requires the exact canonical URL and a live credential. It returns `authoritative: true`, `status: published`, and `presentation.widthPx` 360. That width is the desktop Phone reader width in `src/app/reader_ui.rs`. A withdrawn publication returns `withdrawn`. A path under `/ss-publish/assets` or `/slices/` returns `asset_not_addressable`. An unknown reader URL returns `not_found`. Another account's publication returns `not_owner`.
 
-`publication.withdraw` records a withdrawal. Its acknowledgement has `authoritative: false`. `account.discover` is the other authoritative status read. Confirming the same head revision again publishes that same URL.
+`publication.withdraw` records a withdrawal. Its acknowledgement has `authoritative: false`. `account.discover` is the other authoritative status read. Confirming the same head revision again publishes that same URL, unless an operator hold or removal is set.
 
 ## Loopback HTTP
 
@@ -122,7 +122,15 @@ The process binds only `http://127.0.0.1:19427`. It has no environment variables
 
 Send `POST http://127.0.0.1:19427/ss-publish/commands` with `Content-Type: application/json` and `Host: 127.0.0.1:19427`. Omit `Origin`, or set it to `http://127.0.0.1:19427`. A different `Origin` is rejected. The desktop credential stays in the JSON body. Open `browserPreviewUrl` and `canonicalUrl` in the system browser after the fixture sign-in. Do not put the credential secret on those URLs.
 
-The listener also serves three routes that are not part of the accepted command contract: `GET /ss-publish/browser/series`, `GET /ss-publish/browser/operator`, and the report, hold, and remove forms under `/ss-publish/browser/`. A held publication is `410` in the browser and `not_found` on `publication.read`, because that command has no `held` error. `account.discover` reports `status: held`. There is no pause control, so cancelling a finished upload returns `already_terminal`.
+The listener also serves routes that are not desktop commands: `GET /ss-publish/browser/series`, `GET /ss-publish/browser/operator`, and the report, hold, and remove forms. A sign-in form token expires, matches the `next` path it was issued for, and works once.
+
+An operator hold is stored beside the publication and does not change revision bytes. `account.discover` reports `status: held`. The reader and `publication.read` stay closed. A new `publication.confirm` idempotency key cannot publish. An upload may seal another revision, and the owner can still preview that exact revision, but confirm cannot put it on the reader. Replaying the earlier confirm key returns the stored acknowledgement and does not clear the hold.
+
+An operator removal is a tombstone. It sets `withdrawn` and does not rewrite revision bytes or hashes. Upload, confirm, preview, and read do not return those bytes, and the service does not present an emptied document as the revision. The publication routes answer `410`. The exact preview routes answer `404`.
+
+Every response sends `Connection: close`. The process handles one request on each accepted connection. A `Content-Length` above 28000000 bytes is HTTP `413` with command error `limit_exceeded` and `retryable: false`, and the body is not read. HTTP `503` with the same error code and `retryable: true` means the four request workers are busy. `503` is not in `transport.json` `errorStatus`. It is not a publication-size failure. A duplicate or malformed `Content-Length` or `Host`, and any `Transfer-Encoding`, are HTTP `400` and the connection is closed. A partial body or a silent client is cut off by the 15 second timeout and does not run a command. Four workers do not cap the listen backlog. The backlog is eight connections; past that, the operating system refuses the connection instead of returning JSON.
+
+There is no pause control, so cancelling a finished upload returns `already_terminal`.
 
 Prove the process with `python3 -m unittest prototypes.publishing.test_listener`. The contract checks stay `python3 -m unittest prototypes.publishing.test_contract`.
 

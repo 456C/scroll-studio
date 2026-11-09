@@ -1,8 +1,8 @@
 {
   "protocol": "scroll-studio.publishing.private-prototype.v1",
-  "checkpoint": "contract-only",
-  "service": false,
-  "listens": false,
+  "checkpoint": "loopback-listener",
+  "service": true,
+  "listens": true,
   "phoneViewportWidthPx": 360,
   "defaultClock": "2026-11-09T18:00:00Z",
   "clientId": "scroll-studio-desktop-test",
