@@ -100,6 +100,10 @@ impl Studio {
                             {
                                 start = true;
                             }
+                            if ui.button("Review publishing").clicked() {
+                                self.export_dialog = false;
+                                self.publish_open = true;
+                            }
                         }
                         Err(error) => {
                             ui.label(RichText::new(error.to_string()).color(Color32::LIGHT_RED));

@@ -1,0 +1,519 @@
+use super::*;
+use scroll_studio::publish::{self, EpisodeKind, LinkError, LocalDestination, PublicMetadata};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PublishKind {
+    Chapter,
+    Prose,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PublishDraft {
+    pub kind: PublishKind,
+    pub account_label: String,
+    pub series_title: String,
+    pub episode_title: String,
+    pub synopsis: String,
+    pub language: String,
+    pub prose: Option<Vec<u8>>,
+    pub prose_name: String,
+    pub message: Option<String>,
+}
+
+impl Default for PublishDraft {
+    fn default() -> Self {
+        Self {
+            kind: PublishKind::Chapter,
+            account_label: String::new(),
+            series_title: String::new(),
+            episode_title: String::new(),
+            synopsis: String::new(),
+            language: "en".into(),
+            prose: None,
+            prose_name: String::new(),
+            message: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum BuiltFrom {
+    Chapter(u64),
+    Prose,
+}
+
+impl Studio {
+    pub(super) fn publish_ui(&mut self, ctx: &egui::Context) {
+        if !self.publish_open || self.story.chapters.is_empty() {
+            return;
+        }
+        self.sync_publish_draft();
+        let mut open = true;
+        let mut review = false;
+        let mut confirm = false;
+        let mut upload = false;
+        let mut choose_text = false;
+        egui::Window::new("Publish episode")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(460.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("publish_fields")
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.publish_draft.kind,
+                                PublishKind::Chapter,
+                                "Chapter",
+                            );
+                            ui.selectable_value(
+                                &mut self.publish_draft.kind,
+                                PublishKind::Prose,
+                                "Prose",
+                            );
+                        });
+                        ui.add_space(6.0);
+                        match self.publish_draft.kind {
+                            PublishKind::Chapter => {
+                                ui.label(
+                                    RichText::new(&self.story.chapters[self.chapter].name)
+                                        .strong()
+                                        .size(16.0),
+                                );
+                            }
+                            PublishKind::Prose => {
+                                ui.horizontal(|ui| {
+                                    let name = if self.publish_draft.prose_name.is_empty() {
+                                        "No text file"
+                                    } else {
+                                        self.publish_draft.prose_name.as_str()
+                                    };
+                                    ui.label(name);
+                                    if ui.button("Choose text…").clicked() {
+                                        choose_text = true;
+                                    }
+                                });
+                                if let Some(bytes) = &self.publish_draft.prose {
+                                    if let Ok(text) = std::str::from_utf8(bytes) {
+                                        egui::ScrollArea::vertical()
+                                            .id_salt("publish_prose")
+                                            .max_height(72.0)
+                                            .show(ui, |ui| {
+                                                ui.label(text);
+                                            });
+                                    }
+                                }
+                            }
+                        }
+                        ui.add_space(8.0);
+                        field(ui, "Account", &mut self.publish_draft.account_label);
+                        field(ui, "Series", &mut self.publish_draft.series_title);
+                        field(ui, "Episode", &mut self.publish_draft.episode_title);
+                        ui.label("Synopsis");
+                        egui::ScrollArea::vertical()
+                            .id_salt("publish_synopsis")
+                            .max_height(64.0)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.publish_draft.synopsis)
+                                        .desired_rows(3)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                        field(ui, "Language", &mut self.publish_draft.language);
+                    });
+                if let Some(package) = self.publish.package() {
+                    let digest = &package.content_sha256_hex()[..12];
+                    ui.label(match package.kind() {
+                        EpisodeKind::Comic => format!(
+                            "{} · {} · {digest}",
+                            package.profile_label().unwrap_or("Comic"),
+                            package.format_label().unwrap_or("image")
+                        ),
+                        EpisodeKind::Prose => format!("Prose · {digest}"),
+                    });
+                    for member in package.members() {
+                        let shape = match (member.width(), member.height()) {
+                            (Some(width), Some(height)) => format!("{width}×{height} · "),
+                            _ => String::new(),
+                        };
+                        ui.label(format!(
+                            "{} · {}{} bytes",
+                            member.label(),
+                            shape,
+                            member.byte_len()
+                        ));
+                    }
+                    ui.add_space(6.0);
+                }
+                if let Some(message) = &self.publish_draft.message {
+                    ui.label(RichText::new(message).color(Color32::from_rgb(242, 193, 121)));
+                    ui.add_space(6.0);
+                }
+                ui.horizontal(|ui| {
+                    if primary(ui, "Review").clicked() {
+                        review = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            self.publish.package().is_some(),
+                            egui::Button::new("Confirm review"),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                    let upload_button = ui.add_enabled(
+                        self.publish.is_reviewed(),
+                        egui::Button::new("Upload draft"),
+                    );
+                    #[cfg(test)]
+                    if self.publish.is_reviewed() {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(
+                                egui::Id::new("publish_upload_bounds"),
+                                upload_button.rect,
+                            );
+                        });
+                    }
+                    if upload_button.clicked() {
+                        upload = true;
+                    }
+                });
+            });
+        self.publish_open = open;
+        if choose_text {
+            self.choose_prose_file();
+        }
+        if review {
+            self.review_publish();
+        }
+        if confirm {
+            self.confirm_publish_review();
+        }
+        if upload {
+            self.upload_publish_draft();
+        }
+    }
+
+    fn sync_publish_draft(&mut self) {
+        let chapter_id = self.story.chapters[self.chapter].id;
+        let stale = match (&self.publish_built, self.publish_draft.kind) {
+            (Some(BuiltFrom::Chapter(id)), PublishKind::Chapter) => *id != chapter_id,
+            (Some(BuiltFrom::Prose), PublishKind::Prose) => {
+                let packaged = self
+                    .publish
+                    .package()
+                    .and_then(|package| package.members().first())
+                    .map(|member| member.bytes());
+                packaged != self.publish_draft.prose.as_deref()
+            }
+            (Some(_), _) => true,
+            (None, _) => false,
+        };
+        let metadata_changed = self.publish.package().is_some_and(|package| {
+            let metadata = package.metadata();
+            metadata.series_title() != self.publish_draft.series_title
+                || metadata.episode_title() != self.publish_draft.episode_title
+                || metadata.synopsis() != self.publish_draft.synopsis
+                || metadata.language() != self.publish_draft.language
+        });
+        let destination_changed = self.publish.destination().is_some_and(|destination| {
+            destination.account_label() != self.publish_draft.account_label
+                || destination.series_title() != self.publish_draft.series_title
+                || destination.episode_title() != self.publish_draft.episode_title
+        });
+        if stale || metadata_changed || destination_changed {
+            self.publish.invalidate();
+            self.publish_built = None;
+        }
+    }
+
+    pub(super) fn review_publish(&mut self) {
+        self.publish.invalidate();
+        self.publish_built = None;
+        let metadata = match reviewed_metadata(&self.publish_draft) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.publish_draft.message = Some(error.to_string());
+                return;
+            }
+        };
+        let destination = match LocalDestination::new(
+            self.publish_draft.account_label.clone(),
+            self.publish_draft.series_title.clone(),
+            self.publish_draft.episode_title.clone(),
+        ) {
+            Ok(destination) => destination,
+            Err(error) => {
+                self.publish_draft.message = Some(error.to_string());
+                return;
+            }
+        };
+        let built = match self.publish_draft.kind {
+            PublishKind::Chapter => {
+                let chapter = &self.story.chapters[self.chapter];
+                let id = chapter.id;
+                match publish::package_chapter(
+                    chapter,
+                    &self.assets,
+                    &self.export_options,
+                    metadata,
+                ) {
+                    Ok(package) => (package, BuiltFrom::Chapter(id)),
+                    Err(error) => {
+                        self.publish_draft.message = Some(error.to_string());
+                        return;
+                    }
+                }
+            }
+            PublishKind::Prose => {
+                let Some(bytes) = self.publish_draft.prose.clone() else {
+                    self.publish_draft.message = Some("Choose a UTF-8 text file.".into());
+                    return;
+                };
+                match publish::package_prose_bytes(&bytes, metadata) {
+                    Ok(package) => (package, BuiltFrom::Prose),
+                    Err(error) => {
+                        self.publish_draft.message = Some(error.to_string());
+                        return;
+                    }
+                }
+            }
+        };
+        self.publish.set_destination(destination);
+        self.publish.set_package(built.0);
+        self.publish_built = Some(built.1);
+        self.publish_draft.message = None;
+    }
+
+    fn confirm_publish_review(&mut self) {
+        self.sync_publish_draft();
+        match self.publish.confirm_review() {
+            Ok(()) => self.publish_draft.message = Some("Review confirmed.".into()),
+            Err(error) => self.publish_draft.message = Some(error.to_string()),
+        }
+    }
+
+    fn upload_publish_draft(&mut self) {
+        self.sync_publish_draft();
+        let Err(error) = self.publish.upload_draft();
+        self.publish_draft.message = Some(match error {
+            LinkError::ServiceNotConnected => {
+                "Private prototype service is not connected. Nothing was uploaded.".into()
+            }
+            other => other.to_string(),
+        });
+    }
+
+    fn choose_prose_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose prose text")
+            .add_filter("Text", &["txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "text".into());
+        match fs_read_limited(&path, 65_537) {
+            Ok(bytes) => {
+                self.publish_draft.prose = Some(bytes);
+                self.publish_draft.prose_name = name;
+                self.publish_draft.message = None;
+                self.publish.invalidate();
+                self.publish_built = None;
+            }
+            Err(error) => self.publish_draft.message = Some(error),
+        }
+    }
+}
+
+fn reviewed_metadata(draft: &PublishDraft) -> Result<PublicMetadata, publish::PackageError> {
+    PublicMetadata::new(
+        draft.series_title.clone(),
+        draft.episode_title.clone(),
+        draft.synopsis.clone(),
+        draft.language.clone(),
+    )
+}
+
+fn field(ui: &mut egui::Ui, label: &str, text: &mut String) {
+    ui.label(label);
+    ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+}
+
+fn fs_read_limited(path: &std::path::Path, max_len: u64) -> Result<Vec<u8>, String> {
+    let len = std::fs::metadata(path)
+        .map_err(|error| format!("Could not read the text file: {error}"))?
+        .len();
+    if len > max_len {
+        return Err(format!("Prose is over the {max_len} byte read limit."));
+    }
+    std::fs::read(path).map_err(|error| format!("Could not read the text file: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect_text(shape: &egui::epaint::Shape, out: &mut String) {
+        match shape {
+            egui::epaint::Shape::Text(text) => {
+                out.push_str(text.galley.text());
+                out.push('\n');
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn fixture() -> (egui::Context, Studio) {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.story = Story::with_canvas("Publish fixture", 64, 64);
+        studio.welcome = false;
+        studio.preferences.motion = settings::Motion::Off;
+        studio.publish_open = true;
+        studio.publish_draft.account_label = "Ada".into();
+        studio.publish_draft.series_title = "North line".into();
+        studio.publish_draft.episode_title = "Platform".into();
+        studio.publish_draft.synopsis = "A reviewed public synopsis.".into();
+        studio.publish_draft.language = "en".into();
+        (ctx, studio)
+    }
+
+    fn frame(ctx: &egui::Context, studio: &mut Studio, size: egui::Vec2, events: Vec<egui::Event>) {
+        let mut host = eframe::Frame::_new_kittest();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            },
+            |ctx| eframe::App::update(studio, ctx, &mut host),
+        );
+    }
+
+    #[test]
+    fn prose_review_fits_and_upload_stays_local() {
+        for size in [egui::vec2(1100.0, 720.0), egui::vec2(1366.0, 768.0)] {
+            let (ctx, mut studio) = fixture();
+            let before = studio.story.clone();
+            studio.publish_draft.kind = PublishKind::Prose;
+            studio.publish_draft.prose = Some(b"A public paragraph.\nSecond line.".to_vec());
+            studio.publish_draft.prose_name = "letter.txt".into();
+            studio.review_publish();
+            assert!(studio.publish.package().is_some());
+            assert_eq!(studio.story, before);
+            frame(&ctx, &mut studio, size, Vec::new());
+            frame(&ctx, &mut studio, size, Vec::new());
+            let mut host = eframe::Frame::_new_kittest();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ctx| eframe::App::update(&mut studio, ctx, &mut host),
+            );
+            let mut text = String::new();
+            for clipped in &output.shapes {
+                collect_text(&clipped.shape, &mut text);
+            }
+            assert!(
+                text.contains("episode.txt"),
+                "member list missing from {text}"
+            );
+            assert!(text.contains("letter.txt"), "chosen file name missing");
+            assert!(text.contains("Confirm review"));
+            let upload = ctx
+                .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("publish_upload_bounds")));
+            assert!(
+                upload.is_none(),
+                "upload is disabled until review is confirmed"
+            );
+            studio.confirm_publish_review();
+            assert!(studio.publish.is_reviewed());
+            frame(&ctx, &mut studio, size, Vec::new());
+            let upload = ctx
+                .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("publish_upload_bounds")))
+                .expect("upload bounds");
+            assert!(
+                upload.width() >= 24.0 && upload.height() >= 18.0,
+                "upload rect {upload:?} outside a usable target"
+            );
+            assert!(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(upload),
+                "upload rect {upload:?} does not fit in {size:?}"
+            );
+            let before_upload = studio.story.clone();
+            let revision = studio.revision;
+            let dirty = studio.dirty;
+            let click = upload.center();
+            let press = |pressed| {
+                vec![
+                    egui::Event::PointerMoved(click),
+                    egui::Event::PointerButton {
+                        pos: click,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            frame(&ctx, &mut studio, size, press(true));
+            frame(&ctx, &mut studio, size, press(false));
+            let message = studio.publish_draft.message.clone().unwrap_or_default();
+            assert!(
+                message.contains("not connected"),
+                "upload message was {message}; reviewed {} package {}",
+                studio.publish.is_reviewed(),
+                studio.publish.package().is_some()
+            );
+            assert!(studio.publish.is_reviewed());
+            assert_eq!(
+                studio.publish.publication_status(),
+                scroll_studio::publish::PublicationStatus::NotRead
+            );
+            assert_eq!(studio.story, before_upload);
+            assert_eq!(studio.revision, revision);
+            assert_eq!(studio.dirty, dirty);
+            studio.publish_draft.synopsis = "Changed after review.".into();
+            frame(&ctx, &mut studio, size, Vec::new());
+            assert!(!studio.publish.is_reviewed());
+            assert!(studio.publish.package().is_none());
+        }
+    }
+
+    #[test]
+    fn switching_chapter_drops_the_comic_review() {
+        let (_ctx, mut studio) = fixture();
+        studio.export_options.profile = scroll_studio::export::ExportProfile::Original;
+        studio.review_publish();
+        assert_eq!(
+            studio.publish.package().unwrap().chapter_id(),
+            Some(studio.story.chapters[0].id)
+        );
+        studio.confirm_publish_review();
+        assert!(studio.publish.is_reviewed());
+        let id = studio.story.alloc_id();
+        studio
+            .story
+            .chapters
+            .push(Chapter::new(id, "SECRET_OTHER_CHAPTER", 64, 64));
+        studio.chapter = 1;
+        studio.sync_publish_draft();
+        assert!(studio.publish.package().is_none());
+        assert!(!studio.publish.is_reviewed());
+    }
+}

@@ -12,6 +12,7 @@ pub mod locations;
 pub mod lore;
 pub mod model;
 pub mod painting;
+pub mod publish;
 pub mod recovery;
 pub mod snapping;
 pub mod spacing;
