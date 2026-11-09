@@ -63,8 +63,7 @@ class Listener(socketserver.TCPServer):
             _close(request)
             return
         if not self.slots.acquire(blocking=False):
-            _send(request, 503, _json_headers(), _busy("limit_exceeded", retryable=True))
-            _close(request)
+            _reject_busy(request)
             return
         threading.Thread(target=self._serve_one, args=(request,), daemon=True).start()
 
@@ -197,6 +196,49 @@ def _send(conn, status, headers, body):
     lines = [f"HTTP/1.1 {status} {reasons.get(status, 'Error')}"]
     lines.extend(f"{key}: {value}" for key, value in fields.items())
     conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1") + body)
+
+
+def _reject_busy(conn):
+    # Winsock resets a socket that is closed while request bytes are still queued,
+    # so the client never reads the 503. Discard the already-buffered request, then
+    # finish the write side. The bytes are not parsed or dispatched.
+    _discard_unread(conn, HEADER_LIMIT)
+    try:
+        _send(conn, 503, _json_headers(), _busy("limit_exceeded", retryable=True))
+    except OSError:
+        _close(conn)
+        return
+    _finish_write(conn)
+
+
+def _discard_unread(conn, limit):
+    previous = conn.gettimeout()
+    conn.settimeout(0.2)
+    try:
+        seen = 0
+        data = b""
+        while seen < limit and b"\r\n\r\n" not in data:
+            try:
+                chunk = conn.recv(min(1024, limit - seen))
+            except (TimeoutError, socket.timeout, OSError):
+                break
+            if not chunk:
+                break
+            data += chunk
+            seen += len(chunk)
+    finally:
+        conn.settimeout(previous)
+
+
+def _finish_write(conn):
+    try:
+        conn.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+    try:
+        conn.close()
+    except OSError:
+        pass
 
 
 def _close(conn):
