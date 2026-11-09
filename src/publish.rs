@@ -228,6 +228,7 @@ pub struct PublishSession {
     owned: Option<crate::publish_wire::OwnedEpisode>,
     acknowledgement: Option<crate::publish_wire::Acknowledgement>,
     live: crate::publish_wire::LiveStatus,
+    keeping: Option<crate::publish_wire::CredentialKeeping>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,7 +254,12 @@ impl PublishSession {
             owned: None,
             acknowledgement: None,
             live: crate::publish_wire::LiveStatus::NotRead,
+            keeping: None,
         }
+    }
+
+    pub fn keeping(&self) -> Option<crate::publish_wire::CredentialKeeping> {
+        self.keeping
     }
 
     pub fn account(&self) -> Option<&crate::publish_wire::AccountSnapshot> {
@@ -273,6 +279,7 @@ impl PublishSession {
         credential: crate::publish_wire::Credential,
         account: crate::publish_wire::AccountSnapshot,
     ) {
+        self.keeping = Some(crate::publish_wire::keep_credential(&credential));
         self.credential = Some(credential);
         self.account = Some(account);
         self.owned = None;

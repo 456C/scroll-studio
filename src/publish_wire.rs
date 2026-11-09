@@ -109,6 +109,8 @@ pub enum LiveStatus {
 pub enum WireError {
     NotConnected,
     Cancelled,
+    Busy,
+    LostResponse,
     Rejected { code: String, status: u16 },
     Protocol(String),
 }
@@ -121,6 +123,11 @@ impl std::fmt::Display for WireError {
                 "Private prototype service is not connected. Nothing was uploaded."
             ),
             Self::Cancelled => write!(f, "Sign-in was cancelled. Nothing was uploaded."),
+            Self::Busy => write!(
+                f,
+                "The prototype listener is busy. The same command was not accepted."
+            ),
+            Self::LostResponse => write!(f, "The command response was lost."),
             Self::Rejected { code, status } => {
                 write!(
                     f,
@@ -243,6 +250,26 @@ pub fn upload(
     story_ref: &str,
     episode_ref: &str,
 ) -> Result<Acknowledgement, WireError> {
+    upload_with_key(
+        origin,
+        credential,
+        package,
+        owned,
+        story_ref,
+        episode_ref,
+        &random_token(32)?,
+    )
+}
+
+pub fn upload_with_key(
+    origin: Origin,
+    credential: &Credential,
+    package: &EpisodePackage,
+    owned: &OwnedEpisode,
+    story_ref: &str,
+    episode_ref: &str,
+    idempotency_key: &str,
+) -> Result<Acknowledgement, WireError> {
     if package.metadata().series_title() != owned.series_title
         || package.metadata().episode_title() != owned.episode_title
     {
@@ -265,7 +292,7 @@ pub fn upload(
         origin,
         &envelope(
             "episode.upload",
-            &random_token(32)?,
+            idempotency_key,
             Some(credential),
             json!({
                 "seriesId": owned.series_id,
@@ -337,6 +364,36 @@ pub fn withdraw(
     acknowledgement(&response["result"])
 }
 
+pub fn revoke(origin: Origin, credential: &Credential) -> Result<(), WireError> {
+    let _ = post(
+        origin,
+        &envelope(
+            "auth.revoke",
+            &random_token(32)?,
+            Some(credential),
+            json!({}),
+        ),
+    )?;
+    Ok(())
+}
+
+pub fn cancel_operation(
+    origin: Origin,
+    credential: &Credential,
+    target_key: &str,
+) -> Result<(), WireError> {
+    let _ = post(
+        origin,
+        &envelope(
+            "operation.cancel",
+            &random_token(32)?,
+            Some(credential),
+            json!({ "targetIdempotencyKey": target_key }),
+        ),
+    )?;
+    Ok(())
+}
+
 pub fn read_publication(
     origin: Origin,
     credential: &Credential,
@@ -369,6 +426,36 @@ pub fn read_publication(
             .unwrap_or(canonical_url)
             .to_string(),
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialKeeping {
+    /// This build keeps the secret in process memory and does not write it.
+    SessionMemory,
+    /// Windows Credential Manager accepted the secret. It is not in a story or settings file.
+    WindowsCredentialManager,
+}
+
+pub fn keep_credential(credential: &Credential) -> CredentialKeeping {
+    #[cfg(windows)]
+    {
+        if windows_store::write(credential) {
+            return CredentialKeeping::WindowsCredentialManager;
+        }
+    }
+    let _ = credential;
+    CredentialKeeping::SessionMemory
+}
+
+pub fn load_kept_credential() -> Option<Credential> {
+    #[cfg(windows)]
+    {
+        return windows_store::read();
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 pub fn open_system_browser(url: &str) -> Result<(), WireError> {
@@ -435,6 +522,29 @@ fn post(origin: Origin, payload: &Value) -> Result<Value, WireError> {
             "Fixture clock, pause, and test redirect hooks are refused.".into(),
         ));
     }
+    let command = payload["command"].as_str().unwrap_or("");
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match post_once(origin, &bytes) {
+            Ok(value) => return Ok(value),
+            Err(WireError::Busy) if attempt < 3 => {
+                std::thread::sleep(Duration::from_millis(50 * attempt as u64));
+            }
+            Err(WireError::LostResponse) if command != "auth.exchange" && attempt < 3 => {
+                std::thread::sleep(Duration::from_millis(50 * attempt as u64));
+            }
+            Err(WireError::LostResponse) if command == "auth.exchange" => {
+                return Err(WireError::Protocol(
+                    "The exchange response was lost. Start sign-in again.".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn post_once(origin: Origin, bytes: &[u8]) -> Result<Value, WireError> {
     let mut stream = TcpStream::connect_timeout(&origin.socket(), Duration::from_secs(3))
         .map_err(|_| WireError::NotConnected)?;
     stream
@@ -447,13 +557,13 @@ fn post(origin: Origin, payload: &Value) -> Result<Value, WireError> {
     );
     stream
         .write_all(request.as_bytes())
-        .and_then(|_| stream.write_all(&bytes))
+        .and_then(|_| stream.write_all(bytes))
         .map_err(|_| WireError::NotConnected)?;
     let HttpResponse {
         status,
         headers,
         body,
-    } = read_response(&mut stream)?;
+    } = read_response(&mut stream).map_err(|_| WireError::LostResponse)?;
     if !headers.iter().any(|(name, value)| {
         name.eq_ignore_ascii_case("content-type") && value.starts_with("application/json")
     }) || !headers.iter().any(|(name, value)| {
@@ -475,6 +585,16 @@ fn post(origin: Origin, payload: &Value) -> Result<Value, WireError> {
         return Ok(value);
     }
     let code = value["error"]["code"].as_str().unwrap_or("invalid_request");
+    let retryable = value["error"]["retryable"] == true;
+    if status == 503 && code == "limit_exceeded" && retryable && value["ok"] == false {
+        return Err(WireError::Busy);
+    }
+    if status == 413 && code == "limit_exceeded" && !retryable {
+        return Err(WireError::Rejected {
+            code: code.to_string(),
+            status,
+        });
+    }
     let expected = error_status(code);
     if status != expected {
         return Err(WireError::Protocol(format!(
@@ -602,6 +722,10 @@ fn prose_text(package: &EpisodePackage) -> Result<String, WireError> {
         ));
     }
     String::from_utf8(bytes.to_vec()).map_err(|_| WireError::Protocol("Prose is not UTF-8.".into()))
+}
+
+pub fn browser_url_allowed(origin: Origin, url: &str) -> Result<(), WireError> {
+    validate_browser_url(origin, url)
 }
 
 fn validate_browser_url(origin: Origin, url: &str) -> Result<(), WireError> {
@@ -791,6 +915,104 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(windows)]
+mod windows_store {
+    use super::Credential;
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct CredentialW {
+        flags: u32,
+        type_: u32,
+        target_name: *mut u16,
+        comment: *mut u16,
+        last_written: FileTime,
+        credential_blob_size: u32,
+        credential_blob: *mut u8,
+        persist: u32,
+        attribute_count: u32,
+        attributes: *mut c_void,
+        target_alias: *mut u16,
+        user_name: *mut u16,
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn CredWriteW(credential: *const CredentialW, flags: u32) -> i32;
+        fn CredReadW(
+            target: *const u16,
+            type_: u32,
+            flags: u32,
+            credential: *mut *mut CredentialW,
+        ) -> i32;
+        fn CredDeleteW(target: *const u16, type_: u32, flags: u32) -> i32;
+        fn CredFree(buffer: *mut c_void);
+    }
+
+    const GENERIC: u32 = 1;
+    const PERSIST_LOCAL: u32 = 2;
+
+    fn target() -> Vec<u16> {
+        "Scroll Studio Publishing\0".encode_utf16().collect()
+    }
+
+    pub(super) fn write(credential: &Credential) -> bool {
+        let mut target = target();
+        let mut blob = format!("{}\n{}", credential.id, credential.secret).into_bytes();
+        let record = CredentialW {
+            flags: 0,
+            type_: GENERIC,
+            target_name: target.as_mut_ptr(),
+            comment: std::ptr::null_mut(),
+            last_written: FileTime { low: 0, high: 0 },
+            credential_blob_size: blob.len() as u32,
+            credential_blob: blob.as_mut_ptr(),
+            persist: PERSIST_LOCAL,
+            attribute_count: 0,
+            attributes: std::ptr::null_mut(),
+            target_alias: std::ptr::null_mut(),
+            user_name: std::ptr::null_mut(),
+        };
+        unsafe { CredWriteW(&record, 0) != 0 }
+    }
+
+    pub(super) fn read() -> Option<Credential> {
+        let target = target();
+        let mut out = std::ptr::null_mut();
+        let ok = unsafe { CredReadW(target.as_ptr(), GENERIC, 0, &mut out) != 0 };
+        if !ok || out.is_null() {
+            return None;
+        }
+        let record = unsafe { &*out };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(record.credential_blob, record.credential_blob_size as usize)
+        };
+        let text = String::from_utf8_lossy(bytes);
+        let mut lines = text.lines();
+        let id = lines.next().unwrap_or("").to_string();
+        let secret = lines.next().unwrap_or("").to_string();
+        unsafe { CredFree(out.cast()) };
+        if id.is_empty() || secret.is_empty() {
+            None
+        } else {
+            Some(Credential { id, secret })
+        }
+    }
+
+    pub(super) fn delete() {
+        let target = target();
+        unsafe {
+            CredDeleteW(target.as_ptr(), GENERIC, 0);
+        }
+    }
+}
+
 fn base64url(bytes: &[u8]) -> String {
     base64_encode(bytes)
         .trim_end_matches('=')
@@ -861,10 +1083,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ack.effect, "revision-sealed");
-        assert!(ack
-            .browser_preview_url
-            .unwrap()
-            .starts_with(&format!("{}/ss-publish/browser/preview/", origin.base())));
+        let preview = ack.browser_preview_url.clone().unwrap();
+        assert!(preview.starts_with(&format!("{}/ss-publish/browser/preview/", origin.base())));
         let confirmed = confirm(origin, &credential, &owned, &ack.revision_id).unwrap();
         assert!(confirmed
             .canonical_url
@@ -896,6 +1116,318 @@ mod tests {
             matches!(error, WireError::Rejected { ref code, status: 410 } if code == "withdrawn")
         );
         assert!(!stand.saw_fixture());
+        assert!(!stand.saw_private());
+        assert!(preview.ends_with(&ack.revision_id));
+    }
+
+    #[test]
+    fn browser_urls_must_stay_on_the_pinned_reader_paths() {
+        let origin = Origin::pinned();
+        assert!(browser_url_allowed(
+            origin,
+            "http://127.0.0.1:19427/ss-publish/browser/reader/pub_test_0001"
+        )
+        .is_ok());
+        assert!(browser_url_allowed(
+            origin,
+            "http://127.0.0.1:19428/ss-publish/browser/reader/pub_test_0001"
+        )
+        .is_err());
+        assert!(browser_url_allowed(
+            origin,
+            "http://example.com:19427/ss-publish/browser/reader/pub_test_0001"
+        )
+        .is_err());
+        assert!(browser_url_allowed(origin, "http://127.0.0.1:19427/ss-publish/assets/1").is_err());
+        assert!(browser_url_allowed(
+            origin,
+            "http://127.0.0.1:19427/ss-publish/browser/reader/pub_test_0001?secret=sek_live_abcd"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_mismatched_callback_state_and_cancelled_sign_in_fail_closed() {
+        let stand = StandIn::start();
+        let origin = stand.origin();
+        let wrong = sign_in(origin, |_| {
+            let redirect = stand.redirect();
+            let host = redirect
+                .trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap()
+                .to_string();
+            let mut stream = TcpStream::connect(host).unwrap();
+            let state = "b".repeat(48);
+            let request = format!(
+                "GET {CALLBACK_PATH}?code=code-live-1&state={state} HTTP/1.1\r\nHost: {ORIGIN_HOST}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).unwrap();
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!wrong.to_string().contains("sek_live_"));
+        assert!(wrong.to_string().contains("state") || wrong.to_string().contains("callback"));
+        let cancelled = sign_in(origin, |_| Err(WireError::Cancelled)).unwrap_err();
+        assert!(matches!(cancelled, WireError::Cancelled));
+        assert!(!cancelled.to_string().contains("sek_live_"));
+    }
+
+    #[test]
+    fn pkce_mismatch_stale_revision_wrong_owner_and_retry_stay_explicit() {
+        let stand = StandIn::start();
+        let origin = stand.origin();
+        let verifier = "a".repeat(64);
+        let state = "s".repeat(48);
+        let begin = post(
+            origin,
+            &envelope(
+                "auth.begin",
+                "begin-key-0123456789abcd",
+                None,
+                json!({
+                    "transportProfile": "local-http-isolated-fixture",
+                    "issuer": ISSUER,
+                    "redirectUri": "http://127.0.0.1:43121/ss-publish/callback",
+                    "codeChallengeMethod": "S256",
+                    "codeChallenge": pkce_s256(&verifier),
+                    "state": state,
+                    "clientId": CLIENT_ID,
+                    "scope": ["prototype:creator"]
+                }),
+            ),
+        )
+        .unwrap();
+        assert!(begin["result"]["authorizationUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/ss-publish/browser/authorize?"));
+        let mismatch = post(
+            origin,
+            &envelope(
+                "auth.exchange",
+                "exchange-key-0123456789",
+                None,
+                json!({
+                    "code": "code-live-1",
+                    "codeVerifier": "b".repeat(64),
+                    "redirectUri": "http://127.0.0.1:43121/ss-publish/callback",
+                    "state": state,
+                    "issuer": ISSUER,
+                    "grantType": "authorization_code"
+                }),
+            ),
+        )
+        .unwrap_err();
+        match &mismatch {
+            WireError::Rejected { code, status: 400 } if code == "pkce_rejected" => {}
+            other => panic!("pkce mismatch returned {other}"),
+        }
+        assert!(!mismatch.to_string().contains("sek_live_"));
+        let stand = StandIn::start();
+        let origin = stand.origin();
+        let (credential, account) = sign_in(origin, |url| {
+            stand.complete_browser(url);
+            Ok(())
+        })
+        .unwrap();
+        let owned = account.episodes[0].clone();
+        let metadata = PublicMetadata::new(
+            &owned.series_title,
+            &owned.episode_title,
+            "A reviewed public synopsis.",
+            "en",
+        )
+        .unwrap();
+        let package = crate::publish::package_prose_bytes(b"Public line.", metadata).unwrap();
+        let key = "same-upload-key-0001";
+        let first = upload_with_key(
+            origin,
+            &credential,
+            &package,
+            &owned,
+            "story-1",
+            "episode-1",
+            key,
+        )
+        .unwrap();
+        let second = upload_with_key(
+            origin,
+            &credential,
+            &package,
+            &owned,
+            "story-1",
+            "episode-1",
+            key,
+        )
+        .unwrap();
+        assert_eq!(first.revision_id, second.revision_id);
+        assert!(first
+            .browser_preview_url
+            .unwrap()
+            .contains(&first.revision_id));
+        let stale = confirm(origin, &credential, &owned, "rev_test_0099").unwrap_err();
+        assert!(
+            matches!(stale, WireError::Rejected { ref code, status: 409 } if code == "stale_revision")
+        );
+        let intruder = Credential {
+            id: format!("cred_live_{}", "ef".repeat(16)),
+            secret: format!("sek_live_{}", "12".repeat(32)),
+        };
+        let confirmed = confirm(origin, &credential, &owned, &first.revision_id).unwrap();
+        let foreign = read_publication(
+            origin,
+            &intruder,
+            confirmed.canonical_url.as_deref().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(foreign, WireError::Rejected { ref code, status: 403 } if code == "not_owner")
+        );
+        assert!(!foreign.to_string().contains(&intruder.secret));
+        assert!(!stand.saw_private());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn session_memory_is_deliberate_and_writes_nothing() {
+        let credential = Credential {
+            id: format!("cred_live_{}", "ab".repeat(16)),
+            secret: format!("sek_live_{}", "cd".repeat(32)),
+        };
+        assert_eq!(
+            keep_credential(&credential),
+            CredentialKeeping::SessionMemory
+        );
+        assert!(load_kept_credential().is_none());
+        assert!(!format!("{credential:?}").contains("sek_live_"));
+    }
+
+    #[test]
+    fn busy_retries_the_same_key_and_oversized_does_not() {
+        let listener = TcpListener::bind((ORIGIN_HOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut raw = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let mut body_at = None;
+                let mut need = 0_usize;
+                loop {
+                    let read = match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(read) => read,
+                        Err(_) => break,
+                    };
+                    raw.extend_from_slice(&chunk[..read]);
+                    if body_at.is_none() {
+                        if let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            body_at = Some(split + 4);
+                            let header = String::from_utf8_lossy(&raw[..split]);
+                            need = header
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                        }
+                    }
+                    if body_at.is_some_and(|start| raw.len() >= start + need) {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&raw);
+                let key = text
+                    .split("\"idempotencyKey\":\"")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('"')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let command = text
+                    .split("\"command\":\"")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('"')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                record.lock().unwrap().push((command.clone(), key));
+                let count = record.lock().unwrap().len();
+                let (status, retryable) = if count == 1 {
+                    (503, true)
+                } else {
+                    (200, false)
+                };
+                let body = if status == 503 {
+                    br#"{"protocol":"scroll-studio.publishing.private-prototype.v1","ok":false,"command":null,"idempotentReplay":false,"error":{"code":"limit_exceeded","retryable":true}}"#.to_vec()
+                } else {
+                    br#"{"protocol":"scroll-studio.publishing.private-prototype.v1","ok":true,"command":"account.discover","idempotentReplay":false,"result":{"account":{"accountId":"acct_test_owner_a","handle":"ada","testOnly":true,"nonProductionLabel":"TEST-ONLY","identityProof":"browser-fixture-affirmation","series":[]}}}"#.to_vec()
+                };
+                let _ = retryable;
+                let http = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = stream.write_all(http.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        let credential = Credential {
+            id: format!("cred_live_{}", "ab".repeat(16)),
+            secret: format!("sek_live_{}", "cd".repeat(32)),
+        };
+        let found = discover(Origin { port }, &credential).unwrap();
+        assert_eq!(found.handle, "ada");
+        let calls = seen.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, calls[1].1);
+        let once = TcpListener::bind((ORIGIN_HOST, 0)).unwrap();
+        let once_port = once.local_addr().unwrap().port();
+        let hits = Arc::new(Mutex::new(0_u8));
+        let counted = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = once.accept() {
+                *counted.lock().unwrap() += 1;
+                let body = br#"{"protocol":"scroll-studio.publishing.private-prototype.v1","ok":false,"command":"episode.upload","idempotentReplay":false,"error":{"code":"limit_exceeded","retryable":false}}"#;
+                let http = format!("HTTP/1.1 413 X\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = stream.write_all(http.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        });
+        let rejected = post(Origin { port: once_port }, &json!({"protocol": PROTOCOL, "command": "episode.upload", "idempotencyKey": "oversized-key-000001", "body": {}})).unwrap_err();
+        assert!(
+            matches!(rejected, WireError::Rejected { ref code, status: 413 } if code == "limit_exceeded")
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(*hits.lock().unwrap(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_credential_manager_round_trips_without_a_story_file() {
+        windows_store::delete();
+        let credential = Credential {
+            id: format!("cred_live_{}", "ab".repeat(16)),
+            secret: format!("sek_live_{}", "cd".repeat(32)),
+        };
+        assert_eq!(
+            keep_credential(&credential),
+            CredentialKeeping::WindowsCredentialManager
+        );
+        let loaded = load_kept_credential().expect("stored credential");
+        assert_eq!(loaded.id(), credential.id());
+        assert_eq!(loaded.secret, credential.secret);
+        windows_store::delete();
+        assert!(load_kept_credential().is_none());
     }
 
     struct StandIn {
@@ -911,8 +1443,10 @@ mod tests {
         exchanged: bool,
         revision: String,
         publication: String,
+        uploads: std::collections::HashMap<String, String>,
         withdrawn: bool,
         saw_fixture: bool,
+        saw_private: bool,
     }
 
     impl StandIn {
@@ -927,8 +1461,10 @@ mod tests {
                 exchanged: false,
                 revision: "rev_test_0001".into(),
                 publication: "pub_test_0001".into(),
+                uploads: std::collections::HashMap::new(),
                 withdrawn: false,
                 saw_fixture: false,
+                saw_private: false,
             }));
             let shared = Arc::clone(&state);
             std::thread::spawn(move || serve(listener, shared));
@@ -944,6 +1480,20 @@ mod tests {
 
         fn saw_fixture(&self) -> bool {
             self.state.lock().unwrap().saw_fixture
+        }
+
+        fn saw_private(&self) -> bool {
+            self.state.lock().unwrap().saw_private
+        }
+
+        fn redirect(&self) -> String {
+            for _ in 0..50 {
+                if let Some(redirect) = self.state.lock().unwrap().redirect.clone() {
+                    return redirect;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("begin did not store a redirect");
         }
 
         fn complete_browser(&self, authorization_url: &str) {
@@ -979,7 +1529,7 @@ mod tests {
     }
 
     fn serve(listener: TcpListener, state: Arc<Mutex<StandState>>) {
-        for _ in 0..8 {
+        for _ in 0..24 {
             let Ok((mut stream, _)) = listener.accept() else {
                 break;
             };
@@ -1026,8 +1576,14 @@ mod tests {
                 }
                 "auth.exchange" => {
                     let mut guard = state.lock().unwrap();
+                    let verifier = value["body"]["codeVerifier"].as_str().unwrap_or("");
+                    let challenge_ok =
+                        guard.verifier_challenge.as_deref() == Some(pkce_s256(verifier).as_str());
                     if guard.exchanged {
                         err("exchange_consumed")
+                    } else if !challenge_ok {
+                        guard.exchanged = true;
+                        err("pkce_rejected")
                     } else {
                         guard.exchanged = true;
                         let secret = "sek_live_".to_string() + &"ab".repeat(32);
@@ -1039,18 +1595,36 @@ mod tests {
                 }
                 "account.discover" => ok("account.discover", json!({"account": sample_account()})),
                 "episode.upload" => {
-                    let guard = state.lock().unwrap();
+                    let body_text = value["body"].to_string();
+                    if body_text.contains("SECRET_") {
+                        state.lock().unwrap().saw_private = true;
+                    }
+                    let key = value["idempotencyKey"].as_str().unwrap_or("").to_string();
+                    let mut guard = state.lock().unwrap();
+                    let revision = if let Some(existing) = guard.uploads.get(&key) {
+                        existing.clone()
+                    } else {
+                        let revision = format!("rev_test_{:04}", guard.uploads.len() + 1);
+                        guard.uploads.insert(key, revision.clone());
+                        guard.revision = revision.clone();
+                        revision
+                    };
                     ok(
                         "episode.upload",
-                        json!({"acknowledgement": {"accepted": true, "effect": "revision-sealed", "authoritative": false, "private": true, "localOriginals": "untouched", "seriesId": "ser_test_north", "episodeId": "ep_test_platform", "revisionId": guard.revision, "contentSha256": value["body"]["expectedSha256"], "browserPreviewUrl": format!("http://{ORIGIN_HOST}:{}/ss-publish/browser/preview/ser_test_north/ep_test_platform/{}", listener_port(&listener), guard.revision)}}),
+                        json!({"acknowledgement": {"accepted": true, "effect": "revision-sealed", "authoritative": false, "private": true, "localOriginals": "untouched", "seriesId": "ser_test_north", "episodeId": "ep_test_platform", "revisionId": revision, "contentSha256": value["body"]["expectedSha256"], "browserPreviewUrl": format!("http://{ORIGIN_HOST}:{}/ss-publish/browser/preview/ser_test_north/ep_test_platform/{revision}", listener_port(&listener))}}),
                     )
                 }
                 "publication.confirm" => {
+                    let requested = value["body"]["revisionId"].as_str().unwrap_or("");
                     let guard = state.lock().unwrap();
-                    ok(
-                        "publication.confirm",
-                        json!({"acknowledgement": {"accepted": true, "effect": "confirm-recorded", "authoritative": false, "seriesId": "ser_test_north", "episodeId": "ep_test_platform", "revisionId": guard.revision, "publicationId": guard.publication, "canonicalUrl": format!("http://{ORIGIN_HOST}:{}/ss-publish/browser/reader/{}", listener_port(&listener), guard.publication), "publicInternet": false, "policyEligibility": "private-prototype-only"}}),
-                    )
+                    if requested != guard.revision {
+                        err("stale_revision")
+                    } else {
+                        ok(
+                            "publication.confirm",
+                            json!({"acknowledgement": {"accepted": true, "effect": "confirm-recorded", "authoritative": false, "seriesId": "ser_test_north", "episodeId": "ep_test_platform", "revisionId": guard.revision, "publicationId": guard.publication, "canonicalUrl": format!("http://{ORIGIN_HOST}:{}/ss-publish/browser/reader/{}", listener_port(&listener), guard.publication), "publicInternet": false, "policyEligibility": "private-prototype-only"}}),
+                        )
+                    }
                 }
                 "publication.withdraw" => {
                     state.lock().unwrap().withdrawn = true;
@@ -1061,7 +1635,10 @@ mod tests {
                     )
                 }
                 "publication.read" => {
-                    if state.lock().unwrap().withdrawn {
+                    let credential_id = value["credential"]["credentialId"].as_str().unwrap_or("");
+                    if credential_id != format!("cred_live_{}", "cd".repeat(16)) {
+                        err("not_owner")
+                    } else if state.lock().unwrap().withdrawn {
                         err("withdrawn")
                     } else {
                         let guard = state.lock().unwrap();

@@ -2,8 +2,17 @@ use super::*;
 use scroll_studio::publish::{self, EpisodeKind, LinkError, LocalDestination, PublicMetadata};
 use scroll_studio::publish_wire::{self, Origin};
 
-pub(super) type SignInResult =
-    Result<(publish_wire::Credential, publish_wire::AccountSnapshot), String>;
+pub(super) enum ServicePayload {
+    SignedIn(publish_wire::Credential, publish_wire::AccountSnapshot),
+    Noted {
+        ack: publish_wire::Acknowledgement,
+        message: String,
+        status: Option<publish_wire::LiveStatus>,
+    },
+    Status(publish_wire::LiveStatus, String),
+}
+
+pub(super) type SignInResult = Result<ServicePayload, String>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PublishKind {
@@ -220,7 +229,7 @@ impl Studio {
                     if ui.button("Check status").clicked() {
                         check_status = true;
                     }
-                    if ui.button("Confirm").clicked() {
+                    if ui.button("Publish").clicked() {
                         confirm_publication = true;
                     }
                     if ui.button("Withdraw").clicked() {
@@ -283,34 +292,43 @@ impl Studio {
             return;
         };
         let Some(ack) = self.publish.acknowledgement().cloned() else {
-            self.publish_draft.message = Some("Record a revision before confirming it.".into());
+            self.publish_draft.message = Some("Record a revision before publishing it.".into());
             return;
         };
-        let result = if confirm {
-            publish_wire::confirm(Origin::pinned(), &credential, &owned, &ack.revision_id)
-        } else {
-            let Some(publication_id) = ack.publication_id.clone() else {
-                self.publish_draft.message =
-                    Some("Confirm the revision before withdrawing it.".into());
-                return;
-            };
-            publish_wire::withdraw(
-                Origin::pinned(),
-                &credential,
-                &owned,
-                &publication_id,
-                &ack.revision_id,
-            )
-        };
-        match result {
-            Ok(next) => {
-                let effect = next.effect.clone();
-                self.publish.note_acknowledgement(next);
-                self.publish_draft.message =
-                    Some(format!("{effect}. This is not the current status."));
+        self.spawn_service(move || {
+            let next = if confirm {
+                publish_wire::confirm(Origin::pinned(), &credential, &owned, &ack.revision_id)
+            } else {
+                let publication_id = ack
+                    .publication_id
+                    .clone()
+                    .ok_or_else(|| "Publish the revision before withdrawing it.".to_string())?;
+                publish_wire::withdraw(
+                    Origin::pinned(),
+                    &credential,
+                    &owned,
+                    &publication_id,
+                    &ack.revision_id,
+                )
             }
-            Err(error) => self.publish_draft.message = Some(error.to_string()),
-        }
+            .map_err(|error| error.to_string())?;
+            let url = next
+                .canonical_url
+                .clone()
+                .ok_or_else(|| "The service did not return a reader URL.".to_string())?;
+            let status = publish_wire::read_publication(Origin::pinned(), &credential, &url)
+                .map_err(|error| error.to_string())?;
+            let label = match &status {
+                publish_wire::LiveStatus::Read { status, .. } => status.clone(),
+                publish_wire::LiveStatus::Discover { status, .. } => status.clone(),
+                publish_wire::LiveStatus::NotRead => "unread".into(),
+            };
+            Ok(ServicePayload::Noted {
+                ack: next,
+                message: format!("Current status: {label}. The acknowledgement is not the status."),
+                status: Some(status),
+            })
+        });
     }
 
     fn poll_sign_in(&mut self) {
@@ -323,12 +341,33 @@ impl Studio {
         }
         if let Some(result) = finished {
             match result {
-                Ok((credential, account)) => {
+                Ok(ServicePayload::SignedIn(credential, account)) => {
                     let handle = account.handle.clone();
                     self.publish.store_sign_in(credential, account);
+                    let where_kept = match self.publish.keeping() {
+                        Some(publish_wire::CredentialKeeping::WindowsCredentialManager) => {
+                            "Windows Credential Manager"
+                        }
+                        _ => "memory for this session",
+                    };
                     self.publish_draft.message = Some(format!(
-                        "Signed in as {handle}. The credential is test-only."
+                        "Signed in as {handle}. Test-only credential kept in {where_kept}."
                     ));
+                }
+                Ok(ServicePayload::Noted {
+                    ack,
+                    message,
+                    status,
+                }) => {
+                    self.publish.note_acknowledgement(ack);
+                    if let Some(status) = status {
+                        self.publish.note_live(status);
+                    }
+                    self.publish_draft.message = Some(message);
+                }
+                Ok(ServicePayload::Status(status, message)) => {
+                    self.publish.note_live(status);
+                    self.publish_draft.message = Some(message);
                 }
                 Err(error) => self.publish_draft.message = Some(error),
             }
@@ -343,6 +382,7 @@ impl Studio {
         self.publish_sign_in = Some(rx);
         std::thread::spawn(move || {
             let result = publish_wire::sign_in(Origin::pinned(), publish_wire::open_system_browser)
+                .map(|(credential, account)| ServicePayload::SignedIn(credential, account))
                 .map_err(|error| error.to_string());
             let _ = tx.send(result);
         });
@@ -364,17 +404,19 @@ impl Studio {
                 Some("There is no reader URL to check. Nothing was uploaded.".into());
             return;
         };
-        match publish_wire::read_publication(Origin::pinned(), &credential, &url) {
-            Ok(status) => {
-                let label = match &status {
-                    publish_wire::LiveStatus::Read { status, .. } => status.clone(),
-                    _ => "unread".into(),
-                };
-                self.publish.note_live(status);
-                self.publish_draft.message = Some(format!("Current status: {label}."));
-            }
-            Err(error) => self.publish_draft.message = Some(error.to_string()),
-        }
+        self.spawn_service(move || {
+            let status = publish_wire::read_publication(Origin::pinned(), &credential, &url)
+                .map_err(|error| error.to_string())?;
+            let label = match &status {
+                publish_wire::LiveStatus::Read { status, .. } => status.clone(),
+                publish_wire::LiveStatus::Discover { status, .. } => status.clone(),
+                publish_wire::LiveStatus::NotRead => "unread".into(),
+            };
+            Ok(ServicePayload::Status(
+                status,
+                format!("Current status: {label}."),
+            ))
+        });
     }
 
     fn sync_publish_draft(&mut self) {
@@ -499,23 +541,41 @@ impl Studio {
             Some(id) => format!("chapter-{id}"),
             None => "prose".into(),
         };
-        match publish_wire::upload(
-            Origin::pinned(),
-            &credential,
-            &package,
-            &owned,
-            &story_ref,
-            "episode",
-        ) {
-            Ok(ack) => {
+        self.spawn_service(move || {
+            publish_wire::upload(
+                Origin::pinned(),
+                &credential,
+                &package,
+                &owned,
+                &story_ref,
+                "episode",
+            )
+            .map(|ack| {
                 let revision = ack.revision_id.clone();
-                self.publish.note_acknowledgement(ack);
-                self.publish_draft.message = Some(format!(
-                    "Recorded {revision}. This is not the current status."
-                ));
-            }
-            Err(error) => self.publish_draft.message = Some(error.to_string()),
+                ServicePayload::Noted {
+                    ack,
+                    message: format!("Recorded {revision}. This is not the current status."),
+                    status: None,
+                }
+            })
+            .map_err(|error| error.to_string())
+        });
+    }
+
+    fn spawn_service(
+        &mut self,
+        work: impl FnOnce() -> Result<ServicePayload, String> + Send + 'static,
+    ) {
+        if self.publish_sign_in.is_some() {
+            self.publish_draft.message = Some("A publishing request is already running.".into());
+            return;
         }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.publish_sign_in = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        self.publish_draft.message = Some("Working away from the editor.".into());
     }
 
     fn choose_prose_file(&mut self) {
