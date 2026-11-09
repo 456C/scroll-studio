@@ -89,18 +89,18 @@ jobs:
           if (-not $hasPng -or -not $hasMjpeg) {
             throw 'Blocked. The pinned FFmpeg build is missing a png or mjpeg decoder.'
           }
-      - name: Check out isolated service pin e3eb462
+      - name: Check out isolated service pin 464766d
         uses: actions/checkout@v4
         with:
-          ref: e3eb462a63b86f793cdf9de5a37a07090ccbc8b7
-          path: service-e3eb462
+          ref: 464766d97087cb26a12de6e009323951c43e1596
+          path: service-464766d
           fetch-depth: 1
           persist-credentials: false
       - name: Confirm the isolated service tree
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:GITHUB_WORKSPACE 'service-e3eb462'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'service-464766d'
           foreach ($needed in @(
             'prototypes\publishing\test_contract.py',
             'prototypes\publishing\test_listener.py',
@@ -123,7 +123,7 @@ jobs:
           Write-Host 'Not run, and a skip would not be Windows browser proof:'
           Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_chrome_sign_in_sends_service_origin'
           Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_phone_viewport_screenshot'
-          python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close
+          python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close prototypes.publishing.test_listener.ListenerTests.test_busy_admission_does_not_follow_a_trickle
       - name: Smoke the listener and drive the real browser
         shell: pwsh
         run: |
