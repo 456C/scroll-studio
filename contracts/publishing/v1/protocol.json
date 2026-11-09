@@ -9,8 +9,15 @@
   "exampleRedirect": "http://127.0.0.1:43121/ss-publish/callback",
   "selectionMode": "selected-episode-only",
   "policyEligibilityPrivate": "private-prototype-only",
-  "identityProof": "fixture-login-hint",
+  "identityProof": "browser-fixture-affirmation",
   "genericBypassAccepted": false,
+  "origin": {
+    "scheme": "http",
+    "host": "127.0.0.1",
+    "port": 19427,
+    "exact": "http://127.0.0.1:19427",
+    "hostHeader": "127.0.0.1:19427"
+  },
   "issuer": {
     "exact": "http://127.0.0.1:19427/ss-publish/test-issuer",
     "role": "prototype-test-issuer",
@@ -18,14 +25,14 @@
   },
   "reader": {
     "host": "127.0.0.1",
-    "port": 19428,
-    "pathPrefix": "/ss-publish/reader/"
+    "port": 19427,
+    "pathPrefix": "/ss-publish/browser/reader/"
   },
   "redirect": {
     "scheme": "http",
     "host": "127.0.0.1",
     "path": "/ss-publish/callback",
-    "forbidPorts": [19427, 19428]
+    "forbidPorts": [19427]
   },
   "transport": {
     "enabledProfile": "local-http-isolated-fixture",
@@ -58,7 +65,9 @@
     "maxCodeVerifierChars": 128,
     "authorizationTtlSeconds": 120,
     "credentialTtlSeconds": 3600,
-    "pngDecompressCapBytes": 32000000
+    "pngDecompressCapBytes": 32000000,
+    "maxCommandBytes": 28000000,
+    "browserSessionSeconds": 900
   },
   "jpegDecode": "JPEG acceptance is a full bounded decode to pixels. A header marker check is not acceptance.",
   "prose": "UTF-8 text is new in this protocol. The desktop Story type has chapters and no prose document.",

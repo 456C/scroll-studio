@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from prototypes.publishing.fixture_harness import FixtureHarness
 from prototypes.publishing.media import facts
+from prototypes.publishing.transport import browser_affirm
 from prototypes.publishing.oracle import (
     PROTOCOL,
     SCHEMA,
@@ -94,25 +95,25 @@ def _step(world, ctx, step):
     credential_from = step.get("credentialFrom")
     if credential_from:
         envelope["credential"] = dict(ctx["credentials"][credential_from])
-    login = step.get("harnessLogin")
-    if login is None and step.get("use") == "begin-owner-a":
-        login = "acct_test_owner_a"
-    if login is None and step.get("use") == "begin-owner-b":
-        login = "acct_test_owner_b"
     harness = FixtureHarness(
         parse_clock(step.get("clock", ctx["clock"])),
         pause=bool(step.get("pauseBeforeCommit", False)),
-        login_account_id=login,
     )
     response = apply(world, envelope, harness)
-    if harness.redirect_url:
-        ctx["redirects"][step["id"]] = harness.redirect_url
     problems = validate({"$ref": "#/$defs/response"}, response, SCHEMA)
     if problems:
         raise SequenceError(f"{step['id']} response schema {problems}")
     _scan(response, step["command"])
     if response.get("ok") and step["command"] == "auth.begin":
-        _check_begin(response, harness)
+        _check_begin(response)
+        if not response.get("idempotentReplay"):
+            account = step.get("browserAffirm")
+            if account is None and step.get("use") == "begin-owner-a":
+                account = "acct_test_owner_a"
+            if account is None and step.get("use") == "begin-owner-b":
+                account = "acct_test_owner_b"
+            location, _cookie = browser_affirm(world, response["result"]["authorizationUrl"], account, harness)
+            ctx["redirects"][step["id"]] = location
     if response.get("ok") and step["command"] == "auth.exchange":
         _check_credential(response)
         cred = response["result"]["credential"]
@@ -123,30 +124,25 @@ def _step(world, ctx, step):
     return response
 
 
-def _check_begin(response, harness):
+def _check_begin(response):
     result = response["result"]
     if "testOnlyRedirect" in result or "loginHint" in result:
         raise SequenceError("oracle hook leaked into the network result")
     authorize = urlsplit(result["authorizationUrl"])
-    redirect = urlsplit(harness.redirect_url or "")
     authorize_pairs = parse_qsl(authorize.query)
     authorize_keys = [key for key, _value in authorize_pairs]
-    redirect_keys = [key for key, _value in parse_qsl(redirect.query)]
     authorize_query = dict(authorize_pairs)
+    if authorize.path != "/ss-publish/browser/authorize":
+        raise SequenceError("authorize path")
     if authorize_query.get("redirect_uri") != PROTOCOL["exampleRedirect"]:
         raise SequenceError("redirect did not round-trip")
     if authorize_query.get("code_challenge_method") != "S256" or authorize_query.get("response_type") != "code":
         raise SequenceError("authorize query")
     if authorize_keys != PROTOCOL["authorizationQueryKeys"]:
         raise SequenceError(f"authorization keys {authorize_keys}")
-    if harness.redirect_url is None:
-        if response.get("idempotentReplay") is not True:
-            raise SequenceError("missing harness redirect")
-    elif redirect_keys != ["code", "state"]:
-        raise SequenceError(f"callback keys {redirect_keys}")
     if result["issuerRole"] != "prototype-test-issuer" or result["distinctFromProductionProvider"] is not True:
         raise SequenceError("issuer role")
-    if "code" in authorize_keys or result["identityProof"] != "fixture-login-hint":
+    if "code" in authorize_keys or result["identityProof"] != "browser-fixture-affirmation":
         raise SequenceError("begin leaked a code or identity proof")
 
 
@@ -164,7 +160,7 @@ def _check_credential(response):
     for key, value in expected.items():
         if cred[key] != value:
             raise SequenceError(f"credential {key}")
-    if not cred["credentialId"].startswith("cred_test_") or not cred["secret"].startswith("sek_test_"):
+    if not cred["credentialId"].startswith("cred_live_") or not cred["secret"].startswith("sek_live_"):
         raise SequenceError("credential prefix")
 
 

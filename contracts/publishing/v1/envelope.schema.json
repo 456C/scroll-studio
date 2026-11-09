@@ -17,8 +17,8 @@
       "required": ["credentialId", "secret"],
       "additionalProperties": false,
       "properties": {
-        "credentialId": {"type": "string", "pattern": "^cred_test_[0-9]{16}$"},
-        "secret": {"type": "string", "pattern": "^sek_test_[0-9]{16}$"}
+        "credentialId": {"type": "string", "pattern": "^cred_live_[0-9a-f]{32}$"},
+        "secret": {"type": "string", "pattern": "^sek_live_[0-9a-f]{64}$"}
       }
     },
     "stateValue": {"type": "string", "minLength": 43, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]{43,128}$"},
@@ -51,7 +51,7 @@
       "additionalProperties": false,
       "properties": {
         "ordinal": {"type": "integer", "minimum": 1, "maximum": 100},
-        "mediaType": {"enum": ["image/png", "image/jpeg", "image/webp", "image/gif"]},
+        "mediaType": {"enum": ["image/png", "image/jpeg"]},
         "width": {"type": "integer", "minimum": 1, "maximum": 4096},
         "height": {"type": "integer", "minimum": 1, "maximum": 4096},
         "byteLength": {"type": "integer", "minimum": 1, "maximum": 2000000},
@@ -75,7 +75,7 @@
       "properties": {
         "kind": {"const": "prose"},
         "mediaType": {"type": "string", "minLength": 1, "maxLength": 80},
-        "text": {"type": "string", "minLength": 1, "maxLength": 65536}
+        "text": {"type": "string", "minLength": 1, "x-maxUtf8Bytes": 65536}
       }
     },
     "beginBody": {
@@ -179,20 +179,418 @@
         "targetIdempotencyKey": {"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]{16,128}$"}
       }
     },
-    "response": {
-      "oneOf": [
-        {
+    "revisionId": {"type": "string", "pattern": "^rev_test_[0-9]{4}$"},
+    "publicationId": {"type": "string", "pattern": "^pub_test_[0-9]{4}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "accountId": {"type": "string", "pattern": "^acct_test_[a-z0-9_]{1,64}$"},
+    "canonicalUrl": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:19427/ss-publish/browser/reader/pub_test_[0-9]{4}$"},
+    "nullableCanonical": {
+      "anyOf": [{"type": "null"}, {"$ref": "#/$defs/canonicalUrl"}]
+    },
+    "nullableRevision": {
+      "anyOf": [{"type": "null"}, {"$ref": "#/$defs/revisionId"}]
+    },
+    "nullablePublication": {
+      "anyOf": [{"type": "null"}, {"$ref": "#/$defs/publicationId"}]
+    },
+    "publicationView": {
+      "type": "object",
+      "required": ["authoritative", "status", "publicationId", "publishedRevisionId", "headRevisionId", "canonicalUrl"],
+      "additionalProperties": false,
+      "properties": {
+        "authoritative": {"const": true},
+        "status": {"enum": ["draft", "published", "withdrawn", "held"]},
+        "publicationId": {"$ref": "#/$defs/nullablePublication"},
+        "publishedRevisionId": {"$ref": "#/$defs/nullableRevision"},
+        "headRevisionId": {"$ref": "#/$defs/revisionId"},
+        "canonicalUrl": {"$ref": "#/$defs/nullableCanonical"}
+      }
+    },
+    "episodeView": {
+      "type": "object",
+      "required": ["episodeId", "ordinal", "title", "publication"],
+      "additionalProperties": false,
+      "properties": {
+        "episodeId": {"type": "string", "pattern": "^ep_test_[a-z0-9_]{1,64}$"},
+        "ordinal": {"type": "integer", "minimum": 1},
+        "title": {"type": "string", "minLength": 1, "maxLength": 120},
+        "publication": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/publicationView"}]}
+      }
+    },
+    "seriesView": {
+      "type": "object",
+      "required": ["seriesId", "title", "ownerAccountId", "episodes"],
+      "additionalProperties": false,
+      "properties": {
+        "seriesId": {"type": "string", "pattern": "^ser_test_[a-z0-9_]{1,64}$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 120},
+        "ownerAccountId": {"$ref": "#/$defs/accountId"},
+        "episodes": {"type": "array", "items": {"$ref": "#/$defs/episodeView"}}
+      }
+    },
+    "accountView": {
+      "type": "object",
+      "required": ["accountId", "handle", "testOnly", "nonProductionLabel", "identityProof", "series"],
+      "additionalProperties": false,
+      "properties": {
+        "accountId": {"$ref": "#/$defs/accountId"},
+        "handle": {"type": "string", "minLength": 1, "maxLength": 80},
+        "testOnly": {"const": true},
+        "nonProductionLabel": {"const": "TEST-ONLY"},
+        "identityProof": {"const": "browser-fixture-affirmation"},
+        "series": {"type": "array", "items": {"$ref": "#/$defs/seriesView"}}
+      }
+    },
+    "credentialView": {
+      "type": "object",
+      "required": ["credentialId", "secret", "tokenType", "scope", "accountId", "expiresAt", "testOnly", "nonProductionLabel", "issuerRole", "distinctFromProductionProvider", "delivery"],
+      "additionalProperties": false,
+      "properties": {
+        "credentialId": {"type": "string", "pattern": "^cred_live_[0-9a-f]{32}$"},
+        "secret": {"type": "string", "pattern": "^sek_live_[0-9a-f]{64}$"},
+        "tokenType": {"const": "prototype-credential"},
+        "scope": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"const": "prototype:creator"}},
+        "accountId": {"$ref": "#/$defs/accountId"},
+        "expiresAt": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+        "testOnly": {"const": true},
+        "nonProductionLabel": {"const": "TEST-ONLY"},
+        "issuerRole": {"const": "prototype-test-issuer"},
+        "distinctFromProductionProvider": {"const": true},
+        "delivery": {"const": "service-channel-only"}
+      }
+    },
+    "inProgressResult": {
+      "type": "object",
+      "required": ["acknowledgement"],
+      "additionalProperties": false,
+      "properties": {
+        "acknowledgement": {
           "type": "object",
-          "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+          "required": ["accepted", "effect", "authoritative", "idempotencyKey"],
           "additionalProperties": false,
           "properties": {
-            "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
-            "ok": {"const": true},
-            "command": {"type": "string"},
-            "idempotentReplay": {"type": "boolean"},
-            "result": {"type": "object"}
+            "accepted": {"const": false},
+            "effect": {"const": "in-progress"},
+            "authoritative": {"const": false},
+            "idempotencyKey": {"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]{16,128}$"}
+          }
+        }
+      }
+    },
+    "beginResult": {
+      "type": "object",
+      "required": ["authorizationUrl", "expiresAt", "issuer", "issuerRole", "distinctFromProductionProvider", "identityProof", "state", "clientId"],
+      "additionalProperties": false,
+      "properties": {
+        "authorizationUrl": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:19427/ss-publish/browser/authorize\\?.*"},
+        "expiresAt": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+        "issuer": {"const": "http://127.0.0.1:19427/ss-publish/test-issuer"},
+        "issuerRole": {"const": "prototype-test-issuer"},
+        "distinctFromProductionProvider": {"const": true},
+        "identityProof": {"const": "browser-fixture-affirmation"},
+        "state": {"$ref": "#/$defs/stateValue"},
+        "clientId": {"const": "scroll-studio-desktop-test"}
+      }
+    },
+    "cancelAuthResult": {
+      "type": "object",
+      "required": ["cancelled", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "cancelled": {"const": true},
+        "state": {"$ref": "#/$defs/stateValue"}
+      }
+    },
+    "exchangeResult": {
+      "type": "object",
+      "required": ["credential", "account"],
+      "additionalProperties": false,
+      "properties": {
+        "credential": {"$ref": "#/$defs/credentialView"},
+        "account": {"$ref": "#/$defs/accountView"}
+      }
+    },
+    "revokeResult": {
+      "type": "object",
+      "required": ["revoked", "credentialId"],
+      "additionalProperties": false,
+      "properties": {
+        "revoked": {"const": true},
+        "credentialId": {"type": "string", "pattern": "^cred_live_[0-9a-f]{32}$"}
+      }
+    },
+    "discoverResult": {
+      "type": "object",
+      "required": ["account"],
+      "additionalProperties": false,
+      "properties": {"account": {"$ref": "#/$defs/accountView"}}
+    },
+    "uploadAck": {
+      "type": "object",
+      "required": ["acknowledgement"],
+      "additionalProperties": false,
+      "properties": {
+        "acknowledgement": {
+          "type": "object",
+          "required": ["accepted", "effect", "authoritative", "private", "localOriginals", "seriesId", "episodeId", "revisionId", "contentSha256", "browserPreviewUrl"],
+          "additionalProperties": false,
+          "properties": {
+            "accepted": {"const": true},
+            "effect": {"const": "revision-sealed"},
+            "authoritative": {"const": false},
+            "private": {"const": true},
+            "localOriginals": {"const": "untouched"},
+            "seriesId": {"type": "string", "pattern": "^ser_test_[a-z0-9_]{1,64}$"},
+            "episodeId": {"type": "string", "pattern": "^ep_test_[a-z0-9_]{1,64}$"},
+            "revisionId": {"$ref": "#/$defs/revisionId"},
+            "contentSha256": {"$ref": "#/$defs/sha256"},
+            "browserPreviewUrl": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:19427/ss-publish/browser/preview/ser_test_[a-z0-9_]{1,64}/ep_test_[a-z0-9_]{1,64}/rev_test_[0-9]{4}$"}
+          }
+        }
+      }
+    },
+    "previewResult": {
+      "type": "object",
+      "required": ["private", "localOriginals", "seriesId", "episodeId", "revisionId", "contentSha256", "publicMetadata", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "private": {"const": true},
+        "localOriginals": {"const": "untouched"},
+        "seriesId": {"type": "string", "pattern": "^ser_test_[a-z0-9_]{1,64}$"},
+        "episodeId": {"type": "string", "pattern": "^ep_test_[a-z0-9_]{1,64}$"},
+        "revisionId": {"$ref": "#/$defs/revisionId"},
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "publicMetadata": {"$ref": "#/$defs/metadata"},
+        "content": {"oneOf": [{"$ref": "#/$defs/comic"}, {"$ref": "#/$defs/prose"}]}
+      }
+    },
+    "confirmAck": {
+      "type": "object",
+      "required": ["acknowledgement"],
+      "additionalProperties": false,
+      "properties": {
+        "acknowledgement": {
+          "type": "object",
+          "required": ["accepted", "effect", "authoritative", "seriesId", "episodeId", "revisionId", "publicationId", "canonicalUrl", "publicInternet", "policyEligibility"],
+          "additionalProperties": false,
+          "properties": {
+            "accepted": {"const": true},
+            "effect": {"const": "confirm-recorded"},
+            "authoritative": {"const": false},
+            "seriesId": {"type": "string", "pattern": "^ser_test_[a-z0-9_]{1,64}$"},
+            "episodeId": {"type": "string", "pattern": "^ep_test_[a-z0-9_]{1,64}$"},
+            "revisionId": {"$ref": "#/$defs/revisionId"},
+            "publicationId": {"$ref": "#/$defs/publicationId"},
+            "canonicalUrl": {"$ref": "#/$defs/canonicalUrl"},
+            "publicInternet": {"const": false},
+            "policyEligibility": {"const": "private-prototype-only"}
+          }
+        }
+      }
+    },
+    "withdrawAck": {
+      "type": "object",
+      "required": ["acknowledgement"],
+      "additionalProperties": false,
+      "properties": {
+        "acknowledgement": {
+          "type": "object",
+          "required": ["accepted", "effect", "authoritative", "seriesId", "episodeId", "revisionId", "publicationId", "canonicalUrl", "publicInternet"],
+          "additionalProperties": false,
+          "properties": {
+            "accepted": {"const": true},
+            "effect": {"const": "withdraw-recorded"},
+            "authoritative": {"const": false},
+            "seriesId": {"type": "string", "pattern": "^ser_test_[a-z0-9_]{1,64}$"},
+            "episodeId": {"type": "string", "pattern": "^ep_test_[a-z0-9_]{1,64}$"},
+            "revisionId": {"$ref": "#/$defs/revisionId"},
+            "publicationId": {"$ref": "#/$defs/publicationId"},
+            "canonicalUrl": {"$ref": "#/$defs/canonicalUrl"},
+            "publicInternet": {"const": false}
+          }
+        }
+      }
+    },
+    "readResult": {
+      "type": "object",
+      "required": ["authoritative", "status", "publicationId", "canonicalUrl", "revisionId", "contentSha256", "publicMetadata", "presentation", "publicInternet", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "authoritative": {"const": true},
+        "status": {"const": "published"},
+        "publicationId": {"$ref": "#/$defs/publicationId"},
+        "canonicalUrl": {"$ref": "#/$defs/canonicalUrl"},
+        "revisionId": {"$ref": "#/$defs/revisionId"},
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "publicMetadata": {"$ref": "#/$defs/metadata"},
+        "presentation": {
+          "type": "object",
+          "required": ["viewport", "widthPx", "ordered"],
+          "additionalProperties": false,
+          "properties": {
+            "viewport": {"const": "phone"},
+            "widthPx": {"const": 360},
+            "ordered": {"const": true}
           }
         },
+        "publicInternet": {"const": false},
+        "content": {"oneOf": [{"$ref": "#/$defs/comic"}, {"$ref": "#/$defs/prose"}]}
+      }
+    },
+    "cancelOpResult": {
+      "type": "object",
+      "required": ["targetIdempotencyKey", "targetStatus"],
+      "additionalProperties": false,
+      "properties": {
+        "targetIdempotencyKey": {"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]{16,128}$"},
+        "targetStatus": {"const": "cancelled"}
+      }
+    },
+    "okBegin": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "auth.begin"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/beginResult"}
+      }
+    },
+    "okCancelAuth": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "auth.cancel"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/cancelAuthResult"}
+      }
+    },
+    "okExchange": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "auth.exchange"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/exchangeResult"}
+      }
+    },
+    "okRevoke": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "auth.revoke"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/revokeResult"}
+      }
+    },
+    "okDiscover": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "account.discover"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/discoverResult"}
+      }
+    },
+    "okUpload": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "episode.upload"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"oneOf": [{"$ref": "#/$defs/uploadAck"}, {"$ref": "#/$defs/inProgressResult"}]}
+      }
+    },
+    "okPreview": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "episode.preview"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/previewResult"}
+      }
+    },
+    "okConfirm": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "publication.confirm"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"oneOf": [{"$ref": "#/$defs/confirmAck"}, {"$ref": "#/$defs/inProgressResult"}]}
+      }
+    },
+    "okWithdraw": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "publication.withdraw"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"oneOf": [{"$ref": "#/$defs/withdrawAck"}, {"$ref": "#/$defs/inProgressResult"}]}
+      }
+    },
+    "okRead": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "publication.read"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/readResult"}
+      }
+    },
+    "okCancelOp": {
+      "type": "object",
+      "required": ["protocol", "ok", "command", "idempotentReplay", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {"const": "scroll-studio.publishing.private-prototype.v1"},
+        "ok": {"const": true},
+        "command": {"const": "operation.cancel"},
+        "idempotentReplay": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/cancelOpResult"}
+      }
+    },
+    "response": {
+      "oneOf": [
+        {"$ref": "#/$defs/okBegin"},
+        {"$ref": "#/$defs/okCancelAuth"},
+        {"$ref": "#/$defs/okExchange"},
+        {"$ref": "#/$defs/okRevoke"},
+        {"$ref": "#/$defs/okDiscover"},
+        {"$ref": "#/$defs/okUpload"},
+        {"$ref": "#/$defs/okPreview"},
+        {"$ref": "#/$defs/okConfirm"},
+        {"$ref": "#/$defs/okWithdraw"},
+        {"$ref": "#/$defs/okRead"},
+        {"$ref": "#/$defs/okCancelOp"},
         {
           "type": "object",
           "required": ["protocol", "ok", "command", "idempotentReplay", "error"],

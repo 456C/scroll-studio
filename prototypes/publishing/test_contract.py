@@ -12,6 +12,7 @@ from pathlib import Path
 from prototypes.publishing.consumer_example import FIXTURES, TEMPLATES, _interp, run_sequence
 from prototypes.publishing.fixture_harness import FixtureHarness
 from prototypes.publishing.media import facts
+from prototypes.publishing.schema_validate import validate
 from prototypes.publishing.oracle import (
     LIMITS,
     PROTOCOL,
@@ -23,6 +24,7 @@ from prototypes.publishing.oracle import (
     parse_clock,
 )
 from prototypes.publishing.runtime_rules import new_authorization_code, new_credential, server_now
+from prototypes.publishing.transport import SPEC, browser_affirm, cookie_sent, dispatch
 
 ROOT = Path(__file__).resolve().parents[2]
 SEQUENCES = FIXTURES / "sequences"
@@ -43,17 +45,18 @@ class ContractTests(unittest.TestCase):
     def test_exchange_replay_does_not_return_the_secret(self):
         world = fresh_world()
         body = _begin_body()
-        first, harness = _send(world, "auth.begin", "replay-secret-begin-01", body, login="acct_test_owner_a")
-        again, _again_harness = _send(world, "auth.begin", "replay-secret-begin-01", body, login="acct_test_owner_a")
+        first, harness = _send(world, "auth.begin", "replay-secret-begin-01", body)
+        again, _again_harness = _send(world, "auth.begin", "replay-secret-begin-01", body)
         self.assertEqual(first["result"]["authorizationUrl"], again["result"]["authorizationUrl"])
         self.assertNotIn("testOnlyRedirect", first["result"])
-        exchange_body = _exchange_body(harness)
+        callback, _cookie = browser_affirm(world, first["result"]["authorizationUrl"], "acct_test_owner_a", harness)
+        exchange_body = _exchange_body(callback)
         opened, _opened_harness = _send(world, "auth.exchange", "replay-secret-exchange1", exchange_body)
         replayed, _replay_harness = _send(world, "auth.exchange", "replay-secret-exchange1", exchange_body)
         self.assertFalse(replayed["ok"])
         self.assertEqual(replayed["error"]["code"], "exchange_consumed")
         self.assertNotIn("result", replayed)
-        self.assertTrue(opened["result"]["credential"]["secret"].startswith("sek_test_"))
+        self.assertTrue(opened["result"]["credential"]["secret"].startswith("sek_live_"))
 
     def test_begin_rejects(self):
         document = json.loads((FIXTURES / "begin-rejects.json").read_text(encoding="utf-8"))
@@ -75,7 +78,10 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(slice_props["width"]["maximum"], LIMITS["maxSliceWidth"])
         self.assertEqual(slice_props["height"]["maximum"], LIMITS["maxSliceHeight"])
         self.assertEqual(SCHEMA["$defs"]["comic"]["properties"]["slices"]["maxItems"], LIMITS["maxSlices"])
-        self.assertEqual(SCHEMA["$defs"]["prose"]["properties"]["text"]["maxLength"], LIMITS["maxProseBytes"])
+        prose_text = SCHEMA["$defs"]["prose"]["properties"]["text"]
+        self.assertEqual(prose_text["x-maxUtf8Bytes"], LIMITS["maxProseBytes"])
+        self.assertNotIn("maxLength", prose_text)
+        self.assertEqual(SCHEMA["$defs"]["slice"]["properties"]["mediaType"]["enum"], ["image/png", "image/jpeg"])
         metadata = SCHEMA["$defs"]["metadata"]["properties"]
         self.assertEqual(set(metadata), set(PROTOCOL["publicMetadataAllowlist"]))
         self.assertEqual(metadata["seriesTitle"]["maxLength"], LIMITS["maxTitleChars"])
@@ -145,20 +151,119 @@ class ContractTests(unittest.TestCase):
         first_id, first_secret = new_credential()
         second_id, second_secret = new_credential()
         self.assertNotEqual(first_secret, second_secret)
-        self.assertFalse(first_secret.startswith("sek_test_"))
-        self.assertFalse(first_id.startswith("cred_test_"))
+        self.assertRegex(first_id, r"^cred_live_[0-9a-f]{32}$")
+        self.assertRegex(first_secret, r"^sek_live_[0-9a-f]{64}$")
+        proof = {"credentialId": first_id, "secret": first_secret}
+        self.assertEqual(validate({"$ref": "#/$defs/credentialProof"}, proof, SCHEMA), [])
+        rejected = {"credentialId": "cred_test_" + "0" * 16, "secret": "sek_test_" + "0" * 16}
+        self.assertTrue(validate({"$ref": "#/$defs/credentialProof"}, rejected, SCHEMA))
         self.assertGreaterEqual(len(new_authorization_code()), 32)
         self.assertIsNotNone(server_now().tzinfo)
         oracle_text = (ROOT / "prototypes" / "publishing" / "oracle.py").read_text(encoding="utf-8")
-        self.assertNotIn("sek_test_", oracle_text)
+        self.assertNotIn("sek_live_{", oracle_text)
         harness_text = (ROOT / "prototypes" / "publishing" / "fixture_harness.py").read_text(encoding="utf-8")
-        self.assertIn("sek_test_", harness_text)
+        self.assertIn("sek_live_{number:064x}", harness_text)
 
     def test_fixtures_decode_to_pixels(self):
         for kind in ("png", "jpeg"):
             media = facts(kind)
             self.assertEqual((media["width"], media["height"]), (120, 160))
             self.assertGreater(media["byteLength"], 100)
+
+    def test_browser_reader_uses_session_not_desktop_secret(self):
+        world, credential = _owner_session()
+        body = _comic_body()
+        uploaded, harness = _send(world, "episode.upload", "browser-upload-00001", body, credential)
+        revision = uploaded["result"]["acknowledgement"]["revisionId"]
+        preview = uploaded["result"]["acknowledgement"]["browserPreviewUrl"]
+        self.assertNotIn(credential["secret"], preview)
+        confirmed, _h = _send(
+            world,
+            "publication.confirm",
+            "browser-confirm-0001",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": revision,
+                "policyEligibility": "private-prototype-only",
+            },
+            credential,
+        )
+        canonical = confirmed["result"]["acknowledgement"]["canonicalUrl"]
+        self.assertTrue(canonical.startswith("http://127.0.0.1:19427/ss-publish/browser/reader/"))
+        self.assertNotIn(credential["secret"], canonical)
+        self.assertFalse(cookie_sent("/ss-publish/browser", "/ss-publish/callback"))
+        self.assertTrue(cookie_sent("/ss-publish/browser", "/ss-publish/browser/reader/pub_test_0001"))
+        begin_body = _begin_body()
+        begin_body["state"] = "synthetic-state-owner-a-not-for-production-0002"
+        begin, begin_harness = _send(world, "auth.begin", "browser-begin-0000001", begin_body)
+        _callback, cookie = browser_affirm(world, begin["result"]["authorizationUrl"], "acct_test_owner_a", begin_harness)
+        reader = dispatch(
+            world,
+            {
+                "method": "GET",
+                "path": "/ss-publish/browser/reader/" + confirmed["result"]["acknowledgement"]["publicationId"],
+                "headers": {"host": "127.0.0.1:19427", "cookie": f"ss_publish_fixture={cookie}"},
+                "body": b"",
+            },
+            harness,
+        )
+        self.assertEqual(reader.status, 200)
+        self.assertEqual(reader.headers["cache-control"], "no-store")
+        self.assertNotIn(credential["secret"].encode(), reader.body)
+        self.assertIn(b"TEST ONLY", reader.body)
+        bare = dispatch(
+            world,
+            {
+                "method": "GET",
+                "path": "/ss-publish/browser/reader/" + confirmed["result"]["acknowledgement"]["publicationId"],
+                "headers": {"host": "127.0.0.1:19427"},
+                "body": b"",
+            },
+            harness,
+        )
+        self.assertEqual(bare.status, 401)
+        self.assertNotIn(b"\x89PNG", bare.body)
+        self.assertEqual(set(SPEC["errorStatus"]), set(PROTOCOL["errorCodes"]))
+
+    def test_schema_boundaries_are_independent_of_fixtures(self):
+        prose = {"$ref": "#/$defs/prose"}
+        snow = "雪" * 21846
+        self.assertEqual(len(snow), 21846)
+        self.assertEqual(len(snow.encode("utf-8")), 65538)
+        self.assertTrue(validate(prose, {"kind": "prose", "mediaType": "text/plain; charset=utf-8", "text": snow}, SCHEMA))
+        self.assertEqual(
+            validate(prose, {"kind": "prose", "mediaType": "text/plain; charset=utf-8", "text": "雪" * 21845}, SCHEMA),
+            [],
+        )
+        self.assertTrue(
+            validate(
+                {"$ref": "#/$defs/slice"},
+                {
+                    "ordinal": 1,
+                    "mediaType": "image/webp",
+                    "width": 1,
+                    "height": 1,
+                    "byteLength": 8,
+                    "sha256": "a" * 64,
+                    "bytesBase64": "aaaa",
+                },
+                SCHEMA,
+            )
+        )
+        self.assertTrue(
+            validate(
+                {"$ref": "#/$defs/okUpload"},
+                {
+                    "protocol": PROTOCOL["protocol"],
+                    "ok": True,
+                    "command": "episode.upload",
+                    "idempotentReplay": False,
+                    "result": {"acknowledgement": {"accepted": True, "effect": "revision-sealed", "authoritative": False}},
+                },
+                SCHEMA,
+            )
+        )
 
     def test_oracle_has_no_listener(self):
         for relative in (
@@ -213,7 +318,8 @@ class ContractTests(unittest.TestCase):
         prose["content"]["text"] = "雪" * 21846
         prose.pop("expectedSha256")
         oversized, _prose_harness = _send(world, "episode.upload", "prose-cap-00000001", prose, credential)
-        self.assertEqual(oversized["error"]["code"], "limit_exceeded")
+        self.assertEqual(oversized["error"]["code"], "invalid_request")
+        self.assertEqual(oversized["error"]["detail"], "schema")
 
     def test_episode_byte_budget(self):
         world, credential = _owner_session()
@@ -260,12 +366,12 @@ def _begin_body():
     return _interp(template, {"verifiers": VERIFIERS, "steps": {}, "media": {}})
 
 
-def _exchange_body(harness):
+def _exchange_body(callback_url):
     template = json.loads((TEMPLATES / "exchange-owner-a.json").read_text(encoding="utf-8"))
     from urllib.parse import parse_qsl, urlsplit
 
-    query = dict(parse_qsl(urlsplit(harness.redirect_url).query))
-    ctx = {"verifiers": VERIFIERS, "steps": {}, "redirects": {"begin": harness.redirect_url}, "media": {}}
+    query = dict(parse_qsl(urlsplit(callback_url).query))
+    ctx = {"verifiers": VERIFIERS, "steps": {}, "redirects": {"begin": callback_url}, "media": {}}
     body = _interp(template, ctx)
     body["code"] = query["code"]
     body["state"] = query["state"]
@@ -289,8 +395,9 @@ def _prose_body():
 
 def _owner_session():
     world = fresh_world()
-    _begin, harness = _send(world, "auth.begin", "helper-begin-0000001", _begin_body(), login="acct_test_owner_a")
-    opened, _opened = _send(world, "auth.exchange", "helper-exchange-0001", _exchange_body(harness))
+    begin, harness = _send(world, "auth.begin", "helper-begin-0000001", _begin_body())
+    callback, _cookie = browser_affirm(world, begin["result"]["authorizationUrl"], "acct_test_owner_a", harness)
+    opened, _opened = _send(world, "auth.exchange", "helper-exchange-0001", _exchange_body(callback))
     credential = {
         "credentialId": opened["result"]["credential"]["credentialId"],
         "secret": opened["result"]["credential"]["secret"],
@@ -330,12 +437,8 @@ def _envelope(command, key, body, credential=None):
     return envelope
 
 
-def _send(world, command, key, body, credential=None, login=None, clock=None, pause=False):
-    harness = FixtureHarness(
-        parse_clock(clock or PROTOCOL["defaultClock"]),
-        pause=pause,
-        login_account_id=login,
-    )
+def _send(world, command, key, body, credential=None, clock=None, pause=False):
+    harness = FixtureHarness(parse_clock(clock or PROTOCOL["defaultClock"]), pause=pause)
     return apply(world, _envelope(command, key, body, credential), harness), harness
 
 

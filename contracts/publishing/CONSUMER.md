@@ -11,6 +11,11 @@ The previous head returned cached command results, including credential secrets 
 - `episode.upload`, `publication.confirm`, and `publication.withdraw` return `result.acknowledgement` with `authoritative: false`. They do not include current publication `status`. Current status comes from `account.discover` and `publication.read`.
 - `fixture`, `loginHint`, and `testOnlyRedirect` are not network command fields. A request that contains `fixture` or `loginHint` is `invalid_request`. The begin result has no `testOnlyRedirect`.
 - Comic bytes are accepted only after a bounded decode to pixels. A JPEG header check is not acceptance.
+- Credential ids are `cred_live_` plus 32 hex characters. Secrets are `sek_live_` plus 64 hex characters. `cred_test_` and `sek_test_` fail the schema.
+- Slice `mediaType` is only `image/png` or `image/jpeg`.
+- Prose text is capped at 65536 UTF-8 bytes, not 65536 characters.
+- Success results are command-specific. A result that omits its acknowledgement fields fails validation.
+- The only service origin is `http://127.0.0.1:19427`. Canonical reader URLs use `/ss-publish/browser/reader/`.
 
 The desktop client sends one JSON command at a time. The shared files are the protocol, the envelope schema, and the fixtures. `prototypes/publishing/oracle.py` is the executable check for those files. It keeps state in memory. A later service has to accept the same fixtures. This checkpoint does not open a port.
 
@@ -19,6 +24,8 @@ The desktop client sends one JSON command at a time. The shared files are the pr
 `contracts/publishing/v1/protocol.json` holds limits, command names, error codes, the issuer, the redirect rule, and the client storage rule.
 
 `contracts/publishing/v1/envelope.schema.json` holds the request and response shapes.
+
+`contracts/publishing/v1/transport.json` holds the loopback routes, the command HTTP status map, and the browser cookie.
 
 `prototypes/publishing/fixtures/world.json` holds two `TEST-ONLY` accounts and their series.
 
@@ -41,7 +48,7 @@ The second command prints `comic ok` and `prose ok`.
 
 A request contains `protocol`, `command`, `idempotencyKey`, and `body`.
 
-`credential` is required for `auth.revoke`, `account.discover`, `episode.upload`, `episode.preview`, `publication.confirm`, `publication.withdraw`, `publication.read`, and `operation.cancel`. The object has `credentialId` and `secret`. Both use the `cred_test_` and `sek_test_` prefixes in this protocol. There is no `Authorization` header and no credential in a URL.
+`credential` is required for `auth.revoke`, `account.discover`, `episode.upload`, `episode.preview`, `publication.confirm`, `publication.withdraw`, `publication.read`, and `operation.cancel`. `credentialId` matches `cred_live_` and 32 hex characters. `secret` matches `sek_live_` and 64 hex characters. There is no `Authorization` header and no credential in a URL.
 
 The network envelope has no `fixture` object. Clock, pause, `loginHint`, and `testOnlyRedirect` belong to the oracle harness in `prototypes/publishing/fixture_harness.py`. A live listener uses `runtime_rules.server_now`, `runtime_rules.new_credential`, and `runtime_rules.new_authorization_code`. It must not call `FixtureHarness`.
 
@@ -57,7 +64,7 @@ The only enabled profile is `local-http-isolated-fixture`. `production-secure-tr
 
 The issuer string is exactly `http://127.0.0.1:19427/ss-publish/test-issuer`. The issuer role is `prototype-test-issuer`. It is a fixture issuer, separate from any future production provider.
 
-The redirect is `http`, host `127.0.0.1`, an explicit port, and path `/ss-publish/callback`. Ports `19427` and `19428` are reserved for the issuer and the reader. `localhost`, `::1`, `0.0.0.0`, userinfo, a query, and a fragment are rejected with `redirect_rejected`.
+The redirect is `http`, host `127.0.0.1`, an explicit port, and path `/ss-publish/callback`. Port `19427` is the service port and is rejected as a callback. `localhost`, `::1`, `0.0.0.0`, userinfo, a query, and a fragment are rejected with `redirect_rejected`.
 
 `codeChallengeMethod` is `S256`. `plain` returns `pkce_rejected`. `state` is 43 to 128 unreserved characters. The desktop generates it with a CSPRNG. Fixture files label their state `synthetic-fixture-not-csprng`.
 
@@ -87,16 +94,26 @@ The exchange result credential has `tokenType` `prototype-credential`, `delivery
 
 `episode.preview` returns one sealed revision to its owner, including bytes. A newer upload does not change an older revision.
 
-`publication.confirm` records a confirm for the current head revision. The body names `revisionId` and `policyEligibility`. The private value is `private-prototype-only`. `public` returns `public_launch_gate` and leaves the episode unpublished. An older revision returns `stale_revision`. The acknowledgement names `canonicalUrl` as `http://127.0.0.1:19428/ss-publish/reader/` plus `publicationId`, with `publicInternet` false and `authoritative` false. It does not report current publication status. A later retry of that confirm, after withdrawal, returns the same acknowledgement, and `publication.read` returns `withdrawn`.
+`publication.confirm` records a confirm for the current head revision. The body names `revisionId` and `policyEligibility`. The private value is `private-prototype-only`. `public` returns `public_launch_gate` and leaves the episode unpublished. An older revision returns `stale_revision`. The acknowledgement names `canonicalUrl` as `http://127.0.0.1:19427/ss-publish/browser/reader/` plus `publicationId`, with `publicInternet` false and `authoritative` false. The upload acknowledgement also names `browserPreviewUrl` under `/ss-publish/browser/preview/`. Open those URLs in the system browser. Do not append `credential.secret`. It does not report current publication status. A later retry of that confirm, after withdrawal, returns the same acknowledgement, and `publication.read` returns `withdrawn`.
 
 `publication.read` is authoritative. It requires the exact canonical URL and a live credential. It returns `authoritative: true`, `status: published`, and `presentation.widthPx` 360. That width is the desktop Phone reader width in `src/app/reader_ui.rs`. A withdrawn publication returns `withdrawn`. A path under `/ss-publish/assets` or `/slices/` returns `asset_not_addressable`. An unknown reader URL returns `not_found`. Another account's publication returns `not_owner`.
 
 `publication.withdraw` records a withdrawal. Its acknowledgement has `authoritative: false`. `account.discover` is the other authoritative status read. Confirming the same head revision again publishes that same URL.
 
+## Loopback HTTP
+
+Cookies ignore port, so the issuer and the reader share `http://127.0.0.1:19427`. A second service port is not used. The desktop callback stays on an ephemeral port and path `/ss-publish/callback`, which does not match the session cookie path.
+
+`POST /ss-publish/commands` with `Content-Type: application/json` carries one envelope. The body limit is 28000000 bytes. Success is HTTP 200. Error codes use the statuses in `transport.json`. Every command response is `application/json; charset=utf-8` and `Cache-Control: no-store`. The desktop credential stays in that JSON body.
+
+`GET /ss-publish/browser/authorize` is the system-browser page. With no session it returns HTML that says TEST ONLY and lists `acct_test_` accounts. `POST /ss-publish/browser/affirm` requires `Origin: http://127.0.0.1:19427`, a form `csrf`, and the chosen `accountId`. The response sets `ss_publish_fixture` as `HttpOnly; SameSite=Strict; Path=/ss-publish/browser; Max-Age=900` with no `Domain` attribute, then redirects to the desktop callback with only `code` and `state`.
+
+Open `canonicalUrl` or `browserPreviewUrl` in the system browser. Do not put `credential.secret` on those URLs. The browser session cookie is the reader proof. `GET` reader and asset routes send `Cache-Control: no-store` and check the live session and the current publication status. `withdrawn` and `held` return 410 and no episode bytes. Another account's session returns 404. No session returns 401 and the TEST ONLY sign-in form. `POST /ss-publish/browser/session/revoke` clears that browser session and does not revoke the desktop credential.
+
 ## Limits
 
-Comic caps copied from `src/export.rs` are 100 slices, 2,000,000 bytes for one slice, and 20,000,000 bytes for one episode. Prototype caps are 4096 by 4096 pixels and 4,000,000 pixels for one slice. PNG IDAT inflation stops at the image's expected byte count. Acceptance of PNG and JPEG also requires a bounded decoder to return a pixel buffer of the declared width and height. The checkpoint runs that decode with ffmpeg. A JPEG marker parse is not acceptance. The renderable fixtures are `prototypes/publishing/fixtures/media/north.png` and `north.jpg`, each 120 by 160. Prose stops at 65,536 UTF-8 bytes. A BOM, a UTF-16 media type, and C0 controls other than tab and line feed are `media_rejected`.
+Comic caps copied from `src/export.rs` are 100 slices, 2,000,000 bytes for one slice, and 20,000,000 bytes for one episode. Prototype caps are 4096 by 4096 pixels and 4,000,000 pixels for one slice. PNG IDAT inflation stops at the image's expected byte count. Acceptance of PNG and JPEG also requires a bounded decoder to return a pixel buffer of the declared width and height. The checkpoint runs that decode with ffmpeg. A JPEG marker parse is not acceptance. The renderable fixtures are `prototypes/publishing/fixtures/media/north.png` and `north.jpg`, each 120 by 160. Prose stops at 65536 UTF-8 bytes. A string of fewer than 65536 characters can still exceed that byte cap. The schema keyword is `x-maxUtf8Bytes`. A BOM, a UTF-16 media type, and C0 controls other than tab and line feed are `media_rejected`.
 
 ## Fixture identity
 
-Accounts, credentials, codes, and verifiers in the fixtures are labeled `TEST-ONLY` or `synthetic-fixture-not-a-secret`. They are not production identity proof. The harness selects the fixture account. The oracle refuses an account whose `testOnly` flag is false. `FixtureHarness` mints `sek_test_` secrets from a counter. `runtime_rules.new_credential` uses a CSPRNG and is the function a listener must call.
+Accounts, credentials, codes, and verifiers in the fixtures are labeled `TEST-ONLY` or `synthetic-fixture-not-a-secret`. They are not production identity proof. The harness selects the fixture account. The oracle refuses an account whose `testOnly` flag is false. `FixtureHarness` fills the live credential shape from a counter. `runtime_rules.new_credential` uses a CSPRNG and is the function a listener must call. Both outputs match the schema. `cred_test_` does not.

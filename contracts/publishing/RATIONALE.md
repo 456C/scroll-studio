@@ -40,6 +40,10 @@ Fixture ids and secrets are deterministic and prefixed `test`. `FixtureHarness` 
 
 The harness records the loopback redirect beside the command. The begin result does not contain the code. The desktop listener is the real callback.
 
+Cookies ignore port. Two service ports on `127.0.0.1` would share a cookie. The checkpoint therefore uses one origin, `http://127.0.0.1:19427`, and a cookie path that does not cover `/ss-publish/callback`. A separate host would also separate cookies, and it loses here because this profile has no names other than `127.0.0.1`.
+
+The credential schema is the CSPRNG shape from `runtime_rules.new_credential`. The harness fills that same shape from a counter so tests stay repeatable. The counter stays in `FixtureHarness`. `cred_test_` is not a valid credential.
+
 `completion` is outside the idempotency hash so `defer` and a later `seal` are one operation. A cancelled key stays cancelled.
 
 A request that fails the schema does not consume the idempotency key. A valid domain error does.

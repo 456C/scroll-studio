@@ -40,6 +40,8 @@ def validate(schema, instance, root=None):
             errors.append("minLength")
         if "maxLength" in schema and len(instance) > schema["maxLength"]:
             errors.append("maxLength")
+        if "x-maxUtf8Bytes" in schema and len(instance.encode("utf-8")) > schema["x-maxUtf8Bytes"]:
+            errors.append("utf8bytes")
         if "pattern" in schema and re.fullmatch(schema["pattern"], instance) is None:
             errors.append("pattern")
     if type(instance) is int and not isinstance(instance, bool):

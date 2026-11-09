@@ -71,7 +71,8 @@ def fresh_world():
             "by_code": {},
             "credentials": {},
             "operations": {},
-            "counters": {"revision": 0, "publication": 0, "code": 0, "credential": 0},
+            "sessions": {},
+            "counters": {"revision": 0, "publication": 0, "code": 0, "credential": 0, "session": 0, "csrf": 0},
         },
     }
 
@@ -288,28 +289,25 @@ def _begin(world, body, clock, harness):
         return _fail("auth.begin", "pkce_rejected")
     if body["clientId"] != PROTOCOL["clientId"]:
         return _fail("auth.begin", "unauthorized")
-    account_id = getattr(harness, "login_account_id", None)
-    account = world["accounts"].get(account_id)
-    if account is None or account.get("nonProductionLabel") != "TEST-ONLY" or account.get("testOnly") is not True:
-        return _fail("auth.begin", "unauthorized")
     if body["scope"] != PROTOCOL["scope"]:
         return _fail("auth.begin", "invalid_request", "schema")
     if body["state"] in world["runtime"]["by_state"]:
         return _fail("auth.begin", "invalid_request", "schema")
-    code = harness.next_code(world) if isinstance(harness, FixtureHarness) else new_authorization_code()
     expires = clock + timedelta(seconds=LIMITS["authorizationTtlSeconds"])
-    world["runtime"]["by_code"][code] = {
+    txn = {
         "state": body["state"],
         "challenge": body["codeChallenge"],
         "redirectUri": body["redirectUri"],
         "issuer": body["issuer"],
-        "accountId": account["accountId"],
+        "clientId": body["clientId"],
+        "accountId": None,
+        "code": None,
         "expiresAt": expires,
-        "status": "pending",
+        "status": "awaiting_browser",
+        "csrf": None,
     }
-    world["runtime"]["by_state"][body["state"]] = code
-    redirect = body["redirectUri"] + "?" + urlencode([("code", code), ("state", body["state"])])
-    authorize = body["issuer"] + "/authorize?" + urlencode(
+    world["runtime"]["by_state"][body["state"]] = txn
+    authorize = PROTOCOL["origin"]["exact"] + "/ss-publish/browser/authorize?" + urlencode(
         [
             ("response_type", "code"),
             ("client_id", body["clientId"]),
@@ -320,8 +318,6 @@ def _begin(world, body, clock, harness):
             ("code_challenge_method", "S256"),
         ]
     )
-    if isinstance(harness, FixtureHarness):
-        harness.redirect_url = redirect
     return _ok(
         "auth.begin",
         {
@@ -337,9 +333,29 @@ def _begin(world, body, clock, harness):
     )
 
 
+def issue_browser_code(world, state, account_id, harness):
+    txn = world["runtime"]["by_state"].get(state)
+    account = world["accounts"].get(account_id)
+    if txn is None or account is None:
+        return None
+    if account.get("testOnly") is not True or account.get("nonProductionLabel") != "TEST-ONLY":
+        return None
+    if not str(account_id).startswith("acct_test_"):
+        return None
+    if txn["status"] == "pending" and txn.get("accountId") == account_id and txn.get("code"):
+        return txn["code"]
+    if txn["status"] != "awaiting_browser":
+        return None
+    code = harness.next_code(world) if isinstance(harness, FixtureHarness) else new_authorization_code()
+    txn["code"] = code
+    txn["accountId"] = account_id
+    txn["status"] = "pending"
+    world["runtime"]["by_code"][code] = txn
+    return code
+
+
 def _cancel_auth(world, body):
-    code = world["runtime"]["by_state"].get(body["state"])
-    txn = world["runtime"]["by_code"].get(code) if code else None
+    txn = world["runtime"]["by_state"].get(body["state"])
     if txn is None or txn["issuer"] != body["issuer"] or txn["redirectUri"] != body["redirectUri"]:
         return _fail("auth.cancel", "not_found")
     if txn["status"] == "consumed":
@@ -417,6 +433,10 @@ def _upload(world, cred, body):
                 "episodeId": job["episode"]["episodeId"],
                 "revisionId": revision_id,
                 "contentSha256": job["contentSha256"],
+                "browserPreviewUrl": (
+                    f"{PROTOCOL['origin']['exact']}/ss-publish/browser/preview/"
+                    f"{job['episode']['seriesId']}/{job['episode']['episodeId']}/{revision_id}"
+                ),
             }
         },
     )
@@ -477,7 +497,7 @@ def _confirm(world, cred, body):
     if record["publicationId"] is None:
         record["publicationId"] = _next(world, "publication", "pub_test_", width=4)
         record["canonicalUrl"] = (
-            f"http://127.0.0.1:{PROTOCOL['reader']['port']}{PROTOCOL['reader']['pathPrefix']}{record['publicationId']}"
+            f"{PROTOCOL['origin']['exact']}{PROTOCOL['reader']['pathPrefix']}{record['publicationId']}"
         )
     record["publishedRevisionId"] = body["revisionId"]
     record["status"] = "published"
@@ -856,7 +876,13 @@ def _asset_shaped(url):
     if parts.hostname != "127.0.0.1" or parts.username or parts.password:
         return True
     path = parts.path
-    if path.startswith("/ss-publish/assets") or path.startswith("/assets") or "/slices/" in path:
+    if (
+        path.startswith("/ss-publish/assets")
+        or path.startswith("/ss-publish/browser/assets")
+        or path.startswith("/ss-publish/browser/preview-assets")
+        or path.startswith("/assets")
+        or "/slices/" in path
+    ):
         return True
     return False
 
