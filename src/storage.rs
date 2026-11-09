@@ -8,7 +8,7 @@ use anyhow::{bail, ensure, Context, Result};
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{Cursor, Read, Write},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -30,6 +30,13 @@ pub struct FileStamp {
     length: u64,
     modified: std::time::SystemTime,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveResult {
+    pub stamp: FileStamp,
+    /// Set when this save wrote a one-time backup of an older `.scro`.
+    pub backup: Option<PathBuf>,
+}
 impl FileStamp {
     fn read(metadata: fs::Metadata) -> Result<Self> {
         Ok(Self {
@@ -48,7 +55,7 @@ pub fn save_story_checked(
     story: &Story,
     assets: &AssetBytes,
     expected: Option<FileStamp>,
-) -> Result<FileStamp> {
+) -> Result<SaveResult> {
     validate_story(story, assets)?;
     let manifest = serde_json::to_vec(story).context("Could not encode the story")?;
     ensure!(
@@ -56,7 +63,7 @@ pub fn save_story_checked(
         "Story manifest is too large"
     );
     let (temporary_path, file) = create_temporary(path)?;
-    let result = (|| -> Result<FileStamp> {
+    let result = (|| -> Result<SaveResult> {
         let mut zip = ZipWriter::new(file);
         zip.start_file(
             "manifest.json",
@@ -78,7 +85,7 @@ pub fn save_story_checked(
         let stamp = FileStamp::read(file.metadata()?)?;
         drop(file);
         // Serialize cooperating editors on the original file while checking and replacing it.
-        let _guard = if let Some(expected) = expected {
+        let guard = if let Some(expected) = expected {
             let original = File::open(path)
                 .context("The original file is unavailable. Use Save as to keep your changes.")?;
             original.lock()?;
@@ -88,6 +95,7 @@ pub fn save_story_checked(
         } else {
             None
         };
+        let backup = backup_older_original(path, guard.as_ref())?;
         // Same-directory rename replaces the old file only after the new archive is complete.
         fs::rename(&temporary_path, path).with_context(|| {
             format!(
@@ -95,7 +103,7 @@ pub fn save_story_checked(
                 path.display()
             )
         })?;
-        Ok(stamp)
+        Ok(SaveResult { stamp, backup })
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary_path);
@@ -245,6 +253,110 @@ fn create_temporary(destination: &Path) -> Result<(PathBuf, File)> {
     bail!("Could not allocate a temporary story file")
 }
 
+/// `<name>.v11.bak.scro` beside `name.scro`, using the version actually on disk.
+pub fn backup_path(path: &Path, version: u32) -> PathBuf {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    parent.join(format!("{stem}.v{version}.bak.scro"))
+}
+
+/// Before an older `.scro` is replaced, copy it once. An existing backup is never overwritten.
+fn backup_older_original(path: &Path, locked: Option<&File>) -> Result<Option<PathBuf>> {
+    let source = if let Some(file) = locked {
+        file.try_clone()
+            .context("Could not read the existing story before saving")?
+    } else if path.is_file() {
+        File::open(path)
+            .with_context(|| format!("Could not read {} before saving", path.display()))?
+    } else {
+        return Ok(None);
+    };
+    let Some(version) = manifest_version(&source)? else {
+        return Ok(None);
+    };
+    let destination = backup_path(path, version);
+    if destination.exists() {
+        return Ok(None);
+    }
+    copy_exclusive(&source, &destination)
+}
+
+fn manifest_version(file: &File) -> Result<Option<u32>> {
+    let mut cloned = file
+        .try_clone()
+        .context("Could not inspect the existing story")?;
+    cloned
+        .seek(SeekFrom::Start(0))
+        .context("Could not inspect the existing story")?;
+    let mut zip = match ZipArchive::new(cloned) {
+        Ok(zip) => zip,
+        Err(_) => return Ok(None),
+    };
+    if !zip.file_names().any(|name| name == "manifest.json") {
+        return Ok(None);
+    }
+    let bytes = read_entry(&mut zip, "manifest.json", MAX_MANIFEST_BYTES)
+        .context("Could not read the existing story before replacing it")?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .context("Could not read the existing story manifest before replacing it")?;
+    Ok(value
+        .get("version")
+        .and_then(|version| version.as_u64())
+        .and_then(|version| u32::try_from(version).ok())
+        .filter(|version| (1..FORMAT_VERSION).contains(version)))
+}
+
+fn copy_exclusive(source: &File, destination: &Path) -> Result<Option<PathBuf>> {
+    if destination.exists() {
+        return Ok(None);
+    }
+    let (temporary, mut output) = create_temporary(destination)?;
+    let result = (|| -> Result<Option<PathBuf>> {
+        let mut input = source
+            .try_clone()
+            .context("Could not copy the existing story")?;
+        input
+            .seek(SeekFrom::Start(0))
+            .context("Could not copy the existing story")?;
+        std::io::copy(&mut input, &mut output).context("Could not copy the existing story")?;
+        output
+            .sync_all()
+            .context("Could not finish the story backup")?;
+        drop(output);
+        if destination.exists() {
+            let _ = fs::remove_file(&temporary);
+            return Ok(None);
+        }
+        match fs::hard_link(&temporary, destination) {
+            Ok(()) => {
+                let _ = fs::remove_file(&temporary);
+                Ok(Some(destination.to_path_buf()))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&temporary);
+                Ok(None)
+            }
+            Err(_) if destination.exists() => {
+                let _ = fs::remove_file(&temporary);
+                Ok(None)
+            }
+            Err(_) => {
+                fs::rename(&temporary, destination).with_context(|| {
+                    format!("Could not keep a backup at {}", destination.display())
+                })?;
+                Ok(Some(destination.to_path_buf()))
+            }
+        }
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
 /// Validate both manifests loaded from disk and in-memory stories before saving.
 pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
     ensure!(
@@ -313,6 +425,11 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
                 .map(|a| a.id),
         )
         .collect();
+    for entry in &story.timeline {
+        if let Some(event) = &entry.event {
+            insert_id(event.id)?;
+        }
+    }
     for entry in &story.lore {
         insert_id(entry.id)?;
         ensure!(
@@ -743,7 +860,8 @@ mod tests {
         });
         let updated = save_story_checked(&path, &world, &images, Some(stamp)).unwrap();
         let (loaded, raw, actual) = load_story_with_stamp(&path).unwrap();
-        assert_eq!(updated, actual);
+        assert_eq!(updated.stamp, actual);
+        assert!(updated.backup.is_none());
         assert_eq!(loaded, world);
         assert_eq!(loaded.chapters, original.chapters);
         assert_eq!(raw, assets);
@@ -1411,6 +1529,138 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("too large"));
+        fs::remove_file(path).unwrap();
+    }
+
+    fn write_version(path: &Path, story: &Story, version: u32) {
+        let mut json = serde_json::to_value(story).unwrap();
+        json["version"] = version.into();
+        let mut zip = ZipWriter::new(File::create(path).unwrap());
+        zip.start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(&json).unwrap()).unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn every_older_version_loads_and_v11_keeps_timeline_notes() {
+        let mut expected = Story::demo();
+        expected.timeline = crate::timeline::entries(&expected);
+        expected.timeline[0].when = "Year 3".into();
+        expected.timeline[0].summary = "The gate opens.".into();
+        for version in 1..=11 {
+            let path = test_path(&format!("legacy-notes-{version}"));
+            let mut json = serde_json::to_value(&expected).unwrap();
+            json["version"] = version.into();
+            assert!(json["timeline"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.get("event").is_none()));
+            let mut zip = ZipWriter::new(File::create(&path).unwrap());
+            zip.start_file("manifest.json", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&serde_json::to_vec(&json).unwrap()).unwrap();
+            zip.finish().unwrap();
+            let (loaded, _) = load_story(&path).unwrap();
+            assert_eq!(loaded, expected, "version {version}");
+            assert!(loaded.timeline.iter().all(|entry| entry.event.is_none()));
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn upgrade_save_backs_up_once_and_events_round_trip() {
+        use crate::model::StoryEventKind;
+        let path = test_path("upgrade-events");
+        let mut story = Story::demo();
+        story.timeline = crate::timeline::entries(&story);
+        story.timeline[0].when = "Year 12".into();
+        story.timeline[0].summary = "The gate opens.".into();
+        write_version(&path, &story, 11);
+        let original = fs::read(&path).unwrap();
+        let (mut loaded, assets) = load_story(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert_eq!(loaded.timeline[0].when, "Year 12");
+        assert_eq!(loaded.timeline[0].summary, "The gate opens.");
+        assert!(loaded.timeline.iter().all(|entry| entry.event.is_none()));
+        assert_eq!(loaded.chapters, story.chapters);
+        assert_eq!(loaded.assets, story.assets);
+        let character = loaded
+            .assets
+            .iter()
+            .find(|asset| asset.kind == AssetKind::Character)
+            .unwrap()
+            .id;
+        let chapter = loaded.chapters[0].id;
+        let event = crate::timeline::insert_event(&mut loaded, Some(chapter)).unwrap();
+        let entry = loaded
+            .timeline
+            .iter_mut()
+            .find(|entry| entry.key() == event)
+            .unwrap();
+        entry.when = "Three years earlier".into();
+        entry.summary = "The citadel burned.".into();
+        let event_body = entry.event.as_mut().unwrap();
+        event_body.title = "The fire".into();
+        event_body.kind = StoryEventKind::Flashback;
+        event_body.links = vec![character];
+        let saved = save_story_checked(&path, &loaded, &assets, None).unwrap();
+        let backup = backup_path(&path, 11);
+        assert_eq!(saved.backup.as_deref(), Some(backup.as_path()));
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        let (round, round_assets) = load_story(&path).unwrap();
+        assert_eq!(round, loaded);
+        assert_eq!(round_assets, assets);
+        assert_eq!(round.version, FORMAT_VERSION);
+        let mut renamed = loaded.clone();
+        renamed.title = "After the backup".into();
+        let again = save_story_checked(&path, &renamed, &assets, None).unwrap();
+        assert!(again.backup.is_none());
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(load_story(&path).unwrap().0.title, "After the backup");
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&backup).unwrap();
+    }
+
+    #[test]
+    fn an_existing_upgrade_backup_is_not_replaced() {
+        let path = test_path("backup-sentinel");
+        write_version(&path, &Story::demo(), 7);
+        let backup = backup_path(&path, 7);
+        fs::write(&backup, b"original-backup-bytes").unwrap();
+        let (loaded, assets) = load_story(&path).unwrap();
+        let saved = save_story_checked(&path, &loaded, &assets, None).unwrap();
+        assert!(saved.backup.is_none());
+        assert_eq!(fs::read(&backup).unwrap(), b"original-backup-bytes");
+        assert_eq!(load_story(&path).unwrap().0.version, FORMAT_VERSION);
+        assert_eq!(
+            load_story(&path).unwrap().0.chapters,
+            Story::demo().chapters
+        );
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&backup).unwrap();
+    }
+
+    #[test]
+    fn invalid_event_cannot_replace_a_saved_story() {
+        let path = test_path("invalid-event");
+        let mut story = Story::demo();
+        let event = crate::timeline::insert_event(&mut story, None).unwrap();
+        save_story(&path, &story, &AssetBytes::new()).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        story
+            .timeline
+            .iter_mut()
+            .find(|entry| entry.key() == event)
+            .unwrap()
+            .event
+            .as_mut()
+            .unwrap()
+            .links
+            .push(999);
+        assert!(save_story(&path, &story, &AssetBytes::new()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
         fs::remove_file(path).unwrap();
     }
 }

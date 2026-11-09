@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {insertionBefore,wouldMove} from '../src/studio/timeline.js';
-import {timeline,reorderTimeline,History} from '../src/studio/model.js';
+import {timeline,reorderTimeline,insertEvent,deleteEvent,entryId,History} from '../src/studio/model.js';
 
 test('Insertion slots cover left edge, card halves, gaps, and the far end',()=>{
   const cards=[{id:11,center:120},{id:22,center:380},{id:33,center:640}];
@@ -24,6 +24,27 @@ test('A drop changes only chronology, preserves notes, and is one undo/redo',()=
   assert.equal(history.undo.length,1);
   story=history.travel(story,'undo');assert.deepEqual(story,original);
   story=history.travel(story,'redo');assert.equal(story.timeline[0].chapter_id,22);
+});
+
+test('Events sit between chapters and round-trip through reorder and delete',()=>{
+  let story={next_id:40,chapters:[{id:11,name:'Arrival',layers:[]},{id:22,name:'Departure',layers:[]}],timeline:[{chapter_id:11,when:'Day 2',summary:'Arrives'}],assets:[{id:7,kind:'Character',name:'Ari'}],locations:[{id:8,name:'Citadel'}],groups:[]};
+  const event=insertEvent(story,11);
+  const placed=timeline(story);
+  assert.deepEqual(placed.map(entryId),[11,event,22]);
+  const row=story.timeline.find(entry=>entry.event?.id===event);
+  row.when='Three years earlier';row.summary='The citadel burned.';
+  Object.assign(row.event,{title:'The fire',kind:'Flashback',links:[7,8]});
+  const history=new History();
+  history.push(structuredClone(story));
+  reorderTimeline(story,event,11);
+  assert.deepEqual(timeline(story).map(entryId),[event,11,22]);
+  assert.equal(story.timeline[0].event.title,'The fire');
+  assert.deepEqual(story.chapters.map(c=>c.id),[11,22]);
+  story=history.travel(story,'undo');
+  assert.equal(timeline(story)[1].event.kind,'Flashback');
+  deleteEvent(story,event);
+  assert.equal(timeline(story).some(entry=>entry.event),false);
+  assert.deepEqual(timeline(story).map(e=>e.chapter_id),[11,22]);
 });
 
 test('No-op drops leave the undo history and reading order alone',()=>{

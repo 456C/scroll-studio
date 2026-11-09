@@ -96,7 +96,7 @@ enum Dialog {
     Unsaved,
 }
 enum JobResult {
-    Saved(PathBuf, u64, u64, storage::FileStamp),
+    Saved(PathBuf, u64, u64, storage::FileStamp, Option<PathBuf>),
     Exported(export::ExportReport),
     CharacterSheetDone(String),
     Healed(healing_ui::HealingResult),
@@ -189,6 +189,17 @@ pub struct Studio {
     glass: glass::GlassRenderer,
     toolbar_rect: egui::Rect,
     app_icon: egui::TextureHandle,
+}
+
+fn saved_status(path: &std::path::Path, backup: Option<&std::path::Path>) -> String {
+    match backup {
+        Some(backup) => format!(
+            "Saved {} · A backup of the original file was written next to it: {}",
+            path.display(),
+            backup.display()
+        ),
+        None => format!("Saved {}", path.display()),
+    }
 }
 
 impl Studio {
@@ -601,8 +612,10 @@ impl Studio {
         let document_epoch = self.document_epoch;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = storage::save_story_checked(&path, &story, &assets, expected)
-                .map(|stamp| JobResult::Saved(path, revision, document_epoch, stamp));
+            let result =
+                storage::save_story_checked(&path, &story, &assets, expected).map(|saved| {
+                    JobResult::Saved(path, revision, document_epoch, saved.stamp, saved.backup)
+                });
             let _ = tx.send(result);
         });
         self.job = Some(rx);
@@ -652,7 +665,7 @@ impl Studio {
             if let Some(result) = result {
                 self.job = None;
                 match result {
-                    Ok(JobResult::Saved(path, revision, epoch, stamp))
+                    Ok(JobResult::Saved(path, revision, epoch, stamp, backup))
                         if epoch == self.document_epoch =>
                     {
                         self.file_stamp = Some(stamp);
@@ -661,14 +674,21 @@ impl Studio {
                             self.dirty = false;
                             self.clear_saved_recovery();
                         }
-                        self.status = format!("Saved {}", path.display());
+                        self.status = saved_status(&path, backup.as_deref());
                         if self.continue_after_save && !self.dirty {
                             self.dialog = None;
                             self.perform_pending();
                         }
                     }
-                    Ok(JobResult::Saved(path, _, _, _)) => {
-                        self.status = format!("Previous story saved to {}", path.display());
+                    Ok(JobResult::Saved(path, _, _, _, backup)) => {
+                        self.status = match backup {
+                            Some(backup) => format!(
+                                "Previous story saved to {} · A backup of the original file was written next to it: {}",
+                                path.display(),
+                                backup.display()
+                            ),
+                            None => format!("Previous story saved to {}", path.display()),
+                        };
                     }
                     Ok(JobResult::Exported(report)) => {
                         self.status = format!(

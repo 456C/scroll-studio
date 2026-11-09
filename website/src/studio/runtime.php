@@ -5,7 +5,7 @@ namespace Scroll;
 use RuntimeException;
 use ZipArchive;
 
-const VERSION = 11;
+const VERSION = 12;
 const MAX_TOTAL = 536870912;
 const MAX_IMAGE = 67108864;
 const MAX_MANIFEST = 16777216;
@@ -56,7 +56,7 @@ function profile(): array {
 }
 function normalize(array $s): array {
     require_ok(is_int($s['version'] ?? null) && $s['version'] >= 1 && $s['version'] <= VERSION,
-        'This .scro version is not supported. Use Scroll Studio 0.13 or an earlier file.');
+        'This .scro version is not supported. This editor reads versions 1 through '.VERSION.'.');
     $old = $s['version']; $s['version'] = VERSION;
     foreach (['assets','locations','groups','timeline','lore','bubble_presets','card_thumbnails'] as $key) $s[$key] ??= [];
     $s['visual_style'] ??= ''; $s['synopsis'] ??= '';
@@ -72,6 +72,12 @@ function normalize(array $s): array {
         $g += ['description'=>'','reference_ids'=>[],'character_ids'=>[],'location_ids'=>[]];
     }
     unset($g);
+    foreach ($s['timeline'] as &$entry) {
+        if (is_array($entry) && isset($entry['event']) && is_array($entry['event'])) {
+            $entry['event']['links'] ??= [];
+        }
+    }
+    unset($entry);
     require_ok(identifier($s['next_id'] ?? null), 'Invalid or too-large world identifier.');
     if ($old < 11 && !$s['lore_board']['cards']) {
         $targets = [];
@@ -205,10 +211,26 @@ function validate(array $s, string $folder): void {
         require_ok(isset($cards[$a],$cards[$b]) && $a!==$b && !isset($pairs[$pair]),'Invalid board connection.');$pairs[$pair]=true;
         require_ok(text($e['label'] ?? null,4096) && color($e['color'] ?? null),'Invalid relationship label.');
     }
-    $seen=[];
-    foreach (list_of($s['timeline'],count($chapters),'timeline') as $e) {
-        $id=$e['chapter_id'] ?? 0;
-        require_ok(isset($chapterIds[$id]) && !isset($seen[$id]) && text($e['when'] ?? null,1024) && text($e['summary'] ?? null,20000),'Invalid timeline entry.');$seen[$id]=true;
+    $seen=[];$seenEvents=[];$events=0;
+    $linkTargets=$characters+$locations+$groupIds;
+    foreach (list_of($s['timeline'],count($chapters)+4096,'timeline') as $e) {
+        require_ok(text($e['when'] ?? null,1024) && text($e['summary'] ?? null,20000),'Invalid timeline entry.');
+        if (isset($e['event']) && $e['event'] !== null) {
+            $events++;
+            require_ok($events<=4096,'Too many story events.');
+            require_ok(($e['chapter_id'] ?? 0)===0,'A story event cannot replace a chapter.');
+            $ev=$e['event'];
+            require_ok(is_array($ev) && !array_is_list($ev),'Invalid story event.');
+            $claim($ev['id'] ?? null);
+            require_ok(!isset($seenEvents[$ev['id']]) && !isset($chapterIds[$ev['id']]),'Timeline contains a missing or duplicate event.');
+            $seenEvents[$ev['id']]=true;
+            require_ok(text($ev['title'] ?? null,4096) && in_array($ev['kind'] ?? null,['Flashback','Lore','Other'],true),'Invalid story event.');
+            $refs($ev['links'] ?? [],$linkTargets,'event link',64);
+        } else {
+            $id=$e['chapter_id'] ?? 0;
+            require_ok(isset($chapterIds[$id]) && !isset($seen[$id]),'Invalid timeline entry.');
+            $seen[$id]=true;
+        }
     }
     require_ok($s['next_id']>$maximum,'World identifier counter is out of date.');
     require_ok(strlen(json($s))<=MAX_MANIFEST,'World details exceed 16 MiB.');
