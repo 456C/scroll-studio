@@ -40,3 +40,140 @@ jobs:
         run: cargo check --locked --all-targets
       - name: Run tests
         run: cargo test --locked --all-targets
+
+  windows-portable:
+    name: Windows portable build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+    env:
+      CARGO_TERM_COLOR: always
+      # One file the owner can launch, without the Visual C++ redistributable.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Locate Windows resource compiler
+        shell: pwsh
+        run: |
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $resourceCompiler = Get-ChildItem -LiteralPath $sdkBin -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64/rc.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $resourceCompiler) { throw 'Windows SDK resource compiler was not found.' }
+          "RC=$resourceCompiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Cache Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          key: portable-release-crt-static
+          cache-on-failure: true
+      - name: Release build
+        run: cargo build --release --locked --bin scroll-studio
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = $env:GITHUB_WORKSPACE
+          $manifest = Get-Content -LiteralPath (Join-Path $workspace 'Cargo.toml') -Raw
+          if ($manifest -notmatch '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"') {
+              throw 'Package version is missing.'
+          }
+          $version = $Matches[1]
+          if ($env:GITHUB_SHA.Length -lt 7) { throw 'GITHUB_SHA is too short.' }
+          $sha = $env:GITHUB_SHA.Substring(0, 7)
+          $artifactName = "scroll-studio-$version-$sha-windows-portable"
+
+          $builtExecutable = Join-Path $workspace 'target\release\scroll-studio.exe'
+          if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
+              throw "Release executable not found: $builtExecutable"
+          }
+
+          $staging = Join-Path $env:RUNNER_TEMP 'scroll-studio-portable'
+          if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          # Same static files as scripts/package.ps1. Sample stories are omitted:
+          # scripts/samples.ps1 release-builds and runs five example tools.
+          $packageSources = @(
+              @{ Source = $builtExecutable; Name = 'Scroll Studio.exe' }
+              @{ Source = (Join-Path $workspace 'README.md'); Name = 'README.md' }
+              @{ Source = (Join-Path $workspace 'docs\font-research.md'); Name = 'font-research.md' }
+              @{ Source = (Join-Path $workspace 'docs\icon-generation.md'); Name = 'icon-generation.md' }
+              @{ Source = (Join-Path $workspace 'docs\ui-review.md'); Name = 'ui-review.md' }
+              @{ Source = (Join-Path $workspace 'docs\workflow-research.md'); Name = 'workflow-research.md' }
+              @{ Source = (Join-Path $workspace 'docs\painting-performance.md'); Name = 'painting-performance.md' }
+          )
+          foreach ($family in @('Karla', 'ComicNeue', 'PatrickHand', 'DeliusUnicase', 'Lato', 'BalsamiqSans')) {
+              $packageSources += @{ Source = (Join-Path $workspace "assets\$family-OFL.txt"); Name = "$family-OFL.txt" }
+          }
+          $packageSources += @{ Source = (Join-Path $workspace 'assets\KomikaHand-LICENSE.txt'); Name = 'KomikaHand-LICENSE.txt' }
+          $projectLicense = Join-Path $workspace 'LICENSE'
+          if (Test-Path -LiteralPath $projectLicense -PathType Leaf) {
+              $packageSources += @{ Source = $projectLicense; Name = 'LICENSE' }
+          }
+
+          $leafNames = foreach ($item in $packageSources) {
+              if (-not (Test-Path -LiteralPath $item.Source -PathType Leaf)) {
+                  throw "A required package file is missing: $($item.Source)"
+              }
+              $destination = Join-Path $staging $item.Name
+              Copy-Item -LiteralPath $item.Source -Destination $destination -Force
+              if ($item.Name -eq 'README.md') {
+                  $portableReadme = [IO.File]::ReadAllText($destination)
+                  foreach ($doc in @('font-research.md', 'icon-generation.md', 'ui-review.md', 'workflow-research.md', 'painting-performance.md')) {
+                      $portableReadme = $portableReadme.Replace("](docs/$doc)", "]($doc)")
+                  }
+                  [IO.File]::WriteAllText($destination, $portableReadme, [Text.UTF8Encoding]::new($false))
+              }
+              $item.Name
+          }
+
+          $zip = Join-Path $env:RUNNER_TEMP "$artifactName.zip"
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Push-Location $staging
+          try {
+              Compress-Archive -LiteralPath $leafNames -DestinationPath $zip -CompressionLevel Optimal
+          } finally {
+              Pop-Location
+          }
+
+          $entries = @(tar.exe -tf $zip)
+          if ($LASTEXITCODE -ne 0) { throw "Unable to list portable zip (exit $LASTEXITCODE)." }
+          $entries | ForEach-Object { Write-Host "zip: $_" }
+          $hasExe = $false
+          foreach ($entry in $entries) {
+              $name = (($entry -replace '\\', '/').Trim())
+              if ($name -eq 'Scroll Studio.exe' -or $name -eq './Scroll Studio.exe') { $hasExe = $true }
+          }
+          if (-not $hasExe) { throw 'Portable zip is missing Scroll Studio.exe.' }
+
+          $zipItem = Get-Item -LiteralPath $zip
+          Write-Host "Archive: $($zipItem.FullName) ($($zipItem.Length) bytes)"
+          "ARTIFACT_NAME=$artifactName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARTIFACT_PATH=$($zipItem.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+      - name: Summarize portable artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bytes = (Get-Item -LiteralPath $env:ARTIFACT_PATH).Length
+          $sizeMb = [Math]::Round($bytes / 1MB, 1).ToString([Globalization.CultureInfo]::InvariantCulture)
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $line = "Download the Windows portable build ``$env:ARTIFACT_NAME`` ($sizeMb MB, kept 14 days) from this run: $runUrl"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line -Encoding utf8
+          Write-Host $line
