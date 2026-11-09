@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import secrets
@@ -710,6 +711,87 @@ class ListenerTests(unittest.TestCase):
             while time.time() < deadline and self.server.entered:
                 time.sleep(0.05)
 
+    def test_chrome_sign_in_sends_service_origin(self):
+        callback = _CallbackServer(43121)
+        foreign = _ForeignFormServer(43122)
+        chrome = None
+        try:
+            verifier = secrets.token_urlsafe(48)
+            state = "state-" + secrets.token_hex(24)
+            status, opened = command(
+                "auth.begin",
+                {
+                    "transportProfile": "local-http-isolated-fixture",
+                    "issuer": PROTOCOL["issuer"]["exact"],
+                    "redirectUri": REDIRECT,
+                    "codeChallengeMethod": "S256",
+                    "codeChallenge": pkce_s256(verifier),
+                    "state": state,
+                    "clientId": PROTOCOL["clientId"],
+                    "scope": ["prototype:creator"],
+                },
+            )
+            self.assertEqual(status, 200)
+            chrome = _Chrome()
+            chrome.navigate(opened["result"]["authorizationUrl"])
+            self.assertEqual(chrome.header("referrer-policy"), "same-origin")
+            chrome.click('button[value="acct_test_owner_a"]')
+            affirm = chrome.request_matching("POST", "/ss-publish/browser/affirm")
+            self.assertEqual(affirm["headers"].get("Origin"), ORIGIN)
+            self.assertTrue(affirm["headers"].get("Referer", "").startswith(ORIGIN + "/ss-publish/browser/authorize?"))
+            deadline = time.time() + 3
+            while time.time() < deadline and not callback.hits:
+                time.sleep(0.05)
+            self.assertEqual(len(callback.hits), 1)
+            hit = callback.hits[0]
+            self.assertIsNone(hit["referer"])
+            query = dict(parse_qsl(urlsplit("http://127.0.0.1:43121" + hit["path"]).query))
+            self.assertEqual(list(query), ["code", "state"])
+            self.assertEqual(query["state"], state)
+            status, exchanged = command(
+                "auth.exchange",
+                {
+                    "code": query["code"],
+                    "codeVerifier": verifier,
+                    "redirectUri": REDIRECT,
+                    "state": query["state"],
+                    "issuer": PROTOCOL["issuer"]["exact"],
+                },
+            )
+            self.assertEqual(status, 200, exchanged)
+            credential = {
+                "credentialId": exchanged["result"]["credential"]["credentialId"],
+                "secret": exchanged["result"]["credential"]["secret"],
+            }
+            uploaded = upload_comic(credential, "ep_test_lane_01", facts("png"))
+            preview = uploaded["result"]["acknowledgement"]["browserPreviewUrl"]
+            chrome.navigate(preview)
+            preview_text = chrome.text("document.body.innerText")
+            self.assertIn("North door", preview_text)
+            self.assertNotIn("synthetic publishing fixtures", preview_text)
+            revision = uploaded["result"]["acknowledgement"]["revisionId"]
+            confirmed = confirm(credential, "ep_test_lane_01", revision)
+            chrome.navigate(confirmed["result"]["acknowledgement"]["canonicalUrl"])
+            reader_text = chrome.text("document.body.innerText")
+            self.assertIn("North door", reader_text)
+            self.assertIn("TEST ONLY", reader_text)
+            self.assertNotIn(credential["secret"], reader_text)
+            chrome.navigate(foreign.url("/cross"))
+            chrome.click("#go")
+            cross = chrome.request_matching("POST", "/ss-publish/browser/affirm")
+            self.assertEqual(cross["headers"].get("Origin"), "http://127.0.0.1:43122")
+            self.assertEqual(chrome.response_matching("/ss-publish/browser/affirm"), 403)
+            chrome.navigate(foreign.url("/null"))
+            chrome.click("#go")
+            nulled = chrome.request_matching("POST", "/ss-publish/browser/affirm")
+            self.assertEqual(nulled["headers"].get("Origin"), "null")
+            self.assertEqual(chrome.response_matching("/ss-publish/browser/affirm"), 403)
+        finally:
+            if chrome is not None:
+                chrome.close()
+            callback.close()
+            foreign.close()
+
     def test_phone_viewport_screenshot(self):
         cookie, credential, _location = sign_in("acct_test_owner_a")
         uploaded = upload_comic(credential, "ep_test_lane_01", facts("png"))
@@ -759,6 +841,230 @@ def _affirm_next(csrf, nxt, account_id):
         {"content-type": "application/x-www-form-urlencoded", "origin": ORIGIN},
     )
     return status
+
+
+class _HitServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+class _CallbackServer:
+    def __init__(self, port):
+        self.hits = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                if handler.path.startswith("/ss-publish/callback"):
+                    self.hits.append({"path": handler.path, "referer": handler.headers.get("Referer")})
+                handler.send_response(200)
+                handler.send_header("content-type", "text/plain")
+                handler.end_headers()
+                handler.wfile.write(b"ok")
+
+            def log_message(handler, format, *args):
+                return
+
+        self.httpd = _HitServer(("127.0.0.1", port), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class _ForeignFormServer:
+    def __init__(self, port):
+        self.port = port
+        form = (
+            '<form method="post" action="http://127.0.0.1:19427/ss-publish/browser/affirm">'
+            '<input type="hidden" name="csrf" value="not-the-token">'
+            '<input type="hidden" name="accountId" value="acct_test_owner_a">'
+            '<input type="hidden" name="state" value="state-foreign-00000000000000000000000000000000">'
+            '<button id="go" type="submit">go</button></form>'
+        )
+        pages = {
+            "/cross": "<!DOCTYPE html><title>cross</title><body>" + form + "</body>",
+            "/null": '<!DOCTYPE html><head><meta name="referrer" content="no-referrer"></head><title>null</title><body>'
+            + form
+            + "</body>",
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                page = pages.get(handler.path)
+                if page is None:
+                    handler.send_response(404)
+                    handler.end_headers()
+                    return
+                body = page.encode()
+                handler.send_response(200)
+                handler.send_header("content-type", "text/html; charset=utf-8")
+                handler.send_header("content-length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+            def log_message(handler, format, *args):
+                return
+
+        self.httpd = _HitServer(("127.0.0.1", port), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def url(self, path):
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class _Chrome:
+    def __init__(self):
+        self.profile = f"/tmp/ss-chrome-signin-{secrets.token_hex(4)}"
+        os.makedirs(self.profile, exist_ok=True)
+        self.proc = subprocess.Popen(
+            [
+                "google-chrome",
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                f"--user-data-dir={self.profile}",
+                "--remote-debugging-port=9335",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        version = None
+        for _ in range(80):
+            try:
+                with urllib_get("http://127.0.0.1:9335/json/version") as raw:
+                    version = json.loads(raw.read().decode())
+                    break
+            except OSError:
+                time.sleep(0.1)
+        if version is None:
+            self.close()
+            raise AssertionError("chrome did not open a debugging port")
+        self.sock = ws_connect(version["webSocketDebuggerUrl"])
+        self.sock.settimeout(5)
+        self.events = []
+        self.session = None
+        target = self.call("Target.createTarget", {"url": "about:blank"})
+        attached = self.call(
+            "Target.attachToTarget",
+            {"targetId": target["result"]["targetId"], "flatten": True},
+        )
+        self.session = attached["result"]["sessionId"]
+        self.call("Network.enable")
+        self.call("Page.enable")
+
+    def call(self, method, params=None):
+        cdp.next_id += 1
+        message = {"id": cdp.next_id, "method": method, "params": params or {}}
+        if self.session is not None:
+            message["sessionId"] = self.session
+        ws_send(self.sock, json.dumps(message))
+        while True:
+            opcode, payload = ws_read(self.sock)
+            if opcode != 1:
+                continue
+            parsed = json.loads(payload)
+            if parsed.get("method"):
+                self.events.append(parsed)
+            if parsed.get("id") == cdp.next_id:
+                if "error" in parsed:
+                    raise AssertionError(parsed["error"])
+                return parsed
+
+    def drain(self, seconds):
+        self.sock.settimeout(0.2)
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                opcode, payload = ws_read(self.sock)
+            except OSError:
+                continue
+            if opcode == 1:
+                parsed = json.loads(payload)
+                if parsed.get("method"):
+                    self.events.append(parsed)
+        self.sock.settimeout(5)
+
+    def navigate(self, url):
+        self.mark = len(self.events)
+        self.call("Page.navigate", {"url": url})
+        self.drain(1.2)
+
+    def click(self, selector):
+        self.mark = len(self.events)
+        found = False
+        for _ in range(30):
+            if self.eval(f"document.querySelector('{selector}') ? 'yes' : 'no'") == "yes":
+                found = True
+                break
+            time.sleep(0.1)
+        if not found:
+            raise AssertionError(self.eval("document.body ? document.body.innerText : 'empty'"))
+        self.eval(f"document.querySelector('{selector}').click()")
+        self.drain(1.5)
+
+    def eval(self, expression):
+        result = self.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+        return result["result"]["result"].get("value")
+
+    def text(self, expression):
+        value = ""
+        for _ in range(20):
+            value = self.eval(expression) or ""
+            if value:
+                return value
+            time.sleep(0.1)
+        return value
+
+    def header(self, name):
+        for event in reversed(self.events):
+            if event.get("method") != "Network.responseReceived":
+                continue
+            for key, value in event["params"]["response"]["headers"].items():
+                if key.lower() == name.lower():
+                    return value
+        raise AssertionError(name)
+
+    def request_matching(self, method, path):
+        for event in self.events[self.mark :]:
+            if event.get("method") != "Network.requestWillBeSent":
+                continue
+            request = event["params"]["request"]
+            if request["method"] == method and path in request["url"]:
+                return request
+        raise AssertionError(path)
+
+    def response_matching(self, path):
+        for event in reversed(self.events[self.mark :]):
+            if event.get("method") != "Network.responseReceived":
+                continue
+            response = event["params"]["response"]
+            if path in response["url"]:
+                return response["status"]
+        raise AssertionError(path)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        try:
+            os.killpg(self.proc.pid, 15)
+            self.proc.wait(timeout=3)
+        except ProcessLookupError:
+            pass
+        except subprocess.TimeoutExpired:
+            os.killpg(self.proc.pid, 9)
+            self.proc.wait(timeout=3)
 
 
 def _json_body(raw):

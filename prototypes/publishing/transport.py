@@ -15,6 +15,7 @@ SPEC = json.loads(
     )
 )
 ORIGIN = SPEC["origin"]
+REFERRER_POLICY = "same-origin"
 HOST = SPEC["hostHeader"]
 COOKIE = SPEC["cookie"]["name"]
 COOKIE_PATH = SPEC["cookie"]["path"]
@@ -156,7 +157,7 @@ def _authorize(world, query, headers, clock, harness):
     if not code:
         return _json_error(400, "invalid_request")
     location = txn["redirectUri"] + "?" + urlencode([("code", code), ("state", txn["state"])])
-    return HttpResult(302, {"location": location, "cache-control": "no-store"}, b"")
+    return HttpResult(302, {"location": location, "cache-control": "no-store", "referrer-policy": REFERRER_POLICY}, b"")
 
 
 def _affirm(world, headers, body, clock, harness):
@@ -193,7 +194,12 @@ def _affirm(world, headers, body, clock, harness):
     }
     return HttpResult(
         302,
-        {"location": location, "cache-control": "no-store", "set-cookie": _set_cookie(session_id, SESSION_SECONDS)},
+        {
+            "location": location,
+            "cache-control": "no-store",
+            "referrer-policy": REFERRER_POLICY,
+            "set-cookie": _set_cookie(session_id, SESSION_SECONDS),
+        },
         b"",
     )
 
@@ -208,7 +214,12 @@ def _revoke(world, headers, body, clock):
     session["revoked"] = True
     return HttpResult(
         200,
-        {"cache-control": "no-store", "set-cookie": _set_cookie("", 0), "content-type": "text/html; charset=utf-8"},
+        {
+            "cache-control": "no-store",
+            "referrer-policy": REFERRER_POLICY,
+            "set-cookie": _set_cookie("", 0),
+            "content-type": "text/html; charset=utf-8",
+        },
         b"<!DOCTYPE html><title>TEST ONLY</title><p>Session revoked.</p>",
     )
 
@@ -638,7 +649,7 @@ def _picker_needs_series():
 def _html(status, text):
     return HttpResult(
         status,
-        {"cache-control": "no-store", "content-type": "text/html; charset=utf-8", "referrer-policy": "no-referrer"},
+        {"cache-control": "no-store", "content-type": "text/html; charset=utf-8", "referrer-policy": REFERRER_POLICY},
         text.encode("utf-8"),
     )
 
