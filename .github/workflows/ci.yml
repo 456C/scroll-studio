@@ -118,48 +118,48 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $script = Join-Path $env:RUNNER_TEMP 'listener-smoke.py'
-          @'
-import socket
-import subprocess
-import sys
-import time
-
-root = sys.argv[1]
-proc = subprocess.Popen([sys.executable, "-m", "prototypes.publishing.listener"], cwd=root)
-try:
-    last = None
-    for _ in range(40):
-        time.sleep(0.25)
-        try:
-            connection = socket.create_connection(("127.0.0.1", 19427), 2)
-            connection.sendall(b"GET /ss-publish/browser/operator HTTP/1.1\r\nHost: 127.0.0.1:19427\r\nConnection: close\r\n\r\n")
-            data = b""
-            connection.settimeout(2)
-            while True:
-                chunk = connection.recv(1024)
-                if not chunk:
-                    break
-                data += chunk
-            text = data.decode("iso-8859-1", "replace")
-            print(text.split("\r\n\r\n", 1)[0])
-            if "401" not in text.split("\r\n", 1)[0]:
-                raise SystemExit("listener status was not 401")
-            if "referrer-policy: same-origin" not in text.lower():
-                raise SystemExit("referrer policy was not same-origin")
-            break
-        except OSError as exc:
-            last = exc
-    else:
-        raise SystemExit(f"listener did not answer: {last}")
-finally:
-    proc.terminate()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=15)
-        raise SystemExit("listener did not exit within 15s after terminate()")
-'@ | Set-Content -LiteralPath $script -Encoding utf8
+          @(
+            'import socket'
+            'import subprocess'
+            'import sys'
+            'import time'
+            ''
+            'root = sys.argv[1]'
+            'proc = subprocess.Popen([sys.executable, "-m", "prototypes.publishing.listener"], cwd=root)'
+            'try:'
+            '    last = None'
+            '    for _ in range(40):'
+            '        time.sleep(0.25)'
+            '        try:'
+            '            connection = socket.create_connection(("127.0.0.1", 19427), 2)'
+            '            connection.sendall(b"GET /ss-publish/browser/operator HTTP/1.1\r\nHost: 127.0.0.1:19427\r\nConnection: close\r\n\r\n")'
+            '            data = b""'
+            '            connection.settimeout(2)'
+            '            while True:'
+            '                chunk = connection.recv(1024)'
+            '                if not chunk:'
+            '                    break'
+            '                data += chunk'
+            '            text = data.decode("iso-8859-1", "replace")'
+            '            print(text.split("\r\n\r\n", 1)[0])'
+            '            if "401" not in text.split("\r\n", 1)[0]:'
+            '                raise SystemExit("listener status was not 401")'
+            '            if "referrer-policy: same-origin" not in text.lower():'
+            '                raise SystemExit("referrer policy was not same-origin")'
+            '            break'
+            '        except OSError as exc:'
+            '            last = exc'
+            '    else:'
+            '        raise SystemExit("listener did not answer: %s" % last)'
+            'finally:'
+            '    proc.terminate()'
+            '    try:'
+            '        proc.wait(timeout=15)'
+            '    except subprocess.TimeoutExpired:'
+            '        proc.kill()'
+            '        proc.wait(timeout=15)'
+            '        raise SystemExit("listener did not exit within 15s after terminate()")'
+          ) | Set-Content -LiteralPath $script -Encoding utf8
           python $script $env:SERVICE_DIR
 
   windows-portable:
