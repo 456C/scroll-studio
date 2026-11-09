@@ -4,6 +4,7 @@ import json
 import socket
 import socketserver
 import threading
+import time
 from urllib.parse import parse_qsl
 
 from prototypes.publishing.oracle import fresh_world
@@ -15,6 +16,7 @@ MAX_IN_FLIGHT = 4
 LISTEN_BACKLOG = 8
 TIMEOUT_SECONDS = 15
 HEADER_LIMIT = 8192
+ADMISSION_DRAIN_SECONDS = 0.2
 MAX_BODY = SPEC["command"]["maxBodyBytes"]
 OPERATOR_ID = "acct_test_operator"
 
@@ -200,8 +202,8 @@ def _send(conn, status, headers, body):
 
 def _reject_busy(conn):
     # Winsock resets a socket that is closed while request bytes are still queued,
-    # so the client never reads the 503. Discard the already-buffered request, then
-    # finish the write side. The bytes are not parsed or dispatched.
+    # so the client never reads the 503. Discard what arrives inside one deadline,
+    # then finish the write side. The bytes are not parsed or dispatched.
     _discard_unread(conn, HEADER_LIMIT)
     try:
         _send(conn, 503, _json_headers(), _busy("limit_exceeded", retryable=True))
@@ -213,11 +215,15 @@ def _reject_busy(conn):
 
 def _discard_unread(conn, limit):
     previous = conn.gettimeout()
-    conn.settimeout(0.2)
+    deadline = time.monotonic() + ADMISSION_DRAIN_SECONDS
     try:
         seen = 0
         data = b""
         while seen < limit and b"\r\n\r\n" not in data:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            conn.settimeout(remaining)
             try:
                 chunk = conn.recv(min(1024, limit - seen))
             except (TimeoutError, socket.timeout, OSError):

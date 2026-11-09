@@ -711,6 +711,61 @@ class ListenerTests(unittest.TestCase):
             while time.time() < deadline and self.server.entered:
                 time.sleep(0.05)
 
+    def test_busy_admission_does_not_follow_a_trickle(self):
+        self.server.timeout_seconds = 8
+        holders = [socket.create_connection((HOST, PORT), timeout=3) for _ in range(MAX_IN_FLIGHT)]
+        trick = None
+        silent = None
+        stop = threading.Event()
+        try:
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and self.server.entered < MAX_IN_FLIGHT:
+                time.sleep(0.02)
+            self.assertEqual(self.server.entered, MAX_IN_FLIGHT)
+            trick = socket.create_connection((HOST, PORT), timeout=3)
+
+            def trickle():
+                for _ in range(12):
+                    if stop.is_set():
+                        return
+                    try:
+                        trick.send(b"G")
+                    except OSError:
+                        return
+                    time.sleep(0.15)
+
+            threading.Thread(target=trickle, daemon=True).start()
+            time.sleep(0.25)
+            started = time.monotonic()
+            followed = raw_response(b"GET /ss-publish/browser/series HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n\r\n")
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 0.9)
+            self._assert_busy(followed)
+            silent = socket.create_connection((HOST, PORT), timeout=3)
+            time.sleep(0.05)
+            started = time.monotonic()
+            after_silent = raw_response(b"GET /ss-publish/browser/series HTTP/1.1\r\nHost: 127.0.0.1:19427\r\n\r\n")
+            self.assertLess(time.monotonic() - started, 0.9)
+            self._assert_busy(after_silent)
+            self.assertEqual(self.server.world["runtime"]["operations"], {})
+        finally:
+            stop.set()
+            for sock in holders + [trick, silent]:
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+
+    def _assert_busy(self, raw):
+        self.assertTrue(raw.startswith(b"HTTP/1.1 503 "))
+        self.assertIn(b"connection: close", raw.lower())
+        admitted = _json_body(raw)
+        self.assertEqual(admitted["error"], {"code": "limit_exceeded", "retryable": True})
+        self.assertEqual(validate({"$ref": "#/$defs/busyResponse"}, admitted, SCHEMA), [])
+        self.assertEqual(validate({"$ref": "#/$defs/response"}, admitted, SCHEMA), [])
+        self.assertTrue(validate({"$ref": "#/$defs/errorObject"}, admitted["error"], SCHEMA))
+
     def test_chrome_sign_in_sends_service_origin(self):
         callback = _CallbackServer(43121)
         foreign = _ForeignFormServer(43122)
