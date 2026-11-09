@@ -764,6 +764,53 @@ mod tests {
     }
 
     #[test]
+    fn publishing_request_leaves_the_editor_responsive() {
+        let (ctx, mut studio) = fixture();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        studio.publish_sign_in = Some(receiver);
+        studio.publish_draft.message = Some("Working away from the editor.".into());
+        let started = std::time::Instant::now();
+        frame(&ctx, &mut studio, egui::vec2(1100.0, 720.0), Vec::new());
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "a frame waited on the publishing thread"
+        );
+        let mut text = String::new();
+        let mut host = eframe::Frame::_new_kittest();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 720.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| eframe::App::update(&mut studio, ctx, &mut host),
+        );
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, &mut text);
+        }
+        assert!(
+            text.contains("Working away from the editor."),
+            "publish window did not show the in-flight message: {text}"
+        );
+        studio.publish_draft.synopsis = "Edited while the service works.".into();
+        frame(&ctx, &mut studio, egui::vec2(1100.0, 720.0), Vec::new());
+        assert_eq!(
+            studio.publish_draft.synopsis,
+            "Edited while the service works."
+        );
+        assert!(studio.publish_sign_in.is_some());
+        sender
+            .send(Err("The service finished after the editor moved on.".into()))
+            .unwrap();
+        frame(&ctx, &mut studio, egui::vec2(1100.0, 720.0), Vec::new());
+        let message = studio.publish_draft.message.clone().unwrap_or_default();
+        assert!(message.contains("finished after the editor moved on"));
+        assert!(studio.publish_sign_in.is_none());
+    }
+
+    #[test]
     fn switching_chapter_drops_the_comic_review() {
         let (_ctx, mut studio) = fixture();
         studio.export_options.profile = scroll_studio::export::ExportProfile::Original;
