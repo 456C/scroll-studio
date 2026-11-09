@@ -223,6 +223,11 @@ pub struct PublishSession {
     package: Option<EpisodePackage>,
     destination: Option<LocalDestination>,
     seal: Option<ReviewSeal>,
+    credential: Option<crate::publish_wire::Credential>,
+    account: Option<crate::publish_wire::AccountSnapshot>,
+    owned: Option<crate::publish_wire::OwnedEpisode>,
+    acknowledgement: Option<crate::publish_wire::Acknowledgement>,
+    live: crate::publish_wire::LiveStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,7 +248,60 @@ impl PublishSession {
             package: None,
             destination: None,
             seal: None,
+            credential: None,
+            account: None,
+            owned: None,
+            acknowledgement: None,
+            live: crate::publish_wire::LiveStatus::NotRead,
         }
+    }
+
+    pub fn account(&self) -> Option<&crate::publish_wire::AccountSnapshot> {
+        self.account.as_ref()
+    }
+
+    pub fn owned(&self) -> Option<&crate::publish_wire::OwnedEpisode> {
+        self.owned.as_ref()
+    }
+
+    pub fn acknowledgement(&self) -> Option<&crate::publish_wire::Acknowledgement> {
+        self.acknowledgement.as_ref()
+    }
+
+    pub fn store_sign_in(
+        &mut self,
+        credential: crate::publish_wire::Credential,
+        account: crate::publish_wire::AccountSnapshot,
+    ) {
+        self.credential = Some(credential);
+        self.account = Some(account);
+        self.owned = None;
+        self.acknowledgement = None;
+        self.live = crate::publish_wire::LiveStatus::NotRead;
+        self.seal = None;
+    }
+
+    pub fn select_owned(&mut self, owned: crate::publish_wire::OwnedEpisode) {
+        let changed = self.owned.as_ref() != Some(&owned);
+        self.owned = Some(owned);
+        if changed {
+            self.seal = None;
+            self.acknowledgement = None;
+            self.live = crate::publish_wire::LiveStatus::NotRead;
+        }
+    }
+
+    pub fn note_acknowledgement(&mut self, acknowledgement: crate::publish_wire::Acknowledgement) {
+        self.acknowledgement = Some(acknowledgement);
+        self.live = crate::publish_wire::LiveStatus::NotRead;
+    }
+
+    pub fn note_live(&mut self, live: crate::publish_wire::LiveStatus) {
+        self.live = live;
+    }
+
+    pub fn credential(&self) -> Option<&crate::publish_wire::Credential> {
+        self.credential.as_ref()
     }
 
     pub fn package(&self) -> Option<&EpisodePackage> {
@@ -268,6 +326,9 @@ impl PublishSession {
         self.package = None;
         self.destination = None;
         self.seal = None;
+        self.owned = None;
+        self.acknowledgement = None;
+        self.live = crate::publish_wire::LiveStatus::NotRead;
     }
 
     pub fn is_reviewed(&self) -> bool {
@@ -305,7 +366,14 @@ impl PublishSession {
     /// Current publication is unknown until a later read. A refused upload
     /// does not invent a revision, a URL, or a cached confirm result.
     pub fn publication_status(&self) -> PublicationStatus {
-        PublicationStatus::NotRead
+        match &self.live {
+            crate::publish_wire::LiveStatus::NotRead
+            | crate::publish_wire::LiveStatus::Discover { .. } => PublicationStatus::NotRead,
+            crate::publish_wire::LiveStatus::Read { status, .. } if status == "published" => {
+                PublicationStatus::Published
+            }
+            crate::publish_wire::LiveStatus::Read { .. } => PublicationStatus::Withdrawn,
+        }
     }
 
     pub fn upload_draft(&self) -> Result<std::convert::Infallible, LinkError> {
@@ -319,6 +387,8 @@ impl PublishSession {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublicationStatus {
     NotRead,
+    Published,
+    Withdrawn,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

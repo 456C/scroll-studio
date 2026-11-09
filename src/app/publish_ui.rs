@@ -1,5 +1,9 @@
 use super::*;
 use scroll_studio::publish::{self, EpisodeKind, LinkError, LocalDestination, PublicMetadata};
+use scroll_studio::publish_wire::{self, Origin};
+
+pub(super) type SignInResult =
+    Result<(publish_wire::Credential, publish_wire::AccountSnapshot), String>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PublishKind {
@@ -47,12 +51,19 @@ impl Studio {
         if !self.publish_open || self.story.chapters.is_empty() {
             return;
         }
+        self.poll_sign_in();
         self.sync_publish_draft();
         let mut open = true;
         let mut review = false;
         let mut confirm = false;
         let mut upload = false;
         let mut choose_text = false;
+        let mut sign_in = false;
+        let mut check_status = false;
+        let mut confirm_publication = false;
+        let mut withdraw_publication = false;
+        let mut open_preview: Option<String> = None;
+        let mut chosen: Option<scroll_studio::publish_wire::OwnedEpisode> = None;
         egui::Window::new("Publish episode")
             .open(&mut open)
             .collapsible(false)
@@ -183,7 +194,39 @@ impl Studio {
                     if upload_button.clicked() {
                         upload = true;
                     }
+                    if ui.button("Sign in").clicked() {
+                        sign_in = true;
+                    }
                 });
+                if let Some(account) = self.publish.account() {
+                    ui.label(format!("{} · test-only", account.handle));
+                    for episode in &account.episodes {
+                        let label = format!("{} · {}", episode.series_title, episode.episode_title);
+                        if ui
+                            .selectable_label(self.publish.owned() == Some(episode), &label)
+                            .clicked()
+                        {
+                            chosen = Some(episode.clone());
+                        }
+                    }
+                }
+                if let Some(ack) = self.publish.acknowledgement() {
+                    ui.label(format!("Recorded {} · not current status", ack.revision_id));
+                    if let Some(url) = &ack.browser_preview_url {
+                        if ui.button("Open preview").clicked() {
+                            open_preview = Some(url.clone());
+                        }
+                    }
+                    if ui.button("Check status").clicked() {
+                        check_status = true;
+                    }
+                    if ui.button("Confirm").clicked() {
+                        confirm_publication = true;
+                    }
+                    if ui.button("Withdraw").clicked() {
+                        withdraw_publication = true;
+                    }
+                }
             });
         self.publish_open = open;
         if choose_text {
@@ -197,6 +240,140 @@ impl Studio {
         }
         if upload {
             self.upload_publish_draft();
+        }
+        if sign_in {
+            self.start_sign_in();
+        }
+        if let Some(episode) = chosen {
+            self.publish.select_owned(episode);
+        }
+        if let Some(url) = open_preview {
+            self.publish_draft.message = Some(match publish_wire::open_system_browser(&url) {
+                Ok(()) => "Opened the preview in the system browser.".into(),
+                Err(error) => error.to_string(),
+            });
+        }
+        if check_status {
+            self.check_publish_status();
+        }
+        if confirm_publication {
+            self.confirm_publication();
+        }
+        if withdraw_publication {
+            self.withdraw_publication();
+        }
+    }
+
+    fn confirm_publication(&mut self) {
+        self.finish_publication(true);
+    }
+
+    fn withdraw_publication(&mut self) {
+        self.finish_publication(false);
+    }
+
+    fn finish_publication(&mut self, confirm: bool) {
+        let Some(credential) = self.publish.credential().cloned() else {
+            self.publish_draft.message =
+                Some("Private prototype service is not connected. Nothing was uploaded.".into());
+            return;
+        };
+        let Some(owned) = self.publish.owned().cloned() else {
+            self.publish_draft.message = Some("Choose an owned episode.".into());
+            return;
+        };
+        let Some(ack) = self.publish.acknowledgement().cloned() else {
+            self.publish_draft.message = Some("Record a revision before confirming it.".into());
+            return;
+        };
+        let result = if confirm {
+            publish_wire::confirm(Origin::pinned(), &credential, &owned, &ack.revision_id)
+        } else {
+            let Some(publication_id) = ack.publication_id.clone() else {
+                self.publish_draft.message =
+                    Some("Confirm the revision before withdrawing it.".into());
+                return;
+            };
+            publish_wire::withdraw(
+                Origin::pinned(),
+                &credential,
+                &owned,
+                &publication_id,
+                &ack.revision_id,
+            )
+        };
+        match result {
+            Ok(next) => {
+                let effect = next.effect.clone();
+                self.publish.note_acknowledgement(next);
+                self.publish_draft.message =
+                    Some(format!("{effect}. This is not the current status."));
+            }
+            Err(error) => self.publish_draft.message = Some(error.to_string()),
+        }
+    }
+
+    fn poll_sign_in(&mut self) {
+        let finished = self
+            .publish_sign_in
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok());
+        if finished.is_some() {
+            self.publish_sign_in = None;
+        }
+        if let Some(result) = finished {
+            match result {
+                Ok((credential, account)) => {
+                    let handle = account.handle.clone();
+                    self.publish.store_sign_in(credential, account);
+                    self.publish_draft.message = Some(format!(
+                        "Signed in as {handle}. The credential is test-only."
+                    ));
+                }
+                Err(error) => self.publish_draft.message = Some(error),
+            }
+        }
+    }
+
+    fn start_sign_in(&mut self) {
+        if self.publish_sign_in.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.publish_sign_in = Some(rx);
+        std::thread::spawn(move || {
+            let result = publish_wire::sign_in(Origin::pinned(), publish_wire::open_system_browser)
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+        self.publish_draft.message = Some("Waiting for the system browser.".into());
+    }
+
+    fn check_publish_status(&mut self) {
+        let Some(credential) = self.publish.credential().cloned() else {
+            self.publish_draft.message =
+                Some("Private prototype service is not connected. Nothing was uploaded.".into());
+            return;
+        };
+        let Some(url) = self
+            .publish
+            .acknowledgement()
+            .and_then(|ack| ack.canonical_url.clone())
+        else {
+            self.publish_draft.message =
+                Some("There is no reader URL to check. Nothing was uploaded.".into());
+            return;
+        };
+        match publish_wire::read_publication(Origin::pinned(), &credential, &url) {
+            Ok(status) => {
+                let label = match &status {
+                    publish_wire::LiveStatus::Read { status, .. } => status.clone(),
+                    _ => "unread".into(),
+                };
+                self.publish.note_live(status);
+                self.publish_draft.message = Some(format!("Current status: {label}."));
+            }
+            Err(error) => self.publish_draft.message = Some(error.to_string()),
         }
     }
 
@@ -301,13 +478,44 @@ impl Studio {
 
     fn upload_publish_draft(&mut self) {
         self.sync_publish_draft();
-        let Err(error) = self.publish.upload_draft();
-        self.publish_draft.message = Some(match error {
-            LinkError::ServiceNotConnected => {
-                "Private prototype service is not connected. Nothing was uploaded.".into()
+        let ready = self.publish.is_reviewed()
+            && self.publish.credential().is_some()
+            && self.publish.owned().is_some()
+            && self.publish.package().is_some();
+        if !ready {
+            let Err(error) = self.publish.upload_draft();
+            self.publish_draft.message = Some(match error {
+                LinkError::ServiceNotConnected => {
+                    "Private prototype service is not connected. Nothing was uploaded.".into()
+                }
+                other => other.to_string(),
+            });
+            return;
+        }
+        let credential = self.publish.credential().cloned().unwrap();
+        let owned = self.publish.owned().cloned().unwrap();
+        let package = self.publish.package().cloned().unwrap();
+        let story_ref = match package.chapter_id() {
+            Some(id) => format!("chapter-{id}"),
+            None => "prose".into(),
+        };
+        match publish_wire::upload(
+            Origin::pinned(),
+            &credential,
+            &package,
+            &owned,
+            &story_ref,
+            "episode",
+        ) {
+            Ok(ack) => {
+                let revision = ack.revision_id.clone();
+                self.publish.note_acknowledgement(ack);
+                self.publish_draft.message = Some(format!(
+                    "Recorded {revision}. This is not the current status."
+                ));
             }
-            other => other.to_string(),
-        });
+            Err(error) => self.publish_draft.message = Some(error.to_string()),
+        }
     }
 
     fn choose_prose_file(&mut self) {
