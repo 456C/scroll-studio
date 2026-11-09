@@ -316,8 +316,12 @@ impl Studio {
                 .canonical_url
                 .clone()
                 .ok_or_else(|| "The service did not return a reader URL.".to_string())?;
-            let status = publish_wire::read_publication(Origin::pinned(), &credential, &url)
-                .map_err(|error| error.to_string())?;
+            let revision = next.revision_id.clone();
+            let status = authoritative_status(
+                publish_wire::read_publication(Origin::pinned(), &credential, &url),
+                &url,
+                &revision,
+            )?;
             let label = match &status {
                 publish_wire::LiveStatus::Read { status, .. } => status.clone(),
                 publish_wire::LiveStatus::Discover { status, .. } => status.clone(),
@@ -395,18 +399,23 @@ impl Studio {
                 Some("Private prototype service is not connected. Nothing was uploaded.".into());
             return;
         };
-        let Some(url) = self
-            .publish
-            .acknowledgement()
-            .and_then(|ack| ack.canonical_url.clone())
-        else {
+        let Some(ack) = self.publish.acknowledgement() else {
             self.publish_draft.message =
                 Some("There is no reader URL to check. Nothing was uploaded.".into());
             return;
         };
+        let Some(url) = ack.canonical_url.clone() else {
+            self.publish_draft.message =
+                Some("There is no reader URL to check. Nothing was uploaded.".into());
+            return;
+        };
+        let revision = ack.revision_id.clone();
         self.spawn_service(move || {
-            let status = publish_wire::read_publication(Origin::pinned(), &credential, &url)
-                .map_err(|error| error.to_string())?;
+            let status = authoritative_status(
+                publish_wire::read_publication(Origin::pinned(), &credential, &url),
+                &url,
+                &revision,
+            )?;
             let label = match &status {
                 publish_wire::LiveStatus::Read { status, .. } => status.clone(),
                 publish_wire::LiveStatus::Discover { status, .. } => status.clone(),
@@ -603,6 +612,24 @@ impl Studio {
     }
 }
 
+fn authoritative_status(
+    result: Result<publish_wire::LiveStatus, publish_wire::WireError>,
+    canonical_url: &str,
+    revision_id: &str,
+) -> Result<publish_wire::LiveStatus, String> {
+    match result {
+        Ok(status) => Ok(status),
+        Err(publish_wire::WireError::Rejected { code, status: 410 }) if code == "withdrawn" => {
+            Ok(publish_wire::LiveStatus::Read {
+                status: "withdrawn".into(),
+                revision_id: revision_id.to_string(),
+                canonical_url: canonical_url.to_string(),
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn reviewed_metadata(draft: &PublishDraft) -> Result<PublicMetadata, publish::PackageError> {
     PublicMetadata::new(
         draft.series_title.clone(),
@@ -761,6 +788,40 @@ mod tests {
             assert!(!studio.publish.is_reviewed());
             assert!(studio.publish.package().is_none());
         }
+    }
+
+    #[test]
+    fn withdrawn_read_is_authoritative_status() {
+        let status = authoritative_status(
+            Err(publish_wire::WireError::Rejected {
+                code: "withdrawn".into(),
+                status: 410,
+            }),
+            "http://127.0.0.1:19427/ss-publish/browser/reader/pub_test_0001",
+            "rev_test_0001",
+        )
+        .unwrap();
+        match status {
+            publish_wire::LiveStatus::Read {
+                status,
+                revision_id,
+                canonical_url,
+            } => {
+                assert_eq!(status, "withdrawn");
+                assert_eq!(revision_id, "rev_test_0001");
+                assert!(canonical_url.ends_with("pub_test_0001"));
+            }
+            other => panic!("expected a read, got {other:?}"),
+        }
+        let refused = authoritative_status(
+            Err(publish_wire::WireError::Rejected {
+                code: "not_owner".into(),
+                status: 403,
+            }),
+            "http://127.0.0.1:19427/ss-publish/browser/reader/pub_test_0001",
+            "rev_test_0001",
+        );
+        assert!(refused.is_err());
     }
 
     #[test]

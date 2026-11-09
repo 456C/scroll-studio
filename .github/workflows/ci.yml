@@ -41,6 +41,127 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets
 
+  windows-pinned-service:
+    name: Windows pinned service smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Inventory Python, ffmpeg, ffprobe, and decoders
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host 'Hosted Windows runner. This is not a physical Windows desktop and not a supported Windows claim.'
+          $missing = @()
+          Write-Host '=== python ==='
+          if (Get-Command python -ErrorAction SilentlyContinue) {
+            python -c "import sys; print(sys.version); print(sys.executable)"
+          } else {
+            Write-Host 'python is not on PATH'
+            $missing += 'python'
+          }
+          Write-Host '=== where ffmpeg ==='
+          $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
+          if ($ffmpeg) { Write-Host $ffmpeg.Source; ffmpeg -version } else { Write-Host 'ffmpeg is not on PATH'; $missing += 'ffmpeg' }
+          Write-Host '=== where ffprobe ==='
+          $ffprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
+          if ($ffprobe) { Write-Host $ffprobe.Source; ffprobe -version } else { Write-Host 'ffprobe is not on PATH'; $missing += 'ffprobe' }
+          if ($ffmpeg) {
+            Write-Host '=== ffmpeg decoders ==='
+            $decoders = ffmpeg -hide_banner -decoders 2>&1 | Out-String
+            $hasPng = $decoders -match '(?m)^\s*\S+\s+png\s'
+            $hasMjpeg = $decoders -match '(?m)^\s*\S+\s+mjpeg\s'
+            Write-Host "png decoder: $hasPng"
+            Write-Host "mjpeg decoder: $hasMjpeg"
+            if (-not $hasPng) { $missing += 'ffmpeg png decoder' }
+            if (-not $hasMjpeg) { $missing += 'ffmpeg mjpeg decoder' }
+          }
+          if ($missing.Count -gt 0) {
+            throw ("Blocked. The hosted runner is missing: " + ($missing -join ', ') + ". No package was installed.")
+          }
+      - name: Extract isolated service pin e3eb462
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch --depth 1 origin e3eb462a63b86f793cdf9de5a37a07090ccbc8b7
+          $dest = Join-Path $env:RUNNER_TEMP 'scroll-studio-service-e3eb462'
+          if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          git archive --format=tar.gz --prefix=scroll-studio-service-e3eb462/ e3eb462a63b86f793cdf9de5a37a07090ccbc8b7 contracts/publishing prototypes src/app/reader_ui.rs src/export.rs | tar -xz -C $env:RUNNER_TEMP
+          $root = Join-Path $env:RUNNER_TEMP 'scroll-studio-service-e3eb462'
+          foreach ($needed in @(
+            'prototypes\publishing\test_contract.py',
+            'prototypes\publishing\test_listener.py',
+            'src\app\reader_ui.rs',
+            'src\export.rs'
+          )) {
+            $path = Join-Path $root $needed
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Isolated tree is missing $needed" }
+          }
+          Write-Host "Isolated root: $root"
+          Write-Host 'The same-pin reader_ui.rs and export.rs stay in this temp tree. They are not copied into the app checkout.'
+          "SERVICE_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run the selected contract and listener smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:SERVICE_DIR
+          Write-Host 'Not run, and a skip would not be Windows browser proof:'
+          Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_chrome_sign_in_sends_service_origin'
+          Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_phone_viewport_screenshot'
+          python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close
+      - name: Smoke the documented listener invocation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:RUNNER_TEMP 'listener-smoke.py'
+          @'
+import socket
+import subprocess
+import sys
+import time
+
+root = sys.argv[1]
+proc = subprocess.Popen([sys.executable, "-m", "prototypes.publishing.listener"], cwd=root)
+try:
+    last = None
+    for _ in range(40):
+        time.sleep(0.25)
+        try:
+            connection = socket.create_connection(("127.0.0.1", 19427), 2)
+            connection.sendall(b"GET /ss-publish/browser/operator HTTP/1.1\r\nHost: 127.0.0.1:19427\r\nConnection: close\r\n\r\n")
+            data = b""
+            connection.settimeout(2)
+            while True:
+                chunk = connection.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+            text = data.decode("iso-8859-1", "replace")
+            print(text.split("\r\n\r\n", 1)[0])
+            if "401" not in text.split("\r\n", 1)[0]:
+                raise SystemExit("listener status was not 401")
+            if "referrer-policy: same-origin" not in text.lower():
+                raise SystemExit("referrer policy was not same-origin")
+            break
+        except OSError as exc:
+            last = exc
+    else:
+        raise SystemExit(f"listener did not answer: {last}")
+finally:
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=15)
+        raise SystemExit("listener did not exit within 15s after terminate()")
+'@ | Set-Content -LiteralPath $script -Encoding utf8
+          python $script $env:SERVICE_DIR
+
   windows-portable:
     name: Windows portable build
     runs-on: windows-latest
