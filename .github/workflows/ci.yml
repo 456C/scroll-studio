@@ -93,11 +93,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git fetch --depth 1 origin e3eb462a63b86f793cdf9de5a37a07090ccbc8b7
+          git fetch --depth 1 https://github.com/456C/scroll-studio.git e3eb462a63b86f793cdf9de5a37a07090ccbc8b7
           $dest = Join-Path $env:RUNNER_TEMP 'scroll-studio-service-e3eb462'
           if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          git archive --format=tar.gz --prefix=scroll-studio-service-e3eb462/ e3eb462a63b86f793cdf9de5a37a07090ccbc8b7 contracts/publishing prototypes src/app/reader_ui.rs src/export.rs | tar -xz -C $env:RUNNER_TEMP
+          git archive --format=tar.gz --prefix=scroll-studio-service-e3eb462/ FETCH_HEAD contracts/publishing prototypes src/app/reader_ui.rs src/export.rs | tar -xz -C $env:RUNNER_TEMP
           $root = Join-Path $env:RUNNER_TEMP 'scroll-studio-service-e3eb462'
           foreach ($needed in @(
             'prototypes\publishing\test_contract.py',
