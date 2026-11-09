@@ -1,0 +1,24 @@
+{
+  "required": true,
+  "package": "dev.lightbound.client.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "DynamicLightCoordsMixin",
+    "SectionCopyAccessor",
+    "RenderSectionRegionAccessor",
+    "BinaryBlockLightingMixin",
+    "BinaryIndigoLightingMixin",
+    "GatewayVoidEffectMixin",
+    "DynamicEntityLightingMixin",
+    "DynamicFluidLightingMixin",
+    "LightmapExtractorMixin",
+    "FogRendererMixin",
+    "LevelExtractorMixin",
+    "PlayerEscapeMixin",
+    "PhasedFluidCameraMixin",
+    "MiningPredictionMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

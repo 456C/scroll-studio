@@ -1,0 +1,24 @@
+{
+  "targets": { "lightbound:gateway_swap": {} },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "lightbound:post/gateway_void",
+      "inputs": [
+        { "sampler_name": "In", "target": "minecraft:main" },
+        { "sampler_name": "Portal", "location": "lightbound:end_portal", "width": 256, "height": 256, "bilinear": true },
+        { "sampler_name": "EndSky", "location": "lightbound:end_sky", "width": 128, "height": 128, "bilinear": true }
+      ],
+      "output": "lightbound:gateway_swap"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
+      "inputs": [ { "sampler_name": "In", "target": "lightbound:gateway_swap" } ],
+      "uniforms": {
+        "BlitConfig": [ { "name": "ColorModulate", "type": "vec4", "value": [1, 1, 1, 1] } ]
+      },
+      "output": "minecraft:main"
+    }
+  ]
+}

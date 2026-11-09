@@ -1417,21 +1417,7 @@ fn portrait_uv(image: egui::Vec2, viewport: egui::Vec2) -> egui::Rect {
 
 /// Only the contents of a text field scroll. Sheet navigation and actions stay put.
 fn text_editor(ui: &mut egui::Ui, id: impl std::hash::Hash, value: &mut String, hint: &str) {
-    let size = ui.available_size().max(egui::vec2(1.0, 1.0));
-    egui::ScrollArea::vertical()
-        .id_salt(id)
-        .max_height(size.y)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(value)
-                    .hint_text(hint)
-                    .char_limit(20000)
-                    .desired_width(f32::INFINITY)
-                    .min_size(egui::vec2(0.0, (size.y - 8.0).max(1.0)))
-                    .desired_rows(1),
-            );
-        });
+    editing::text_panel(ui, id, value, hint, ui.available_height(), 20000);
 }
 
 fn readonly_editor(ui: &mut egui::Ui, id: impl std::hash::Hash, value: &str) {

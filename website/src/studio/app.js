@@ -2,6 +2,9 @@ import {icon,escape as esc} from './icons.js';
 import * as M from './model.js';
 import {LoreBoard} from './board.js';
 import {showAngle} from './camera.js';
+import {TimelineBoard,wouldMove} from './timeline.js';
+import {focusForTyping,prepareEditors,installKeyboardDismissal} from './editing.js';
+installKeyboardDismissal();
 
 const $=(s,root=document)=>root.querySelector(s), $$=(s,root=document)=>[...root.querySelectorAll(s)];
 const app=$('#app'), overlay=$('#overlay');
@@ -10,7 +13,7 @@ const sections=[['characters','Characters'],['locations','Locations'],['groups',
 let csrf='',recent=[],project=null,story=null,revision=0,serial=0,savedSerial=0,saveTimer=null,saving=null,saveError=null;
 let section='characters',selected=null,sheetTab='References',subfield=null,query='',imageFilter='All',galleryLimit=60,board=null,boardView={x:0,y:0,zoom:1,ready:false,selected:null,edge:null},editKey=null;
 let history=new M.History(mobile()?12*1024*1024:32*1024*1024),imageHandler=null,toastTimer=null,menuElement=null,menuAbort=null,modalCleanup=null,dbPromise=null;
-let draftTimer=null,galleryPosition=0;
+let draftTimer=null,galleryPosition=0,timelineBoard=null,timelineView={selected:null,scroll:0};
 let appearance={glass:true,motion:true};
 try{appearance={...appearance,...JSON.parse(localStorage.getItem('scroll-appearance')||'{}')};}catch{}
 applyAppearance();
@@ -64,7 +67,7 @@ async function busy(label,task){
 }
 function adopt(result,writeDraft=true){
   project=result.id;story=result.story;revision=result.revision;serial=0;savedSerial=0;saveError=null;history=new M.History(mobile()?12*1024*1024:32*1024*1024);
-  selected=null;section='characters';sheetTab='References';query='';boardView={x:0,y:0,zoom:1,ready:false,selected:null,edge:null};render();if(writeDraft)draftWrite();
+  selected=null;section='characters';sheetTab='References';query='';timelineView={selected:null,scroll:0};boardView={x:0,y:0,zoom:1,ready:false,selected:null,edge:null};render();if(writeDraft)draftWrite();
 }
 async function openWorld(id){await flush();await busy('Opening world…',async()=>{const data=await api('load',{id});adopt(data);});}
 async function newWorld(){await flush();await busy('Creating world…',async()=>adopt(await api('create',{method:'POST',id:null})));}
@@ -91,14 +94,14 @@ function shell(){
   return '<header class="topbar">'+button('File','file')+button('New','newMenu','plus','class="new-top"')+'<span class="world-title">'+esc(story?.title||'Scroll Studio')+'</span>'+(story?'<button class="save-dot" data-action="saveStatus" aria-label="Save status"></button>'+button('Style','style','style','class="top-style"')+ib('copy','copyStyle','Copy story style')+button('Export .scro','export','export','class="primary export-button" aria-label="Export .scro"'):'<a href="/" class="muted">Download app ↗</a>')+'</header>';
 }
 function render(){
-  closeMenu();board?.destroy();board=null;
+  closeMenu();board?.destroy();board=null;timelineBoard?.destroy();timelineBoard=null;
   if(!story){app.innerHTML=shell()+'<main class="welcome"><div class="welcome-layout'+(!recent.length?' solo':'')+'"><div class="welcome-main"><img src="/assets/app-icon.png" width="64" height="64" alt=""><h1>Your world, anywhere.</h1>'+button('Open .scro','open','open','class="primary"')+button('New world','newWorld','plus')+'<small>Temporary workspace · Export .scro to keep<br><a href="/privacy.html">How your files are handled</a></small></div>'+(recent.length?'<div class="welcome-recent"><small>RECENT WORKSPACES</small>'+recent.map(r=>button(r.title,'recent:'+r.id,'open')).join('')+'</div>':'')+'</div></main>';return;}
   app.innerHTML=shell()+'<aside class="sidebar"><nav class="nav-list" aria-label="World sections">'+sections.map(([key,label])=>button(label,'nav:'+key,key,'class="'+(section===key?'active':'')+'"')).join('')+'</nav><div id="inspector"></div><div class="sidebar-footer">'+ib('undo','undo','Undo')+ib('redo','redo','Redo')+'</div></aside><main class="workspace" id="workspace"></main><nav class="mobile-nav" aria-label="World sections">'+[['characters','Characters'],['locations','Locations'],['lore','Lore'],['more','More']].map(([key,label])=>button(label,key==='more'?'mobileMenu':'nav:'+key,key,'class="'+(section===key?'active':'')+'"')).join('')+'</nav>';
   renderWorkspace();status();
 }
 function navigate(key){galleryPosition=0;section=key;selected=null;sheetTab='References';subfield=null;query='';galleryLimit=60;editKey=null;render();}
 function renderWorkspace(){
-  board?.destroy();board=null;const root=$('#workspace');if(!root)return;
+  board?.destroy();board=null;timelineBoard?.destroy();timelineBoard=null;const root=$('#workspace');if(!root)return;
   const side=$('#inspector');if(side)side.innerHTML='';
   if(section==='lore'){renderLore(root);return;}
   if(section==='timeline'){renderTimeline(root);return;}
@@ -108,11 +111,12 @@ function renderWorkspace(){
 }
 function renderGallery(root){
   const type=section,label=sections.find(([k])=>k===type)?.[1]||'Images';
+  root.innerHTML='<div class="workspace-header"><h1>'+label+'</h1><input type="search" class="search" data-search placeholder="Search" aria-label="Search '+label+'" value="'+esc(query)+'">'+button(type==='images'?'Import':type==='locations'?'Location':type==='groups'?'Group':'Character',type==='images'?'importLibrary':'addEntity','plus','class="primary"')+'</div>'+(type==='images'?'<div class="section-tabs" style="padding:0 24px 14px">'+['All','Backgrounds','References'].map(v=>button(v,'filter:'+v,'','class="'+(imageFilter===v?'active':'')+'"')).join('')+'</div>':'')+'<div class="content-scroll drop-zone" id="gallery-content"></div>';
+  const content=$('#gallery-content');
+  const paint=()=>{
   let items=type==='characters'?story.assets.filter(a=>a.kind==='Character'):type==='images'?story.assets.filter(a=>a.width>0):story[type]||[];
   if(type==='images' && imageFilter!=='All')items=items.filter(a=>a.kind===(imageFilter==='Backgrounds'?'Background':'Image'));
   if(query)items=items.filter(a=>(a.name+' '+(a.character?.tagline||a.profile?.description||a.description||'')).toLowerCase().includes(query.toLowerCase()));
-  root.innerHTML='<div class="workspace-header"><h1>'+label+'</h1><input type="search" class="search" data-search placeholder="Search" aria-label="Search '+label+'" value="'+esc(query)+'">'+button(type==='images'?'Import':type==='locations'?'Location':type==='groups'?'Group':'Character',type==='images'?'importLibrary':'addEntity','plus','class="primary"')+'</div>'+(type==='images'?'<div class="section-tabs" style="padding:0 24px 14px">'+['All','Backgrounds','References'].map(v=>button(v,'filter:'+v,'','class="'+(imageFilter===v?'active':'')+'"')).join('')+'</div>':'')+'<div class="content-scroll drop-zone" id="gallery-content"></div>';
-  const content=$('#gallery-content');
   if(!items.length){content.innerHTML=rowEmpty(query?'No matches':label,type,type==='images'?'importLibrary':'addEntity',type==='images'?'Import image':'Add '+label.slice(0,-1));}
   else content.innerHTML='<div class="gallery">'+items.slice(0,galleryLimit).map(e=>{
     const refs=type==='images'?[e]:M.references(story,type,e),art=asset(M.thumbnail(story,e.id,refs[0]?.id));
@@ -120,7 +124,9 @@ function renderGallery(root){
     const subtitle=type==='characters'?e.character.tagline:type==='locations'?e.profile.description:type==='groups'?e.description:e.width+' × '+e.height;
     return '<button class="entity-card" data-action="'+(type==='images'?'view:':'select:')+e.id+'"><div class="card-art">'+(art?imageTag(art):icon(type))+'</div><div class="card-info"><h3>'+esc(e.name)+'</h3><p>'+esc(subtitle||refs.length+' reference'+(refs.length===1?'':'s'))+'</p>'+(groups.length?'<div class="tags">'+groups.slice(0,2).map(g=>'<span class="tag">'+esc(g.name)+'</span>').join('')+'</div>':'')+'</div></button>';
   }).join('')+'</div>'+(items.length>galleryLimit?button('Load more','loadMore','','class="load-more"'):'');
-  $('[data-search]',root)?.addEventListener('input',e=>{query=e.target.value;const start=e.target.selectionStart;renderGallery(root);const input=$('[data-search]',root);input.focus();try{input.setSelectionRange(start,start);}catch{}});
+  };
+  paint();
+  $('[data-search]',root)?.addEventListener('input',e=>{query=e.target.value;galleryLimit=60;galleryPosition=0;paint();content.scrollTop=0;});
   content.scrollTop=galleryPosition;
   bindDrop(content,files=>uploadImages(files,null));
 }
@@ -128,7 +134,7 @@ function renderSheet(root){
   const e=entry(),type=section;
   const tabs=type==='characters'?['References','Appearance','Outfits','Palette','Identity','Notes','Prompt']:type==='locations'?['References','Details','Notes','Prompt']:['References','Identity','Members'];
   if(!tabs.includes(sheetTab))sheetTab=tabs[0];
-  root.innerHTML='<section class="sheet"><div class="sheet-header">'+ib('back','backGallery','Back to gallery')+'<input class="sheet-name" data-bind="name" aria-label="Name" value="'+esc(e.name)+'" maxlength="1024"><div class="sheet-actions">'+(type!=='groups'?ib('groups','affiliations','Affiliations'):'')+button('Copy prompt','copyPrompt','copy','class="secondary-sheet-action"')+(type==='characters'?ib('angle','angle','Character angle'):'')+ib('more','entityMenu','More options')+'</div></div><div class="sheet-body"><nav class="sheet-tabs" aria-label="Sheet categories">'+tabs.map(t=>button(t,'sheet:'+t,'','class="'+(sheetTab===t?'active':'')+'"')).join('')+'</nav><div class="sheet-content drop-zone" id="sheet-content"></div></div></section>';
+  root.innerHTML='<section class="sheet"><div class="sheet-header">'+ib('back','backGallery','Back to gallery')+'<h1 class="sheet-name">'+esc(e.name)+'</h1><div class="sheet-actions">'+(type!=='groups'?ib('groups','affiliations','Affiliations'):'')+button('Copy prompt','copyPrompt','copy','class="secondary-sheet-action"')+(type==='characters'?ib('angle','angle','Character angle'):'')+ib('more','entityMenu','More options')+'</div></div><div class="sheet-body"><nav class="sheet-tabs" aria-label="Sheet categories">'+tabs.map(t=>button(t,'sheet:'+t,'','class="'+(sheetTab===t?'active':'')+'"')).join('')+'</nav><div class="sheet-content drop-zone" id="sheet-content"></div></div></section>';
   const content=$('#sheet-content');
   content.addEventListener('contextmenu',event=>{const image=event.target.closest('[data-action^="view:"]');if(image){event.preventDefault();referenceMenu(Number(image.dataset.action.split(':')[1]),{x:event.clientX,y:event.clientY});}});
   if(sheetTab==='References')renderReferences(content,e,type);
@@ -145,7 +151,7 @@ function renderSheet(root){
   else if(sheetTab==='Palette')renderPalette(content,e);
   else if(sheetTab==='Members')renderMembers(content,e);
   else if(sheetTab==='Prompt')renderPrompt(content,e,type);
-  bindFields(root,e);bindDrop(content,files=>uploadImages(files,{type,id:e.id}));
+  bindFields(root,e);prepareEditors(content);bindDrop(content,files=>uploadImages(files,{type,id:e.id}));
 }
 function getPath(object,path){return path.split('.').reduce((a,k)=>a?.[k],object);}
 function setPath(object,path,value){const keys=path.split('.');let target=object;for(const k of keys.slice(0,-1))target=target[k];target[keys.at(-1)]=value;}
@@ -189,20 +195,22 @@ function renderPrompt(root,e,type){
 }
 function currentPrompt(){return M.prompt(story,section,entry(),$('#prompt-kind')?.value||'Portrait',$('#scene-direction')?.value||'');}
 function renderTimeline(root){
-  const entries=M.timeline(story);
-  root.innerHTML='<div class="workspace-header"><h1>Timeline</h1><small>Chronology</small></div><div class="content-scroll"><div class="timeline-list">'+entries.map((e,i)=>{
-    const chapter=story.chapters.find(c=>c.id===e.chapter_id);
-    return '<article class="timeline-item" data-chapter="'+e.chapter_id+'"><div class="timeline-number">'+String(i+1).padStart(2,'0')+'</div><div class="timeline-card" draggable="true"><div class="row"><h3 class="grow">'+esc(chapter.name)+'</h3>'+button('↑','timeUp:'+e.chapter_id,'','aria-label="Move earlier"')+button('↓','timeDown:'+e.chapter_id,'','aria-label="Move later"')+'</div><input data-time="when" value="'+esc(e.when)+'" placeholder="When?" aria-label="Date or era" maxlength="256"><textarea data-time="summary" aria-label="Timeline summary" maxlength="5000" placeholder="What changes here?">'+esc(e.summary)+'</textarea></div></article>';
-  }).join('')+'</div></div>';
-  $$('[data-time]',root).forEach(input=>input.addEventListener('input',()=>{
-    const id=Number(input.closest('[data-chapter]').dataset.chapter);fieldCheckpoint('time:'+id+':'+input.dataset.time);story.timeline=M.timeline(story);story.timeline.find(t=>t.chapter_id===id)[input.dataset.time]=input.value;changed();
-  }));
-  let dragging=null;
-  $$('.timeline-card',root).forEach(card=>{
-    card.addEventListener('dragstart',ev=>{if(ev.target.matches('input,textarea')){ev.preventDefault();return;}dragging=Number(card.parentElement.dataset.chapter);ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',String(dragging));});
-    card.addEventListener('dragover',ev=>{ev.preventDefault();card.classList.add('drop-before');});
-    card.addEventListener('dragleave',()=>card.classList.remove('drop-before'));
-    card.addEventListener('drop',ev=>{ev.preventDefault();if(!dragging)return;checkpoint();M.reorderTimeline(story,dragging,Number(card.parentElement.dataset.chapter));dragging=null;changed(true);});
+  timelineBoard=new TimelineBoard(root,{entries:M.timeline(story),chapters:story.chapters,view:timelineView,
+    move:(id,before)=>{
+      if(!wouldMove(M.timeline(story).map(e=>e.chapter_id),id,before))return;
+      checkpoint();M.reorderTimeline(story,id,before);changed(true);
+      const card=root.querySelector('[data-chapter="'+id+'"] .chapter-card');
+      card?.focus({preventScroll:true});card?.scrollIntoView({block:'nearest',inline:'nearest'});
+      const message=root.querySelector('[role=status]');if(message)message.textContent='Moved to position '+(M.timeline(story).findIndex(e=>e.chapter_id===id)+1);
+    },edit:id=>{
+      const e=M.timeline(story).find(e=>e.chapter_id===id);
+      modal('Timeline notes','<label class="field">When<input id="timeline-when" maxlength="1024" value="'+esc(e.when)+'" placeholder="Date or era"></label><label class="field">Notes<textarea id="timeline-summary" maxlength="20000" rows="6">'+esc(e.summary)+'</textarea></label>',button('Cancel','closeModal')+button('Save','saveTimeline','','class="primary"'));
+      $('[data-action="saveTimeline"]').onclick=()=>{
+        const when=$('#timeline-when').value,summary=$('#timeline-summary').value;closeModal();
+        if(when===e.when&&summary===e.summary)return;
+        checkpoint();story.timeline=M.timeline(story);Object.assign(story.timeline.find(t=>t.chapter_id===id),{when,summary});changed(true);
+      };
+    }
   });
 }
 function renderSettings(root){
@@ -232,11 +240,12 @@ function inspectLore(openMobile=true){
   }else{container.className='inspector';container.innerHTML=html;}
   const object=edge||(target?.type==='note'?story.lore.find(n=>n.id===card.target):card);
   $$('[data-lore]',container).forEach(input=>input.addEventListener('input',()=>{fieldCheckpoint('lore:'+(edge?.id||card.id)+':'+input.dataset.lore);object[input.dataset.lore]=input.value;changed();}));
+  prepareEditors(container);
   $('[data-lore-color]',container)?.addEventListener('input',ev=>{fieldCheckpoint('lore-color:'+(edge?.id||card.id));(edge||card).color=M.rgb(ev.target.value);changed();});
 }
 function createBoardNote(position){
   checkpoint();const c=M.addNote(story,position||board?.center()||[0,0]);boardView.selected=c.id;boardView.edge=null;changed();board?.focus(c.id);inspectLore();
-  const input=$('[data-lore="title"]',overlay)||$('[data-lore="title"]');input?.focus();input?.select();
+  const input=$('[data-lore="title"]',overlay)||$('[data-lore="title"]');focusForTyping(input,{select:true});
 }
 function pinPicker(position){
   const list=[...M.targets(story).values()].filter(t=>t.type!=='note');
@@ -263,9 +272,9 @@ function menu(items,anchor){
   menuAbort=new AbortController();setTimeout(()=>document.addEventListener('pointerdown',e=>{if(menuElement&&!menuElement.contains(e.target))closeMenu();},{capture:true,signal:menuAbort?.signal}),0);$('button',menuElement)?.focus();
 }
 function confirmAction(title,text,run){modal(title,'<p class="plain-text">'+esc(text)+'</p>',button('Cancel','closeModal')+button('Continue','confirm','','class="primary"'));$('[data-action="confirm"]',overlay).addEventListener('click',()=>{closeModal();try{run();}catch(e){toast(e.message);}});}
-function nameDialog(title,initial,run){
-  modal(title,'<input id="entry-name" aria-label="Name" maxlength="1024" value="'+esc(initial)+'" placeholder="Name">',button('Cancel','closeModal')+button('Create','confirmName','','class="primary"'));
-  const input=$('#entry-name');input.focus();input.select();
+function nameDialog(title,initial,run,submitLabel='Create'){
+  modal(title,'<input id="entry-name" aria-label="Name" maxlength="1024" value="'+esc(initial)+'" placeholder="Name">',button('Cancel','closeModal')+button(submitLabel,'confirmName','','class="primary"'));
+  const input=$('#entry-name');focusForTyping(input,{select:true});
   const submit=()=>{if(!input.value.trim())return;const name=input.value.trim();closeModal();run(name);};
   $('[data-action="confirmName"]').addEventListener('click',submit);input.addEventListener('keydown',e=>{if(e.key==='Enter')submit();});
 }
@@ -360,10 +369,10 @@ async function exportSheet(){
 }
 function entityMenu(anchor){
   const e=entry(),type=section;
-  menu([{label:'Pin to lore board',icon:'lore',run:()=>{checkpoint();const c=M.pin(story,e.id,[0,0]);changed();section='lore';selected=null;boardView.selected=c.id;render();board.focus(c.id);}},{label:'Copy prompt',icon:'copy',run:()=>copy(currentPrompt())},{label:'Export reference sheet',icon:'export',run:exportSheet},null,{label:'Delete '+(type==='characters'?'character':type==='locations'?'location':'group'),icon:'trash',danger:true,run:()=>confirmAction('Delete '+e.name+'?','Reference images stay in the library. This can be undone.',()=>{checkpoint();M.removeEntity(story,type,e.id);selected=null;changed(true);})}],anchor);
+  menu([{label:'Rename',icon:'edit',run:()=>nameDialog('Rename',e.name,name=>{checkpoint();e.name=name;changed(true);},'Save')},{label:'Pin to lore board',icon:'lore',run:()=>{checkpoint();const c=M.pin(story,e.id,[0,0]);changed();section='lore';selected=null;boardView.selected=c.id;render();board.focus(c.id);}},{label:'Copy prompt',icon:'copy',run:()=>copy(currentPrompt())},{label:'Export reference sheet',icon:'export',run:exportSheet},null,{label:'Delete '+(type==='characters'?'character':type==='locations'?'location':'group'),icon:'trash',danger:true,run:()=>confirmAction('Delete '+e.name+'?','Reference images stay in the library. This can be undone.',()=>{checkpoint();M.removeEntity(story,type,e.id);selected=null;changed(true);})}],anchor);
 }
 function mobileMenu(anchor){menu([...sections.filter(([k])=>!['characters','locations','lore'].includes(k)).map(([key,label])=>({label,icon:key,run:()=>navigate(key)})),null,{label:'Story style',icon:'style',run:styleDialog},{label:'Undo',icon:'undo',run:()=>travel('undo'),disabled:!history.undo.length},{label:'Redo',icon:'redo',run:()=>travel('redo'),disabled:!history.redo.length}],anchor);}
-function fileMenu(anchor){menu([{label:'Open .scro…',icon:'open',run:()=>$('#open-file').click()},{label:'New world',icon:'plus',run:newWorld},...(story?[{label:'Rename world',icon:'note',run:()=>nameDialog('World name',story.title,name=>{checkpoint();story.title=name;changed();})},{label:'Export .scro',icon:'export',run:exportWorld},{label:'Save status',icon:'check',run:saveStatus},null,{label:'Start screen',run:async()=>{await flush();const session=await api('session',{id:null});recent=session.recent;story=null;project=null;render();}}]:[]),null,{label:'Download desktop app',run:()=>{location.href='/#download';}}],anchor);}
+function fileMenu(anchor){menu([{label:'Open .scro…',icon:'open',run:()=>$('#open-file').click()},{label:'New world',icon:'plus',run:newWorld},...(story?[{label:'Rename world',icon:'note',run:()=>nameDialog('World name',story.title,name=>{checkpoint();story.title=name;changed();},'Save')},{label:'Export .scro',icon:'export',run:exportWorld},{label:'Save status',icon:'check',run:saveStatus},null,{label:'Start screen',run:async()=>{await flush();const session=await api('session',{id:null});recent=session.recent;story=null;project=null;render();}}]:[]),null,{label:'Download desktop app',run:()=>{location.href='/#download';}}],anchor);}
 function saveStatus(){
   modal('Save status','<p class="plain-text">'+esc(saveError?.message||(serial===savedSerial?'Your edits are saved in this temporary workspace. Export a .scro file to keep them.':'Saving your recent edits…'))+'</p>',(saveError?.status===409?button('Save a separate copy','forkWorld','','class="primary"'):button('Retry','retrySave')+button('Export .scro','export','export','class="primary"')));
 }

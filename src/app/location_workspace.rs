@@ -95,18 +95,21 @@ impl Studio {
                                             }
                                         }
                                     });
-                                    let height = ui.available_height();
-                                    egui::ScrollArea::vertical()
-                                        .id_salt(("location_field", location.id, view.field))
-                                        .max_height(height)
-                                        .show(ui, |ui| {
-                                            ui.add_sized(
-                                                [ui.available_width(), height.max(60.0)],
-                                                egui::TextEdit::multiline(fields[view.field].1)
-                                                    .hint_text(fields[view.field].0)
-                                                    .char_limit(16000),
-                                            );
-                                        });
+                                    ui.vertical(|ui| {
+                                        editing::text_panel(
+                                            ui,
+                                            (
+                                                "location_field",
+                                                self.document_epoch,
+                                                location.id,
+                                                view.field,
+                                            ),
+                                            fields[view.field].1,
+                                            fields[view.field].0,
+                                            ui.available_height(),
+                                            16000,
+                                        );
+                                    });
                                 });
                             }
                             _ => {
@@ -144,11 +147,13 @@ impl Studio {
                                 });
                                 ui.add_space(8.0);
                                 let height = (ui.available_height() * 0.35).clamp(60.0, 150.0);
-                                ui.add_sized(
-                                    [ui.available_width(), height],
-                                    egui::TextEdit::multiline(&mut location.profile.prompt)
-                                        .hint_text("Location instructions")
-                                        .char_limit(16000),
+                                editing::text_panel(
+                                    ui,
+                                    ("location_prompt", self.document_epoch, location.id),
+                                    &mut location.profile.prompt,
+                                    "Location instructions",
+                                    height.max(100.0),
+                                    16000,
                                 );
                                 ui.add_space(8.0);
                                 let prompt =

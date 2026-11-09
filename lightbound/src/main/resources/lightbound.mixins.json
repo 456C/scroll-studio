@@ -1,0 +1,18 @@
+{
+  "required": true,
+  "package": "dev.lightbound.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "BlockStateCollisionMixin",
+    "EntitySuffocationMixin",
+    "FluidInteractionMixin",
+    "FluidContactMixin",
+    "MovementContextMixin",
+    "DarkSwimmingValidationMixin",
+    "MiningLightMixin",
+    "HostGameRuleMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

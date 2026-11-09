@@ -201,11 +201,13 @@ impl Studio {
                     0 => self.group_references(ui, ctx, &mut group),
                     1 => self.group_members(ui, &mut group),
                     _ => {
-                        ui.add_sized(
-                            ui.available_size(),
-                            egui::TextEdit::multiline(&mut group.description)
-                                .hint_text("Culture, traits, visual identity…")
-                                .char_limit(20_000),
+                        editing::text_panel(
+                            ui,
+                            ("group-description", self.document_epoch, group.id),
+                            &mut group.description,
+                            "Culture, traits, visual identity…",
+                            ui.available_height(),
+                            20_000,
                         );
                     }
                 }

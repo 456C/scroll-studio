@@ -39,7 +39,7 @@ impl Studio {
         self.location_editor = Some(LocationEditor {
             id,
             name,
-            focus: true,
+            focus: false,
             error: None,
         });
     }
@@ -417,6 +417,8 @@ mod tests {
             frame(&ctx, &mut studio, size, Vec::new());
             let field = bounds(&ctx, "location_name_bounds");
             assert!(field.width() <= 281.0);
+            assert!(!ctx.wants_keyboard_input());
+            frame(&ctx, &mut studio, size, click(field.center()));
             frame(
                 &ctx,
                 &mut studio,

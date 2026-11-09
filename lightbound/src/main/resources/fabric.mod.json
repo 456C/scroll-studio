@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "lightbound",
+  "version": "${version}",
+  "name": "Uncommon Nights",
+  "description": "Carry a torch to keep the ground beneath your feet. A golden rim marks where solid terrain gives way to the void.",
+  "icon": "assets/lightbound/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.lightbound.Lightbound"
+    ],
+    "client": [
+      "dev.lightbound.client.LightboundClient"
+    ]
+  },
+  "mixins": [
+    "lightbound.mixins.json",
+    {
+      "config": "lightbound.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "26.3",
+    "java": ">=25",
+    "fabric-api": ">=0.165.0"
+  }
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "project": "P7dR8mSH",
+    "version": "0.165.0+26.3",
+    "id": "EQKgpeKu",
+    "path": "mods/fabric-api-0.165.0+26.3.jar",
+    "hashes": {
+      "sha1": "8f8a23d6c9fbf7b075b31b4fb0a1007b0488d1d2",
+      "sha512": "0a4b8a14e847b71567b557b43d906c2167fa263eeeef37454a821ba286996e3da1616dc2d9647736d28a250d5ecf400541cae808359b29a62324a8a6f2ad5e30"
+    },
+    "env": {
+      "client": "required",
+      "server": "required"
+    },
+    "downloads": [
+      "https://cdn.modrinth.com/data/P7dR8mSH/versions/EQKgpeKu/fabric-api-0.165.0%2B26.3.jar"
+    ],
+    "fileSize": 1778588
+  }
+]

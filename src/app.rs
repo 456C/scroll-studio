@@ -9,6 +9,7 @@ mod characters_ui;
 mod context_ui;
 mod cutout_ui;
 mod dialogue_ui;
+mod editing;
 mod effects_ui;
 mod export_ui;
 mod glass;

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "lightbound-test",
+  "version": "1.0.0",
+  "name": "Uncommon Nights gameplay tests",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-gametest": [
+      "dev.lightbound.LightboundGameTest",
+      "dev.lightbound.VoidEdgeGameTest",
+      "dev.lightbound.LightMechanicsGameTest"
+    ],
+    "fabric-client-gametest": [
+      "dev.lightbound.LightboundClientGameTest",
+      "dev.lightbound.BuiltinDynamicLightingClientGameTest",
+      "dev.lightbound.DimensionsClientGameTest",
+      "dev.lightbound.OptionalMechanicsClientGameTest"
+    ]
+  }
+}

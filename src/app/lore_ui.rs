@@ -15,7 +15,6 @@ pub(super) struct BoardView {
     connecting: bool,
     fit: bool,
     menu_position: Pos2,
-    focus_note: bool,
 }
 impl Default for BoardView {
     fn default() -> Self {
@@ -30,7 +29,6 @@ impl Default for BoardView {
             connecting: false,
             fit: true,
             menu_position: Pos2::ZERO,
-            focus_note: false,
         }
     }
 }
@@ -103,7 +101,6 @@ impl Studio {
         });
         self.lore_view.selected = lore::pin(&mut self.story, id, [at.x, at.y]);
         self.lore_view.connection = None;
-        self.lore_view.focus_note = true;
         self.lore_view.fit = false;
         self.selected_lore = Some(id);
         self.tab = LibraryTab::Lore;
@@ -180,7 +177,6 @@ impl Studio {
             }
             Some(Kind::Note) => {
                 self.selected_lore = Some(target);
-                self.lore_view.focus_note = true;
             }
             None => {}
         }
@@ -268,38 +264,21 @@ impl Studio {
                     return;
                 };
                 let mut note = self.story.lore[note_index].clone();
-                let title = ui.add(
+                ui.add(
                     egui::TextEdit::singleline(&mut note.title)
                         .hint_text("Note title")
                         .desired_width(f32::INFINITY)
                         .char_limit(1024),
                 );
-                if self.lore_view.focus_note {
-                    title.request_focus();
-                    self.lore_view.focus_note = false;
-                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), title.id) {
-                        state
-                            .cursor
-                            .set_char_range(Some(egui::text::CCursorRange::two(
-                                egui::text::CCursor::new(0),
-                                egui::text::CCursor::new(note.title.chars().count()),
-                            )));
-                        state.store(ui.ctx(), title.id);
-                    }
-                }
                 ui.color_edit_button_srgb(&mut card.color);
-                egui::ScrollArea::vertical()
-                    .id_salt(("note-body", card.id))
-                    .max_height((ui.available_height() - 52.0).max(60.0))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut note.text)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(12)
-                                .char_limit(25_000)
-                                .hint_text("Write a note…"),
-                        );
-                    });
+                editing::text_panel(
+                    ui,
+                    ("note-body", self.document_epoch, card.id),
+                    &mut note.text,
+                    "Write a note…",
+                    (ui.available_height() - 52.0).max(100.0),
+                    25_000,
+                );
                 if note != self.story.lore[note_index] {
                     self.checkpoint();
                     self.story.lore[note_index] = note;
@@ -313,18 +292,14 @@ impl Studio {
                 ui.color_edit_button_srgb(&mut card.color);
                 ui.add_space(6.0);
                 ui.label(RichText::new("Board note").color(MUTED));
-                egui::ScrollArea::vertical()
-                    .id_salt(("card-body", card.id))
-                    .max_height((ui.available_height() - 52.0).max(60.0))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut card.note)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(9)
-                                .char_limit(25_000)
-                                .hint_text("Add a detail…"),
-                        );
-                    });
+                editing::text_panel(
+                    ui,
+                    ("card-body", self.document_epoch, card.id),
+                    &mut card.note,
+                    "Add a detail…",
+                    (ui.available_height() - 52.0).max(100.0),
+                    25_000,
+                );
             }
             if card != self.story.lore_board.cards[index] {
                 self.checkpoint();
@@ -925,7 +900,6 @@ mod tests {
         studio.tab = LibraryTab::Lore;
         studio.add_lore_note(pos2(-260.0, -50.0));
         studio.add_lore_note(pos2(80.0, -50.0));
-        studio.lore_view.focus_note = false;
         studio.undo.clear();
         let ids: Vec<_> = studio.story.lore_board.cards.iter().map(|c| c.id).collect();
         for _ in 0..3 {
