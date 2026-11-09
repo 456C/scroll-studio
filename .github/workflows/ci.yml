@@ -45,6 +45,9 @@ jobs:
     name: Windows pinned service smoke
     runs-on: windows-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,49 +118,21 @@ jobs:
           Write-Host "Isolated root: $root"
           Write-Host 'Checked out with the workflow read-only token. Credentials are not persisted. The pin is not merged into the app tree.'
           "SERVICE_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Run the selected contract and listener smoke
+      - name: Run the manual demo script
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location $env:SERVICE_DIR
           Write-Host 'Not run, and a skip would not be Windows browser proof:'
           Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_chrome_sign_in_sends_service_origin'
           Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_phone_viewport_screenshot'
-          python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close prototypes.publishing.test_listener.ListenerTests.test_busy_admission_does_not_follow_a_trickle
-      - name: Smoke the listener and drive the real browser
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Set-Location $env:SERVICE_DIR
-          $proc = Start-Process -FilePath python -ArgumentList '-m','prototypes.publishing.listener' -WorkingDirectory $env:SERVICE_DIR -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\listener.out" -RedirectStandardError "$env:RUNNER_TEMP\listener.err"
-          try {
-            $ready = $false
-            foreach ($attempt in 1..40) {
-              Start-Sleep -Milliseconds 250
-              try {
-                $client = New-Object System.Net.Sockets.TcpClient('127.0.0.1', 19427)
-                $stream = $client.GetStream()
-                $bytes = [Text.Encoding]::ASCII.GetBytes("GET /ss-publish/browser/operator HTTP/1.1`r`nHost: 127.0.0.1:19427`r`nConnection: close`r`n`r`n")
-                $stream.Write($bytes, 0, $bytes.Length)
-                $buffer = New-Object byte[] 800
-                $read = $stream.Read($buffer, 0, $buffer.Length)
-                $text = [Text.Encoding]::ASCII.GetString($buffer, 0, $read)
-                Write-Host ($text.Split("`n")[0])
-                if ($text -notmatch '401') { throw "listener status was not 401" }
-                if ($text -notmatch 'referrer-policy: same-origin') { throw "referrer policy was not same-origin" }
-                $ready = $true
-                break
-              } catch {
-                if ($attempt -eq 40) { throw }
-              }
-            }
-            if (-not $ready) { throw 'listener did not answer' }
-            python (Join-Path $env:GITHUB_WORKSPACE 'tests\windows_browser_publish.py')
-            if ($LASTEXITCODE -ne 0) { throw "Windows browser check exited $LASTEXITCODE" }
-          } finally {
-            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-            if (Test-Path "$env:RUNNER_TEMP\listener.err") { Get-Content "$env:RUNNER_TEMP\listener.err" -ErrorAction SilentlyContinue | Write-Host }
-          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'scripts\windows-demo.ps1') -ServiceCheckout $env:SERVICE_DIR -BrowserScript (Join-Path $env:GITHUB_WORKSPACE 'tests\windows_browser_publish.py') -WorkRoot (Join-Path $env:RUNNER_TEMP 'demo-work')
+      - name: Upload the service demo archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: scroll-studio-service-464766d
+          path: ${{ runner.temp }}/demo-work/scroll-studio-service-464766d.zip
+          if-no-files-found: error
+          retention-days: 14
 
   windows-portable:
     name: Windows portable build
