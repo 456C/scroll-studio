@@ -9,8 +9,11 @@ import struct
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 
+from prototypes.publishing.fixture_harness import FixtureHarness
+from prototypes.publishing.image_decode import decode_size
+from prototypes.publishing.runtime_rules import new_authorization_code, new_credential, server_now
 from prototypes.publishing.schema_validate import validate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,10 +145,14 @@ def validate_issuer(issuer: str):
     return None
 
 
-def apply(world, envelope):
+def apply(world, envelope, harness=None):
     command = envelope.get("command") if isinstance(envelope, dict) else None
     if not isinstance(command, str):
         command = None
+    if isinstance(envelope, dict) and (
+        "fixture" in envelope or (isinstance(envelope.get("body"), dict) and "loginHint" in envelope["body"])
+    ):
+        return _fail(command, "invalid_request", "schema")
     if not isinstance(envelope, dict) or validate(SCHEMA, envelope):
         return _fail(command, "invalid_request", "schema")
     if world["transportProfile"] != PROTOCOL["transport"]["enabledProfile"]:
@@ -155,11 +162,8 @@ def apply(world, envelope):
     body = envelope["body"]
     if validate({"$ref": f"#/$defs/{BODY_SCHEMAS[command]}"}, body, SCHEMA):
         return _fail(command, "invalid_request", "schema")
-    fixture = envelope.get("fixture") or {}
-    pause = bool(fixture.get("pauseBeforeCommit", False))
-    clock = _parse_clock(fixture.get("clock") or PROTOCOL["defaultClock"])
-    if clock is None:
-        return _fail(command, "invalid_request", "schema")
+    pause = bool(getattr(harness, "pause", False))
+    clock = harness.now() if harness is not None else server_now()
     if pause and command not in PROTOCOL["pausableCommands"]:
         return _fail(command, "invalid_request", "schema")
     if command == "episode.upload" and body["completion"] not in ("seal", "defer"):
@@ -172,20 +176,20 @@ def apply(world, envelope):
         return _fail(command, "invalid_request", "schema")
 
     if command in PROTOCOL["mutatingCommands"]:
-        return _mutating(world, envelope, command, body, clock, pause)
+        return _mutating(world, envelope, command, body, clock, pause, harness)
     live, problem = _live_credential(world, envelope, clock)
     if problem:
         return _fail(command, problem)
-    return _dispatch(world, command, body, live, clock, envelope)
+    return _dispatch(world, command, body, live, clock, harness)
 
 
-def _mutating(world, envelope, command, body, clock, pause):
+def _mutating(world, envelope, command, body, clock, pause, harness):
     key = envelope["idempotencyKey"]
     identity = _identity_body(command, body)
     digest = _hash(command, identity, envelope.get("credential"))
     existing = world["runtime"]["operations"].get(key)
     if existing is not None:
-        return _existing(world, envelope, existing, digest, clock, pause, command, body)
+        return _existing(world, envelope, existing, digest, clock, pause, command, body, harness)
     if command in PROTOCOL["credentialRequired"]:
         live, problem = _live_credential(world, envelope, clock)
         if problem:
@@ -198,29 +202,34 @@ def _mutating(world, envelope, command, body, clock, pause):
             _store(world, key, digest, command, body, live, prepared[1])
             return prepared[1]
         _store(world, key, digest, command, body, live, None, status="in_progress")
-        return _ok(command, {"operation": "in_progress", "idempotencyKey": key})
-    response = _dispatch(world, command, body, live, clock, envelope)
+        return _ok(command, _in_progress(key))
+    response = _dispatch(world, command, body, live, clock, harness)
     _store(world, key, digest, command, body, live, response)
     return response
 
 
-def _existing(world, envelope, existing, digest, clock, pause, command, body):
-    if not _replay_secret_ok(world, envelope, existing):
+def _existing(world, envelope, existing, digest, clock, pause, command, body, harness):
+    if command in PROTOCOL["credentialRequired"]:
+        live, problem = _live_credential(world, envelope, clock)
+        if problem:
+            return _fail(command, problem)
+    else:
+        live = None
+    if not _same_actor(existing, envelope, live):
         return _fail(command, "unauthorized")
     if existing["hash"] != digest:
         return _fail(command, "idempotency_conflict")
+    if command == "auth.exchange" and existing["status"] == "committed" and existing["response"]["ok"]:
+        return _fail(command, "exchange_consumed")
     if existing["status"] == "cancelled":
         return _replay(existing["response"])
     if existing["status"] == "committed":
         return _replay(existing["response"])
     if _held(command, body, pause):
-        return _replay(_ok(command, {"operation": "in_progress", "idempotencyKey": envelope["idempotencyKey"]}))
-    live, problem = _live_credential(world, envelope, clock)
-    if problem:
-        return _fail(command, problem)
-    response = _dispatch(world, command, body, live, clock, envelope)
+        return _replay(_ok(command, _in_progress(envelope["idempotencyKey"])))
+    response = _dispatch(world, command, body, live, clock, harness)
     existing["status"] = "committed"
-    existing["response"] = response
+    existing["response"] = _redact(response)
     return response
 
 
@@ -230,13 +239,13 @@ def _held(command, body, pause):
     return command == "episode.upload" and body.get("completion") == "defer"
 
 
-def _dispatch(world, command, body, cred, clock, envelope):
+def _dispatch(world, command, body, cred, clock, harness):
     if command == "auth.begin":
-        return _begin(world, body, clock)
+        return _begin(world, body, clock, harness)
     if command == "auth.cancel":
         return _cancel_auth(world, body)
     if command == "auth.exchange":
-        return _exchange(world, body, clock)
+        return _exchange(world, body, clock, harness)
     if command == "auth.revoke":
         return _revoke(cred)
     if command == "account.discover":
@@ -266,7 +275,7 @@ def _prepare(world, command, body, cred, clock):
     return ("ok", None)
 
 
-def _begin(world, body, clock):
+def _begin(world, body, clock, harness):
     if body["transportProfile"] != PROTOCOL["transport"]["enabledProfile"]:
         return _fail("auth.begin", "production_transport_not_enabled")
     issuer_error = validate_issuer(body["issuer"])
@@ -279,14 +288,15 @@ def _begin(world, body, clock):
         return _fail("auth.begin", "pkce_rejected")
     if body["clientId"] != PROTOCOL["clientId"]:
         return _fail("auth.begin", "unauthorized")
-    account = world["accounts"].get(body["loginHint"])
+    account_id = getattr(harness, "login_account_id", None)
+    account = world["accounts"].get(account_id)
     if account is None or account.get("nonProductionLabel") != "TEST-ONLY" or account.get("testOnly") is not True:
         return _fail("auth.begin", "unauthorized")
     if body["scope"] != PROTOCOL["scope"]:
         return _fail("auth.begin", "invalid_request", "schema")
     if body["state"] in world["runtime"]["by_state"]:
         return _fail("auth.begin", "invalid_request", "schema")
-    code = _next(world, "code", "code_test_")
+    code = harness.next_code(world) if isinstance(harness, FixtureHarness) else new_authorization_code()
     expires = clock + timedelta(seconds=LIMITS["authorizationTtlSeconds"])
     world["runtime"]["by_code"][code] = {
         "state": body["state"],
@@ -310,6 +320,8 @@ def _begin(world, body, clock):
             ("code_challenge_method", "S256"),
         ]
     )
+    if isinstance(harness, FixtureHarness):
+        harness.redirect_url = redirect
     return _ok(
         "auth.begin",
         {
@@ -321,7 +333,6 @@ def _begin(world, body, clock):
             "identityProof": PROTOCOL["identityProof"],
             "state": body["state"],
             "clientId": body["clientId"],
-            "testOnlyRedirect": {"nonProductionLabel": "TEST-ONLY", "url": redirect},
         },
     )
 
@@ -337,7 +348,7 @@ def _cancel_auth(world, body):
     return _ok("auth.cancel", {"cancelled": True, "state": body["state"]})
 
 
-def _exchange(world, body, clock):
+def _exchange(world, body, clock, harness):
     if body.get("grantType", "authorization_code") != "authorization_code":
         return _fail("auth.exchange", "unsupported_grant")
     txn = world["runtime"]["by_code"].get(body["code"])
@@ -364,7 +375,7 @@ def _exchange(world, body, clock):
         txn["status"] = "consumed"
         return _fail("auth.exchange", "pkce_rejected")
     txn["status"] = "consumed"
-    credential = _issue_credential(world, txn["accountId"], clock)
+    credential = _issue_credential(world, txn["accountId"], clock, harness)
     return _ok(
         "auth.exchange",
         {"credential": _credential_view(credential), "account": _account_view(world, txn["accountId"])},
@@ -396,14 +407,17 @@ def _upload(world, cred, body):
     return _ok(
         "episode.upload",
         {
-            "private": True,
-            "localOriginals": "untouched",
-            "seriesId": job["episode"]["seriesId"],
-            "episodeId": job["episode"]["episodeId"],
-            "revisionId": revision_id,
-            "contentSha256": job["contentSha256"],
-            "episodeStatus": record["status"],
-            "publishedRevisionId": record["publishedRevisionId"],
+            "acknowledgement": {
+                "accepted": True,
+                "effect": "revision-sealed",
+                "authoritative": False,
+                "private": True,
+                "localOriginals": "untouched",
+                "seriesId": job["episode"]["seriesId"],
+                "episodeId": job["episode"]["episodeId"],
+                "revisionId": revision_id,
+                "contentSha256": job["contentSha256"],
+            }
         },
     )
 
@@ -470,14 +484,18 @@ def _confirm(world, cred, body):
     return _ok(
         "publication.confirm",
         {
-            "status": "published",
-            "seriesId": episode["seriesId"],
-            "episodeId": episode["episodeId"],
-            "revisionId": body["revisionId"],
-            "publicationId": record["publicationId"],
-            "canonicalUrl": record["canonicalUrl"],
-            "publicInternet": False,
-            "policyEligibility": PROTOCOL["policyEligibilityPrivate"],
+            "acknowledgement": {
+                "accepted": True,
+                "effect": "confirm-recorded",
+                "authoritative": False,
+                "seriesId": episode["seriesId"],
+                "episodeId": episode["episodeId"],
+                "revisionId": body["revisionId"],
+                "publicationId": record["publicationId"],
+                "canonicalUrl": record["canonicalUrl"],
+                "publicInternet": False,
+                "policyEligibility": PROTOCOL["policyEligibilityPrivate"],
+            }
         },
     )
 
@@ -508,13 +526,17 @@ def _withdraw(world, cred, body):
     return _ok(
         "publication.withdraw",
         {
-            "status": "withdrawn",
-            "seriesId": body["seriesId"],
-            "episodeId": body["episodeId"],
-            "revisionId": record["publishedRevisionId"],
-            "publicationId": record["publicationId"],
-            "canonicalUrl": record["canonicalUrl"],
-            "publicInternet": False,
+            "acknowledgement": {
+                "accepted": True,
+                "effect": "withdraw-recorded",
+                "authoritative": False,
+                "seriesId": body["seriesId"],
+                "episodeId": body["episodeId"],
+                "revisionId": record["publishedRevisionId"],
+                "publicationId": record["publicationId"],
+                "canonicalUrl": record["canonicalUrl"],
+                "publicInternet": False,
+            }
         },
     )
 
@@ -557,6 +579,7 @@ def _read(world, cred, body):
     return _ok(
         "publication.read",
         {
+            "authoritative": True,
             "status": "published",
             "publicationId": found["publicationId"],
             "canonicalUrl": found["canonicalUrl"],
@@ -656,12 +679,20 @@ def _decode_slice(item):
 
 
 def _inspect_slice(item, raw):
-    parsed = _parse_png(raw) if item["mediaType"] == "image/png" else _parse_jpeg(raw)
-    if parsed is None:
+    if item["mediaType"] == "image/png":
+        inflated = _parse_png(raw)
+        if inflated == "limit":
+            return ("error", "limit_exceeded", "limit")
+        if inflated is None:
+            return ("error", "media_rejected", "magic")
+    elif not raw.startswith(b"\xff\xd8"):
         return ("error", "media_rejected", "magic")
-    if parsed == "limit":
+    decoded = decode_size(raw, LIMITS["maxSlicePixels"])
+    if decoded is None:
+        return ("error", "media_rejected", "decode")
+    if decoded == "limit":
         return ("error", "limit_exceeded", "limit")
-    if parsed != (item["width"], item["height"]):
+    if decoded != (item["width"], item["height"]):
         return ("error", "media_rejected", "dimensions")
     return ("ok", raw)
 
@@ -707,40 +738,6 @@ def _parse_png(data):
     return (width, height)
 
 
-def _parse_jpeg(data):
-    if len(data) < 4 or data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
-        return None
-    index = 2
-    while index + 4 < len(data):
-        if data[index] != 0xFF:
-            return None
-        while index < len(data) and data[index] == 0xFF:
-            index += 1
-        if index >= len(data):
-            return None
-        marker = data[index]
-        index += 1
-        if marker in (0xD8, 0xD9):
-            continue
-        if marker == 0xDA or index + 2 > len(data):
-            return None
-        segment = struct.unpack(">H", data[index : index + 2])[0]
-        if segment < 2 or index + segment > len(data):
-            return None
-        if marker in (0xC0, 0xC2):
-            if segment < 7:
-                return None
-            precision = data[index + 2]
-            height, width = struct.unpack(">HH", data[index + 3 : index + 7])
-            if precision != 8 or width < 1 or height < 1:
-                return None
-            if width * height > LIMITS["maxSlicePixels"] or width > LIMITS["maxSliceWidth"] or height > LIMITS["maxSliceHeight"]:
-                return "limit"
-            return (width, height)
-        index += segment
-    return None
-
-
 def _account_view(world, account_id):
     account = world["accounts"][account_id]
     series_views = []
@@ -753,6 +750,7 @@ def _account_view(world, account_id):
             publication = None
             if record is not None and record["revisions"]:
                 publication = {
+                    "authoritative": True,
                     "status": record["status"],
                     "publicationId": record["publicationId"],
                     "publishedRevisionId": record["publishedRevisionId"],
@@ -802,11 +800,14 @@ def _credential_view(credential):
     }
 
 
-def _issue_credential(world, account_id, clock):
-    number = _next(world, "credential", "", width=16)
+def _issue_credential(world, account_id, clock, harness):
+    if isinstance(harness, FixtureHarness):
+        credential_id, secret = harness.next_credential(world)
+    else:
+        credential_id, secret = new_credential()
     credential = {
-        "credentialId": f"cred_test_{number}",
-        "secret": f"sek_test_{number}",
+        "credentialId": credential_id,
+        "secret": secret,
         "accountId": account_id,
         "expiresAt": clock + timedelta(seconds=LIMITS["credentialTtlSeconds"]),
         "revoked": False,
@@ -874,16 +875,31 @@ def _live_credential(world, envelope, clock):
     return cred, None
 
 
-def _replay_secret_ok(world, envelope, existing):
+def _same_actor(existing, envelope, live):
     if existing.get("accountId") is None:
         return "credential" not in envelope
-    proof = envelope.get("credential")
-    if not isinstance(proof, dict):
-        return False
-    cred = world["runtime"]["credentials"].get(proof.get("credentialId"))
-    if cred is None or cred["accountId"] != existing["accountId"]:
-        return False
-    return hmac.compare_digest(cred["secret"], proof.get("secret", ""))
+    return live is not None and live["accountId"] == existing["accountId"]
+
+
+def _in_progress(key):
+    return {
+        "acknowledgement": {
+            "accepted": False,
+            "effect": "in-progress",
+            "authoritative": False,
+            "idempotencyKey": key,
+        }
+    }
+
+
+def _redact(response):
+    copied = copy.deepcopy(response)
+    result = copied.get("result")
+    if isinstance(result, dict):
+        credential = result.get("credential")
+        if isinstance(credential, dict):
+            credential.pop("secret", None)
+    return copied
 
 
 def _store(world, key, digest, command, body, cred, response, status="committed"):
@@ -893,7 +909,7 @@ def _store(world, key, digest, command, body, cred, response, status="committed"
         "command": command,
         "body": body,
         "accountId": None if cred is None else cred["accountId"],
-        "response": response,
+        "response": None if response is None else _redact(response),
     }
 
 
@@ -923,7 +939,7 @@ def _verifier_ok(verifier):
     return all(char.isalnum() or char in "._~-" for char in verifier)
 
 
-def _parse_clock(value):
+def parse_clock(value):
     try:
         parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):

@@ -10,9 +10,9 @@
   },
   "steps": [
     {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "replay-begin-0000001", "credentialFrom": null, "expect": {"ok": true, "idempotentReplay": false}},
-    {"id": "begin-again", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "replay-begin-0000001", "credentialFrom": null, "expect": {"ok": true, "idempotentReplay": true, "equals": {"result.testOnlyRedirect.url": "{{step:begin.result.testOnlyRedirect.url}}"}}},
+    {"id": "begin-again", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "replay-begin-0000001", "credentialFrom": null, "expect": {"ok": true, "idempotentReplay": true, "equals": {"result.authorizationUrl": "{{step:begin.result.authorizationUrl}}"}}},
     {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "replay-exchange-0001", "credentialFrom": null, "expect": {"ok": true, "idempotentReplay": false}},
-    {"id": "exchange-again", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "replay-exchange-0001", "credentialFrom": null, "expect": {"ok": true, "idempotentReplay": true, "equals": {"result.credential.credentialId": "{{step:exchange.result.credential.credentialId}}"}}},
+    {"id": "exchange-again", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "replay-exchange-0001", "credentialFrom": null, "expect": {"ok": false, "errorCode": "exchange_consumed"}},
     {"id": "exchange-new", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "replay-exchange-0002", "credentialFrom": null, "expect": {"ok": false, "errorCode": "code_replayed"}},
     {"id": "discover", "command": "account.discover", "idempotencyKey": "replay-discover-0001", "credentialFrom": "exchange", "body": {}, "expect": {"ok": true, "seriesIds": ["ser_test_lane"]}}
   ]

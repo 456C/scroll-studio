@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
+from prototypes.publishing.fixture_harness import FixtureHarness
 from prototypes.publishing.media import facts
 from prototypes.publishing.oracle import (
     PROTOCOL,
@@ -15,6 +16,7 @@ from prototypes.publishing.oracle import (
     apply,
     callback_query_allowed,
     fresh_world,
+    parse_clock,
     pkce_s256,
 )
 from prototypes.publishing.schema_validate import validate
@@ -54,6 +56,7 @@ def run_sequence(path):
         "media": {"png": facts("png"), "jpeg": facts("jpeg")},
         "steps": {},
         "credentials": {},
+        "redirects": {},
         "clock": sequence.get("clock", PROTOCOL["defaultClock"]),
     }
     for step in sequence["steps"]:
@@ -87,23 +90,29 @@ def _step(world, ctx, step):
         "command": step["command"],
         "idempotencyKey": step["idempotencyKey"],
         "body": body,
-        "fixture": {
-            "nonProductionLabel": "TEST-ONLY",
-            "clock": step.get("clock", ctx["clock"]),
-        },
     }
-    if "pauseBeforeCommit" in step:
-        envelope["fixture"]["pauseBeforeCommit"] = step["pauseBeforeCommit"]
     credential_from = step.get("credentialFrom")
     if credential_from:
         envelope["credential"] = dict(ctx["credentials"][credential_from])
-    response = apply(world, envelope)
+    login = step.get("harnessLogin")
+    if login is None and step.get("use") == "begin-owner-a":
+        login = "acct_test_owner_a"
+    if login is None and step.get("use") == "begin-owner-b":
+        login = "acct_test_owner_b"
+    harness = FixtureHarness(
+        parse_clock(step.get("clock", ctx["clock"])),
+        pause=bool(step.get("pauseBeforeCommit", False)),
+        login_account_id=login,
+    )
+    response = apply(world, envelope, harness)
+    if harness.redirect_url:
+        ctx["redirects"][step["id"]] = harness.redirect_url
     problems = validate({"$ref": "#/$defs/response"}, response, SCHEMA)
     if problems:
         raise SequenceError(f"{step['id']} response schema {problems}")
     _scan(response, step["command"])
     if response.get("ok") and step["command"] == "auth.begin":
-        _check_begin(response)
+        _check_begin(response, harness)
     if response.get("ok") and step["command"] == "auth.exchange":
         _check_credential(response)
         cred = response["result"]["credential"]
@@ -114,10 +123,12 @@ def _step(world, ctx, step):
     return response
 
 
-def _check_begin(response):
+def _check_begin(response, harness):
     result = response["result"]
+    if "testOnlyRedirect" in result or "loginHint" in result:
+        raise SequenceError("oracle hook leaked into the network result")
     authorize = urlsplit(result["authorizationUrl"])
-    redirect = urlsplit(result["testOnlyRedirect"]["url"])
+    redirect = urlsplit(harness.redirect_url or "")
     authorize_pairs = parse_qsl(authorize.query)
     authorize_keys = [key for key, _value in authorize_pairs]
     redirect_keys = [key for key, _value in parse_qsl(redirect.query)]
@@ -128,10 +139,11 @@ def _check_begin(response):
         raise SequenceError("authorize query")
     if authorize_keys != PROTOCOL["authorizationQueryKeys"]:
         raise SequenceError(f"authorization keys {authorize_keys}")
-    if redirect_keys != ["code", "state"]:
+    if harness.redirect_url is None:
+        if response.get("idempotentReplay") is not True:
+            raise SequenceError("missing harness redirect")
+    elif redirect_keys != ["code", "state"]:
         raise SequenceError(f"callback keys {redirect_keys}")
-    if result["testOnlyRedirect"]["nonProductionLabel"] != "TEST-ONLY":
-        raise SequenceError("redirect label")
     if result["issuerRole"] != "prototype-test-issuer" or result["distinctFromProductionProvider"] is not True:
         raise SequenceError("issuer role")
     if "code" in authorize_keys or result["identityProof"] != "fixture-login-hint":
@@ -174,6 +186,12 @@ def _check_expect(step, response, ctx):
             raise SequenceError(f"{step['id']} detail {actual}")
     if "idempotentReplay" in expect and response["idempotentReplay"] is not expect["idempotentReplay"]:
         raise SequenceError(f"{step['id']} replay {response['idempotentReplay']}")
+    for path in expect.get("absent") or []:
+        try:
+            _dig(response, path)
+        except (KeyError, IndexError, TypeError):
+            continue
+        raise SequenceError(f"{step['id']} still has {path}")
     for path, value in (expect.get("equals") or {}).items():
         actual = _dig(response, path)
         if actual != value:
@@ -247,7 +265,7 @@ def _token(token, ctx):
         return ctx["media"][kind][field]
     if token.startswith("callback:"):
         step_id, field = token.split(":", 1)[1].split(".")
-        url = ctx["steps"][step_id]["result"]["testOnlyRedirect"]["url"]
+        url = ctx["redirects"][step_id]
         return dict(parse_qsl(urlsplit(url).query))[field]
     if token.startswith("step:"):
         step_id, path = token.split(":", 1)[1].split(".", 1)

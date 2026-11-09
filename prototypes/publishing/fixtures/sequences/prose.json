@@ -31,7 +31,7 @@
       "command": "episode.upload",
       "idempotencyKey": "prose-upload-000001",
       "credentialFrom": "exchange",
-      "expect": {"ok": true, "equals": {"result.episodeStatus": "draft", "result.localOriginals": "untouched"}}
+      "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "revision-sealed", "result.acknowledgement.authoritative": false, "result.acknowledgement.localOriginals": "untouched"}}
     },
     {
       "id": "preview",
@@ -41,7 +41,7 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_02",
-        "revisionId": "{{step:upload.result.revisionId}}"
+        "revisionId": "{{step:upload.result.acknowledgement.revisionId}}"
       },
       "expect": {
         "ok": true,
@@ -56,17 +56,17 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_02",
-        "revisionId": "{{step:upload.result.revisionId}}",
+        "revisionId": "{{step:upload.result.acknowledgement.revisionId}}",
         "policyEligibility": "private-prototype-only"
       },
-      "expect": {"ok": true, "equals": {"result.status": "published", "result.publicInternet": false}}
+      "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "confirm-recorded", "result.acknowledgement.authoritative": false}}
     },
     {
       "id": "read",
       "command": "publication.read",
       "idempotencyKey": "prose-read-00000001",
       "credentialFrom": "exchange",
-      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"},
       "expect": {
         "ok": true,
         "equals": {
@@ -84,17 +84,17 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_02",
-        "publicationId": "{{step:confirm.result.publicationId}}",
-        "revisionId": "{{step:confirm.result.revisionId}}"
+        "publicationId": "{{step:confirm.result.acknowledgement.publicationId}}",
+        "revisionId": "{{step:confirm.result.acknowledgement.revisionId}}"
       },
-      "expect": {"ok": true, "equals": {"result.status": "withdrawn"}}
+      "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "withdraw-recorded", "result.acknowledgement.authoritative": false}}
     },
     {
       "id": "read-withdrawn",
       "command": "publication.read",
       "idempotencyKey": "prose-read-00000002",
       "credentialFrom": "exchange",
-      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"},
       "expect": {"ok": false, "errorCode": "withdrawn"}
     }
   ]

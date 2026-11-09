@@ -20,8 +20,8 @@
       {
         "ordinal": 1,
         "mediaType": "image/png",
-        "width": 1,
-        "height": 1,
+        "width": "{{media:png.width}}",
+        "height": "{{media:png.height}}",
         "byteLength": "{{media:png.byteLength}}",
         "sha256": "{{media:png.sha256}}",
         "bytesBase64": "{{media:png.bytesBase64}}"

@@ -60,7 +60,7 @@
     "credentialTtlSeconds": 3600,
     "pngDecompressCapBytes": 32000000
   },
-  "jpegDecode": "The contract checks JPEG SOI, EOI, and SOF0 or SOF2 dimensions. It does not expand the scan. A later service has to cap JPEG decompression before it stores a slice.",
+  "jpegDecode": "JPEG acceptance is a full bounded decode to pixels. A header marker check is not acceptance.",
   "prose": "UTF-8 text is new in this protocol. The desktop Story type has chapters and no prose document.",
   "commands": [
     "auth.begin",
@@ -124,9 +124,10 @@
     "metadata_rejected",
     "asset_not_addressable",
     "production_transport_not_enabled",
-    "withdrawn"
+    "withdrawn",
+    "exchange_consumed"
   ],
-  "errorDetails": ["schema", "magic", "hash", "dimensions", "utf8", "bom", "controls", "order", "type", "limit"],
+  "errorDetails": ["schema", "magic", "hash", "dimensions", "utf8", "bom", "controls", "order", "type", "limit", "decode"],
   "clientErrors": ["plaintext_forbidden", "missing_label", "persistence", "unknown_mode", "plaintext_fallback", "callback_forbidden"],
   "forbiddenCallbackParams": ["access_token", "refresh_token", "id_token", "token", "bearer", "secret", "code_verifier"],
   "authorizationQueryKeys": ["response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method"],
@@ -161,12 +162,25 @@
   },
   "idempotency": {
     "appliesTo": "mutatingCommands",
-    "excludedFromHash": ["fixture", "episode.upload.completion"],
-    "keyIsSecret": true,
-    "sameKeySameBody": "Replay the stored result.",
-    "sameKeyDifferentBody": "idempotency_conflict",
-    "cancelledKey": "Stay cancelled. A later retry does not seal the upload or publish.",
-    "inProgressFinish": "The same key without pauseBeforeCommit commits once."
+    "excludedFromHash": ["episode.upload.completion"],
+    "keyIsAuthorization": false,
+    "keyCachesCredential": false,
+    "authenticatedReplay": "Revalidate the live credential before any stored acknowledgement. Revoked or expired proof returns that error and omits the stored result.",
+    "exchangeReplay": "auth.exchange returns the credential secret once. The same idempotency key then returns exchange_consumed and no secret. A lost exchange response requires auth.begin again.",
+    "acknowledgement": "Upload, confirm, and withdraw results set authoritative to false and omit current publication status.",
+    "authoritativeStatus": ["account.discover", "publication.read"]
+  },
+  "oracleHooks": {
+    "acceptedOnNetworkCommand": false,
+    "fields": ["fixture", "fixture.clock", "fixture.pauseBeforeCommit", "loginHint", "testOnlyRedirect"],
+    "clock": "The harness supplies the clock. A live listener uses runtime_rules.server_now.",
+    "secrets": "The harness issues cred_test_ and sek_test_ labels. A live listener uses runtime_rules.new_credential and must not call FixtureHarness.",
+    "authorizationCode": "A live listener uses runtime_rules.new_authorization_code. The code is delivered only on the loopback redirect."
+  },
+  "imageAcceptance": {
+    "requirement": "Accept a comic slice only after a bounded decoder returns a pixel buffer whose width and height match the declaration.",
+    "jpegHeaderIsNotAcceptance": true,
+    "checkpointDecoder": "ffmpeg and ffprobe decode the fixture bytes to rgb24. A private runtime uses its own bounded decoder with the same acceptance rule."
   },
   "localOriginals": "untouched"
 }

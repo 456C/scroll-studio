@@ -12,9 +12,9 @@
     {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "terminal-begin-000001", "credentialFrom": null, "expect": {"ok": true}},
     {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "terminal-exchange-001", "credentialFrom": null, "expect": {"ok": true}},
     {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "terminal-upload-00001", "credentialFrom": "exchange", "expect": {"ok": true}},
-    {"id": "confirm", "command": "publication.confirm", "idempotencyKey": "terminal-confirm-0001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true}},
+    {"id": "confirm", "command": "publication.confirm", "idempotencyKey": "terminal-confirm-0001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true}},
     {"id": "cancel-upload", "command": "operation.cancel", "idempotencyKey": "terminal-cancel-upload1", "credentialFrom": "exchange", "body": {"targetIdempotencyKey": "terminal-upload-00001"}, "expect": {"ok": false, "errorCode": "already_terminal"}},
     {"id": "cancel-confirm", "command": "operation.cancel", "idempotencyKey": "terminal-cancel-confirm", "credentialFrom": "exchange", "body": {"targetIdempotencyKey": "terminal-confirm-0001"}, "expect": {"ok": false, "errorCode": "already_terminal"}},
-    {"id": "read", "command": "publication.read", "idempotencyKey": "terminal-read-0000001", "credentialFrom": "exchange", "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"}, "expect": {"ok": true, "equals": {"result.status": "published"}}}
+    {"id": "read", "command": "publication.read", "idempotencyKey": "terminal-read-0000001", "credentialFrom": "exchange", "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"}, "expect": {"ok": true, "equals": {"result.status": "published"}}}
   ]
 }

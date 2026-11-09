@@ -43,10 +43,11 @@
       "expect": {
         "ok": true,
         "equals": {
-          "result.private": true,
-          "result.localOriginals": "untouched",
-          "result.episodeStatus": "draft",
-          "result.episodeId": "ep_test_lane_01"
+          "result.acknowledgement.private": true,
+          "result.acknowledgement.localOriginals": "untouched",
+          "result.acknowledgement.effect": "revision-sealed",
+          "result.acknowledgement.authoritative": false,
+          "result.acknowledgement.episodeId": "ep_test_lane_01"
         }
       }
     },
@@ -72,7 +73,7 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_01",
-        "revisionId": "{{step:upload.result.revisionId}}"
+        "revisionId": "{{step:upload.result.acknowledgement.revisionId}}"
       },
       "expect": {"ok": true, "matchesMedia": "png", "equals": {"result.private": true, "result.localOriginals": "untouched"}}
     },
@@ -84,15 +85,16 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_01",
-        "revisionId": "{{step:upload.result.revisionId}}",
+        "revisionId": "{{step:upload.result.acknowledgement.revisionId}}",
         "policyEligibility": "private-prototype-only"
       },
       "expect": {
         "ok": true,
         "equals": {
-          "result.status": "published",
-          "result.publicInternet": false,
-          "result.revisionId": "{{step:upload.result.revisionId}}"
+          "result.acknowledgement.effect": "confirm-recorded",
+          "result.acknowledgement.authoritative": false,
+          "result.acknowledgement.publicInternet": false,
+          "result.acknowledgement.revisionId": "{{step:upload.result.acknowledgement.revisionId}}"
         }
       }
     },
@@ -101,7 +103,7 @@
       "command": "publication.read",
       "idempotencyKey": "comic-read-00000001",
       "credentialFrom": "exchange",
-      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"},
       "expect": {
         "ok": true,
         "matchesMedia": "png",
@@ -110,7 +112,7 @@
           "result.presentation.widthPx": 360,
           "result.presentation.ordered": true,
           "result.publicInternet": false,
-          "result.revisionId": "{{step:upload.result.revisionId}}"
+          "result.revisionId": "{{step:upload.result.acknowledgement.revisionId}}"
         }
       }
     },
@@ -122,17 +124,17 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_01",
-        "publicationId": "{{step:confirm.result.publicationId}}",
-        "revisionId": "{{step:confirm.result.revisionId}}"
+        "publicationId": "{{step:confirm.result.acknowledgement.publicationId}}",
+        "revisionId": "{{step:confirm.result.acknowledgement.revisionId}}"
       },
-      "expect": {"ok": true, "equals": {"result.status": "withdrawn", "result.publicInternet": false}}
+      "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "withdraw-recorded", "result.acknowledgement.authoritative": false}}
     },
     {
       "id": "read-withdrawn",
       "command": "publication.read",
       "idempotencyKey": "comic-read-00000002",
       "credentialFrom": "exchange",
-      "body": {"canonicalUrl": "{{step:confirm.result.canonicalUrl}}"},
+      "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"},
       "expect": {"ok": false, "errorCode": "withdrawn"}
     },
     {
@@ -143,7 +145,7 @@
       "body": {
         "seriesId": "ser_test_lane",
         "episodeId": "ep_test_lane_01",
-        "revisionId": "{{step:upload.result.revisionId}}"
+        "revisionId": "{{step:upload.result.acknowledgement.revisionId}}"
       },
       "expect": {"ok": true, "matchesMedia": "png"}
     }

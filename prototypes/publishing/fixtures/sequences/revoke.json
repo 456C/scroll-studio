@@ -13,7 +13,10 @@
     {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "revoke-exchange-00001", "credentialFrom": null, "expect": {"ok": true}},
     {"id": "begin2", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "revoke-begin-00000002", "credentialFrom": null, "body": {"state": "synthetic-state-owner-a-not-for-production-0002"}, "expect": {"ok": true}},
     {"id": "exchange2", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "revoke-exchange-00002", "credentialFrom": null, "body": {"code": "{{callback:begin2.code}}", "state": "{{callback:begin2.state}}"}, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "revoke-upload-0000001", "credentialFrom": "exchange", "expect": {"ok": true}},
     {"id": "revoke", "command": "auth.revoke", "idempotencyKey": "revoke-credential-0001", "credentialFrom": "exchange", "body": {}, "expect": {"ok": true, "equals": {"result.revoked": true}}},
+    {"id": "upload-again", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "revoke-upload-0000001", "credentialFrom": "exchange", "expect": {"ok": false, "errorCode": "credential_revoked", "absent": ["result"]}},
+    {"id": "exchange-replay", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "revoke-exchange-00001", "credentialFrom": null, "expect": {"ok": false, "errorCode": "exchange_consumed", "absent": ["result.credential.secret", "result.credential"]}},
     {"id": "discover-revoked", "command": "account.discover", "idempotencyKey": "revoke-discover-00001", "credentialFrom": "exchange", "body": {}, "expect": {"ok": false, "errorCode": "credential_revoked"}},
     {"id": "discover-live", "command": "account.discover", "idempotencyKey": "revoke-discover-00002", "credentialFrom": "exchange2", "body": {}, "expect": {"ok": true, "seriesIds": ["ser_test_lane"]}}
   ]

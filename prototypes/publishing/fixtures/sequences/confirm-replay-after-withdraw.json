@@ -1,0 +1,20 @@
+{
+  "name": "confirm-replay-after-withdraw",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "held-begin-000000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "held-exchange-000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "held-upload-00000001", "credentialFrom": "exchange", "expect": {"ok": true}},
+    {"id": "confirm", "command": "publication.confirm", "idempotencyKey": "held-confirm-0000001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "confirm-recorded", "result.acknowledgement.authoritative": false}, "absent": ["result.status", "result.acknowledgement.status"]}},
+    {"id": "withdraw", "command": "publication.withdraw", "idempotencyKey": "held-withdraw-000001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "publicationId": "{{step:confirm.result.acknowledgement.publicationId}}", "revisionId": "{{step:confirm.result.acknowledgement.revisionId}}"}, "expect": {"ok": true}},
+    {"id": "confirm-replay", "command": "publication.confirm", "idempotencyKey": "held-confirm-0000001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true, "idempotentReplay": true, "equals": {"result.acknowledgement.effect": "confirm-recorded", "result.acknowledgement.authoritative": false}, "absent": ["result.status", "result.acknowledgement.status"]}},
+    {"id": "read", "command": "publication.read", "idempotencyKey": "held-read-0000000001", "credentialFrom": "exchange", "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"}, "expect": {"ok": false, "errorCode": "withdrawn"}}
+  ]
+}

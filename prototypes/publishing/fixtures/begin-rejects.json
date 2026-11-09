@@ -19,7 +19,7 @@
     {"name": "production-profile", "overlay": {"transportProfile": "production-secure-transport"}, "errorCode": "production_transport_not_enabled"},
     {"name": "pkce-plain", "overlay": {"codeChallengeMethod": "plain"}, "errorCode": "pkce_rejected"},
     {"name": "bad-client", "overlay": {"clientId": "scroll-studio-desktop"}, "errorCode": "unauthorized"},
-    {"name": "missing-account", "overlay": {"loginHint": "acct_test_nobody"}, "errorCode": "unauthorized"},
+    {"name": "login-hint-rejected", "overlay": {"loginHint": "acct_test_owner_a"}, "errorCode": "invalid_request", "detail": "schema"},
     {"name": "admin-hint", "overlay": {"loginHint": "admin"}, "errorCode": "invalid_request", "detail": "schema"},
     {"name": "short-state", "overlay": {"state": "short-state"}, "errorCode": "invalid_request", "detail": "schema"},
     {"name": "star-scope", "overlay": {"scope": ["*"]}, "errorCode": "invalid_request", "detail": "schema"}

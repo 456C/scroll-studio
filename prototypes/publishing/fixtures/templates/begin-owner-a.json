@@ -6,6 +6,5 @@
   "codeChallenge": "{{pkce:ownerA}}",
   "state": "synthetic-state-owner-a-not-for-production-0001",
   "clientId": "scroll-studio-desktop-test",
-  "loginHint": "acct_test_owner_a",
   "scope": ["prototype:creator"]
 }

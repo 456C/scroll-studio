@@ -10,7 +10,8 @@ import zlib
 from pathlib import Path
 
 from prototypes.publishing.consumer_example import FIXTURES, TEMPLATES, _interp, run_sequence
-from prototypes.publishing.media import facts, png_1x1
+from prototypes.publishing.fixture_harness import FixtureHarness
+from prototypes.publishing.media import facts
 from prototypes.publishing.oracle import (
     LIMITS,
     PROTOCOL,
@@ -19,7 +20,9 @@ from prototypes.publishing.oracle import (
     apply,
     fresh_world,
     loopback_bind_allowed,
+    parse_clock,
 )
+from prototypes.publishing.runtime_rules import new_authorization_code, new_credential, server_now
 
 ROOT = Path(__file__).resolve().parents[2]
 SEQUENCES = FIXTURES / "sequences"
@@ -37,18 +40,20 @@ class ContractTests(unittest.TestCase):
             with self.subTest(path.name):
                 run_sequence(path)
 
-    def test_exchange_replay_keeps_the_same_secret(self):
-        run_sequence(SEQUENCES / "code-replay.json")
+    def test_exchange_replay_does_not_return_the_secret(self):
         world = fresh_world()
         body = _begin_body()
-        first = apply(world, _envelope("auth.begin", "replay-secret-begin-01", body))
-        again = apply(world, _envelope("auth.begin", "replay-secret-begin-01", body))
-        self.assertEqual(first["result"]["testOnlyRedirect"]["url"], again["result"]["testOnlyRedirect"]["url"])
-        exchange_body = _exchange_body(first)
-        opened = apply(world, _envelope("auth.exchange", "replay-secret-exchange1", exchange_body))
-        replayed = apply(world, _envelope("auth.exchange", "replay-secret-exchange1", exchange_body))
-        if opened["result"]["credential"]["secret"] != replayed["result"]["credential"]["secret"]:
-            self.fail("replay secret changed")
+        first, harness = _send(world, "auth.begin", "replay-secret-begin-01", body, login="acct_test_owner_a")
+        again, _again_harness = _send(world, "auth.begin", "replay-secret-begin-01", body, login="acct_test_owner_a")
+        self.assertEqual(first["result"]["authorizationUrl"], again["result"]["authorizationUrl"])
+        self.assertNotIn("testOnlyRedirect", first["result"])
+        exchange_body = _exchange_body(harness)
+        opened, _opened_harness = _send(world, "auth.exchange", "replay-secret-exchange1", exchange_body)
+        replayed, _replay_harness = _send(world, "auth.exchange", "replay-secret-exchange1", exchange_body)
+        self.assertFalse(replayed["ok"])
+        self.assertEqual(replayed["error"]["code"], "exchange_consumed")
+        self.assertNotIn("result", replayed)
+        self.assertTrue(opened["result"]["credential"]["secret"].startswith("sek_test_"))
 
     def test_begin_rejects(self):
         document = json.loads((FIXTURES / "begin-rejects.json").read_text(encoding="utf-8"))
@@ -77,6 +82,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(metadata["synopsis"]["maxLength"], LIMITS["maxSynopsisChars"])
         self.assertEqual(SCHEMA["$defs"]["errorObject"]["properties"]["code"]["enum"], PROTOCOL["errorCodes"])
         self.assertNotIn("termsAccepted", SCHEMA["$defs"]["confirmBody"]["properties"])
+        self.assertNotIn("loginHint", SCHEMA["$defs"]["beginBody"]["properties"])
+        self.assertNotIn("fixture", SCHEMA["properties"])
+        self.assertIn("exchange_consumed", PROTOCOL["errorCodes"])
         commands = set(PROTOCOL["commands"])
         self.assertEqual(commands, set(PROTOCOL["mutatingCommands"]) | set(PROTOCOL["readCommands"]))
         self.assertFalse(set(PROTOCOL["mutatingCommands"]) & set(PROTOCOL["readCommands"]))
@@ -123,6 +131,35 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(loopback_bind_allowed("::", enabled))
         self.assertFalse(loopback_bind_allowed("127.0.0.1", "production-secure-transport"))
 
+    def test_network_command_rejects_oracle_hooks(self):
+        body = _begin_body()
+        body["loginHint"] = "acct_test_owner_a"
+        response = apply(fresh_world(), _envelope("auth.begin", "hook-login-00000001", body))
+        self.assertEqual(response["error"]["code"], "invalid_request")
+        hooked = _envelope("auth.begin", "hook-fixture-0000001", _begin_body())
+        hooked["fixture"] = {"nonProductionLabel": "TEST-ONLY", "clock": PROTOCOL["defaultClock"]}
+        response = apply(fresh_world(), hooked)
+        self.assertEqual(response["error"]["code"], "invalid_request")
+
+    def test_live_secrets_are_not_fixture_counters(self):
+        first_id, first_secret = new_credential()
+        second_id, second_secret = new_credential()
+        self.assertNotEqual(first_secret, second_secret)
+        self.assertFalse(first_secret.startswith("sek_test_"))
+        self.assertFalse(first_id.startswith("cred_test_"))
+        self.assertGreaterEqual(len(new_authorization_code()), 32)
+        self.assertIsNotNone(server_now().tzinfo)
+        oracle_text = (ROOT / "prototypes" / "publishing" / "oracle.py").read_text(encoding="utf-8")
+        self.assertNotIn("sek_test_", oracle_text)
+        harness_text = (ROOT / "prototypes" / "publishing" / "fixture_harness.py").read_text(encoding="utf-8")
+        self.assertIn("sek_test_", harness_text)
+
+    def test_fixtures_decode_to_pixels(self):
+        for kind in ("png", "jpeg"):
+            media = facts(kind)
+            self.assertEqual((media["width"], media["height"]), (120, 160))
+            self.assertGreater(media["byteLength"], 100)
+
     def test_oracle_has_no_listener(self):
         for relative in (
             "prototypes/publishing/oracle.py",
@@ -137,27 +174,25 @@ class ContractTests(unittest.TestCase):
     def test_revision_bytes_ignore_later_mutation(self):
         world, credential = _owner_session()
         body = _comic_body()
-        uploaded = apply(world, _envelope("episode.upload", "mutate-upload-000001", body, credential))
+        uploaded, _upload_harness = _send(world, "episode.upload", "mutate-upload-000001", body, credential)
         body["content"]["slices"][0]["bytesBase64"] = base64.b64encode(b"changed").decode("ascii")
-        preview = apply(
+        preview, _preview_harness = _send(
             world,
-            _envelope(
-                "episode.preview",
-                "mutate-preview-00001",
-                {
-                    "seriesId": "ser_test_lane",
-                    "episodeId": "ep_test_lane_01",
-                    "revisionId": uploaded["result"]["revisionId"],
-                },
-                credential,
-            ),
+            "episode.preview",
+            "mutate-preview-00001",
+            {
+                "seriesId": "ser_test_lane",
+                "episodeId": "ep_test_lane_01",
+                "revisionId": uploaded["result"]["acknowledgement"]["revisionId"],
+            },
+            credential,
         )
         self.assertEqual(preview["result"]["content"]["slices"][0]["bytesBase64"], facts("png")["bytesBase64"])
 
     def test_discover_orders_episodes_by_ordinal(self):
         world, credential = _owner_session()
         world["series"]["ser_test_lane"]["episodes"].reverse()
-        discovered = apply(world, _envelope("account.discover", "order-discover-00001", {}, credential))
+        discovered, _discover_harness = _send(world, "account.discover", "order-discover-00001", {}, credential)
         titles = [episode["title"] for episode in discovered["result"]["account"]["series"][0]["episodes"]]
         self.assertEqual(titles, ["North door", "South stair"])
 
@@ -167,17 +202,17 @@ class ContractTests(unittest.TestCase):
         wide["content"]["slices"][0]["width"] = 4096
         wide["content"]["slices"][0]["height"] = 1000
         wide.pop("expectedSha256")
-        rejected = apply(world, _envelope("episode.upload", "pixel-cap-000000001", wide, credential))
+        rejected, _pixel_harness = _send(world, "episode.upload", "pixel-cap-000000001", wide, credential)
         self.assertEqual(rejected["error"]["code"], "limit_exceeded")
         bomb = _comic_body()
         bomb["content"]["slices"][0] = _bomb_slice()
         bomb.pop("expectedSha256")
-        bombed = apply(world, _envelope("episode.upload", "png-bomb-0000000001", bomb, credential))
+        bombed, _bomb_harness = _send(world, "episode.upload", "png-bomb-0000000001", bomb, credential)
         self.assertEqual(bombed["error"]["code"], "limit_exceeded")
         prose = _prose_body()
         prose["content"]["text"] = "雪" * 21846
         prose.pop("expectedSha256")
-        oversized = apply(world, _envelope("episode.upload", "prose-cap-00000001", prose, credential))
+        oversized, _prose_harness = _send(world, "episode.upload", "prose-cap-00000001", prose, credential)
         self.assertEqual(oversized["error"]["code"], "limit_exceeded")
 
     def test_episode_byte_budget(self):
@@ -202,7 +237,7 @@ class ContractTests(unittest.TestCase):
         body = _comic_body()
         body["content"] = {"kind": "comic", "slices": slices}
         body.pop("expectedSha256")
-        response = apply(world, _envelope("episode.upload", "episode-budget-00001", body, credential))
+        response, _budget_harness = _send(world, "episode.upload", "episode-budget-00001", body, credential)
         self.assertEqual(response["error"]["code"], "limit_exceeded")
 
     def test_bad_fixture_world_is_refused(self):
@@ -225,17 +260,23 @@ def _begin_body():
     return _interp(template, {"verifiers": VERIFIERS, "steps": {}, "media": {}})
 
 
-def _exchange_body(begin_response):
+def _exchange_body(harness):
     template = json.loads((TEMPLATES / "exchange-owner-a.json").read_text(encoding="utf-8"))
-    return _interp(template, {"verifiers": VERIFIERS, "steps": {"begin": begin_response}, "media": {}})
+    from urllib.parse import parse_qsl, urlsplit
+
+    query = dict(parse_qsl(urlsplit(harness.redirect_url).query))
+    ctx = {"verifiers": VERIFIERS, "steps": {}, "redirects": {"begin": harness.redirect_url}, "media": {}}
+    body = _interp(template, ctx)
+    body["code"] = query["code"]
+    body["state"] = query["state"]
+    return body
 
 
 def _comic_body():
     template = json.loads((TEMPLATES / "upload-comic.json").read_text(encoding="utf-8"))
     media = {"png": facts("png"), "jpeg": facts("jpeg")}
     body = _interp(template, {"verifiers": VERIFIERS, "steps": {}, "media": media})
-    raw = png_1x1()
-    body["expectedSha256"] = hashlib.sha256(raw).hexdigest()
+    body["expectedSha256"] = media["png"]["sha256"]
     return body
 
 
@@ -248,8 +289,8 @@ def _prose_body():
 
 def _owner_session():
     world = fresh_world()
-    begin = apply(world, _envelope("auth.begin", "helper-begin-0000001", _begin_body()))
-    opened = apply(world, _envelope("auth.exchange", "helper-exchange-0001", _exchange_body(begin)))
+    _begin, harness = _send(world, "auth.begin", "helper-begin-0000001", _begin_body(), login="acct_test_owner_a")
+    opened, _opened = _send(world, "auth.exchange", "helper-exchange-0001", _exchange_body(harness))
     credential = {
         "credentialId": opened["result"]["credential"]["credentialId"],
         "secret": opened["result"]["credential"]["secret"],
@@ -283,11 +324,19 @@ def _envelope(command, key, body, credential=None):
         "command": command,
         "idempotencyKey": key,
         "body": body,
-        "fixture": {"nonProductionLabel": "TEST-ONLY", "clock": PROTOCOL["defaultClock"]},
     }
     if credential is not None:
         envelope["credential"] = credential
     return envelope
+
+
+def _send(world, command, key, body, credential=None, login=None, clock=None, pause=False):
+    harness = FixtureHarness(
+        parse_clock(clock or PROTOCOL["defaultClock"]),
+        pause=pause,
+        login_account_id=login,
+    )
+    return apply(world, _envelope(command, key, body, credential), harness), harness
 
 
 if __name__ == "__main__":
