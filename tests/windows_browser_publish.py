@@ -469,9 +469,9 @@ def wait_pictures(browser: Browser, count: int) -> None:
 
 def open_comic(browser: Browser) -> None:
     browser.click_selector('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
-    comic = browser.wait_text("A hull does not need a coastline.")
-    if "The Fold" not in comic or "Four pictures" not in comic:
-        raise SystemExit("comic page did not show The Fold")
+    comic = browser.wait_text("A hull does not need a coastline.").casefold()
+    if "the fold" not in comic or "four pictures" not in comic:
+        raise SystemExit("comic page did not show the fold heading and four pictures")
     wait_pictures(browser, 4)
 
 
