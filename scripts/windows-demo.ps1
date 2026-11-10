@@ -26,7 +26,7 @@ Write-Host "png decoder: $hasPng"
 Write-Host "mjpeg decoder: $hasMjpeg"
 if (-not $hasPng -or -not $hasMjpeg) { throw 'png or mjpeg decoder is missing.' }
 
-$archive = Join-Path $WorkRoot 'scroll-studio-service-91ba489.zip'
+$archive = Join-Path $WorkRoot 'scroll-studio-service-66582c2.zip'
 $extracted = Join-Path $WorkRoot 'extracted'
 if (Test-Path -LiteralPath $extracted) { Remove-Item -LiteralPath $extracted -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $extracted | Out-Null
@@ -100,6 +100,8 @@ try {
             $status = ($landing -split "`n")[0].Trim()
             if ($status -notmatch '^HTTP/1\.[01] 200') { throw "landing status $status" }
             if ($landing -notmatch 'Enter the synthetic demo') { throw 'landing had no enter link' }
+            if ($landing -notmatch 'Read the sample comic and prose') { throw 'landing did not show the sample heading' }
+            if ($landing -match 'panel-fold.jpg') { throw 'landing already addressed a story picture' }
             if ($landing -match 'A hull does not need a coastline') { throw 'landing already showed the story' }
             Write-Host "http: GET / $status"
             foreach ($panel in @('panel-fold.jpg', 'panel-hull.jpg', 'panel-sill.jpg', 'panel-puddle.jpg')) {
@@ -126,6 +128,9 @@ try {
         }
     }
     if (-not $ready) { throw 'listener did not answer' }
+    $shots = Join-Path $WorkRoot 'shots'
+    New-Item -ItemType Directory -Force -Path $shots | Out-Null
+    $env:DEMO_SHOT_DIR = $shots
     python $BrowserScript
     if ($LASTEXITCODE -ne 0) { throw "browser check exited $LASTEXITCODE" }
 } finally {

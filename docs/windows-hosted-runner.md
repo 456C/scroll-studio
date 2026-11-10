@@ -2,11 +2,9 @@
 
 This is the local procedure. It is not a physical Windows desktop test of the egui window. The hosted runner executed `scripts/windows-demo.ps1` and did not start `Scroll Studio.exe`.
 
-The package this guide starts:
+The package this guide starts is service pin `66582c2fe38dbf85ce7e8ac7300c5fa5b74f7e0b`. The desktop SHA is the commit whose hosted run checks that pin out. Start route: http://127.0.0.1:19427/. The landing heading is "Read the sample comic and prose". Choose **Enter the synthetic demo**. The story pictures stay off that first page.
 
-- Desktop sources for the passing hosted run: `69d1f9b2a7e5839880d948e2e289125c76ae89cb`
-- Service pin: `91ba4894750d4e0d22a784c05b50ba89837451cf`
-- Start route: http://127.0.0.1:19427/
+The frozen earlier pair remains desktop `69d1f9b2a7e5839880d948e2e289125c76ae89cb` and service `91ba4894750d4e0d22a784c05b50ba89837451cf`, run https://github.com/456C/scroll-studio/actions/runs/42746459364. Its checksums below are not replaced by this pin.
 
 The homepage does not show the story. Choose **Enter the synthetic demo**, then Paper Harbor, episode 1 The Fold, and episode 2 What the Margin Kept. Reading those pages does not sign in and does not publish a creator episode. FFmpeg is not required to read the demo. It is required for a creator image upload.
 
@@ -66,7 +64,7 @@ The hosted run logged `ffmpeg version 7.1-essentials_build-www.gyan.dev`, png de
 
 ## Service archive
 
-Download the Actions artifact named `scroll-studio-service-91ba489` while signed in to GitHub. That zip is the runnable service package. The repository is private, so an unsigned download fails. The guide does not contain a token. The hosted job builds this zip from service pin `91ba4894750d4e0d22a784c05b50ba89837451cf`. A person does not check out that pin to start the listener.
+Download the Actions artifact named `scroll-studio-service-66582c2` while signed in to GitHub. That zip is the runnable service package. The repository is private, so an unsigned download fails. The guide does not contain a token. The hosted job builds this zip from service pin `66582c2fe38dbf85ce7e8ac7300c5fa5b74f7e0b`. A person does not check out that pin to start the listener. The separate static Toons export is not this zip and is not deployed from here.
 
 The zip contains `prototypes\publishing\demo_site.py` and these panel files, unchanged from the pin:
 
@@ -78,13 +76,13 @@ panel-puddle.jpg  e9ca13b83505f0d3b26cabc45db3ac369dd192b3ab87a9b954705296a298bc
 ```
 
 ```powershell
-Expand-Archive -LiteralPath scroll-studio-service-91ba489.zip -DestinationPath C:\scroll-demo -Force
+Expand-Archive -LiteralPath scroll-studio-service-66582c2.zip -DestinationPath C:\scroll-demo -Force
 Set-Location C:\scroll-demo
 python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close prototypes.publishing.test_listener.ListenerTests.test_busy_admission_does_not_follow_a_trickle prototypes.publishing.test_listener.ListenerTests.test_demo_catalogue_is_separate_from_creator_state
 python -m prototypes.publishing.listener
 ```
 
-Open http://127.0.0.1:19427/ in a browser. The first page offers Enter the synthetic demo. It does not show The Fold.
+Open http://127.0.0.1:19427/ in a browser. The first page says "Read the sample comic and prose" and offers Enter the synthetic demo. It does not show The Fold or a panel image.
 
 `python -m prototypes.publishing.listener` keeps running in that PowerShell window. Stop it by pressing Ctrl+C in that window. Publications and sessions exist only in process memory and disappear when that process exits.
 
@@ -94,15 +92,17 @@ These Linux Chrome tests are not part of the command above. Skipping them is not
 
 ```
 test_demo_reading_in_chrome
+test_demo_keyboard_and_narrow_layout
+test_toons_static_in_chrome
 test_chrome_sign_in_sends_service_origin
 test_phone_viewport_screenshot
 ```
 
 ## Portable app
 
-Download artifact 13730379871 from the proof run while signed in. The download is 5760452 bytes, sha256 `09d55a859c6e8bc8603c934b672d8ba07458aae8c8a4f7c880c031e65729e4d1`. That download is a zip whose one member is `scroll-studio-0.13.2-69d1f9b-windows-portable.zip`, 5760240 bytes, sha256 `33889c6d99fba1599b23a9e0ea07d5b1eb1275a216ee2ad419da811a9861d337`. Unzip that member and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job built that exe and did not launch it.
+The hosted run that uploads `scroll-studio-service-66582c2` also uploads the portable zip built from that same desktop commit. Use that zip with this service pin. Do not pair it with the frozen 91ba489 service archive. Unzip it and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job builds the exe and does not launch it.
 
-## Hosted proof
+## Frozen 91ba489 proof
 
 Run https://github.com/456C/scroll-studio/actions/runs/42746459364 at desktop `69d1f9b2a7e5839880d948e2e289125c76ae89cb`.
 

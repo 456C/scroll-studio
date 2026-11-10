@@ -172,13 +172,30 @@ def ws_read(connection: socket.socket) -> str:
             data += chunk
         return data
 
-    header = exact(2)
-    length = header[1] & 0x7F
-    if length == 126:
-        length = int.from_bytes(exact(2), "big")
-    elif length == 127:
-        length = int.from_bytes(exact(8), "big")
-    return exact(length).decode("utf-8", "replace")
+    chunks = []
+    while True:
+        header = exact(2)
+        fin = header[0] & 0x80
+        opcode = header[0] & 0x0F
+        length = header[1] & 0x7F
+        if length == 126:
+            length = int.from_bytes(exact(2), "big")
+        elif length == 127:
+            length = int.from_bytes(exact(8), "big")
+        masked = header[1] & 0x80
+        mask = exact(4) if masked else b""
+        payload = exact(length)
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        if opcode == 8:
+            raise SystemExit("browser debugger closed")
+        if opcode == 9:
+            continue
+        if opcode in (0, 1, 2):
+            chunks.append(payload)
+        if fin:
+            break
+    return b"".join(chunks).decode("utf-8", "replace")
 
 
 def http_get(url: str) -> str:
@@ -273,6 +290,83 @@ class Browser:
                 return
         raise SystemExit("browser navigation timed out")
 
+    def cdp(self, method: str, params: dict | None = None) -> dict:
+        self.call_id += 1
+        ident = self.call_id
+        self.connection.settimeout(30)
+        ws_send(
+            self.connection,
+            json.dumps({"id": ident, "method": method, "params": params or {}}),
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            message = json.loads(ws_read(self.connection))
+            if message.get("id") == ident:
+                if "error" in message:
+                    raise SystemExit(f"browser command failed: {method}")
+                return message
+        raise SystemExit(f"browser command timed out: {method}")
+
+    def viewport(self, width: int, height: int) -> None:
+        self.cdp(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": width,
+                "height": height,
+                "deviceScaleFactor": 1,
+                "mobile": width < 500,
+            },
+        )
+
+    def shot(self, name: str) -> None:
+        directory = os.environ.get("DEMO_SHOT_DIR", "")
+        if not directory:
+            raise SystemExit("DEMO_SHOT_DIR is not set")
+        os.makedirs(directory, exist_ok=True)
+        message = self.cdp("Page.captureScreenshot", {"format": "png"})
+        raw = base64.b64decode(message["result"]["data"])
+        with open(os.path.join(directory, name), "wb") as handle:
+            handle.write(raw)
+        print(f"screenshot: {name} {len(raw)} bytes")
+
+    def press(self, key: str) -> None:
+        code = {"Tab": "Tab", "Enter": "Enter"}[key]
+        virtual = {"Tab": 9, "Enter": 13}[key]
+        for kind in ("keyDown", "keyUp"):
+            self.cdp(
+                "Input.dispatchKeyEvent",
+                {
+                    "type": kind,
+                    "key": key,
+                    "code": code,
+                    "windowsVirtualKeyCode": virtual,
+                    "nativeVirtualKeyCode": virtual,
+                },
+            )
+
+    def active_text(self) -> str:
+        raw = self.evaluate(
+            "document.activeElement ? (document.activeElement.innerText || document.activeElement.textContent || '') : ''"
+        )
+        marker = '"value":"'
+        if marker not in raw:
+            return raw
+        value = raw.split(marker, 1)[1]
+        out = []
+        escaped = False
+        for character in value:
+            if escaped:
+                out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(character, character))
+                escaped = False
+                continue
+            if character == "\\":
+                escaped = True
+                continue
+            if character == '"':
+                break
+            out.append(character)
+        return "".join(out)
+
     def body_text(self) -> str:
         raw = self.evaluate("document.body ? document.body.innerText : ''")
         marker = '"value":"'
@@ -359,49 +453,77 @@ class Browser:
             self.proc.kill()
 
 
-def read_synthetic_demo(browser: Browser) -> None:
-    browser.navigate(ORIGIN + "/")
-    home = browser.wait_text("Enter the synthetic demo")
-    if "A hull does not need a coastline." in home or "Fixture Lane" in home:
-        raise SystemExit("landing already showed the story or a creator episode")
-    print("render: chrome landing showed Enter the synthetic demo")
-    browser.click_selector("a.enter")
-    browser.wait_text("Paper Harbor")
-    print("render: chrome entered the synthetic demo")
-    browser.click_selector('a[href="/ss-publish/demo/paper-harbor"]')
-    series = browser.wait_text("What the Margin Kept")
-    if "The Fold" not in series:
-        raise SystemExit("series page did not show The Fold")
-    print("render: chrome opened Paper Harbor")
-    browser.click_selector('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
-    comic = browser.wait_text("A hull does not need a coastline.")
-    if "The Fold" not in comic or "Four pictures" not in comic:
-        raise SystemExit("comic page did not show The Fold")
-    loaded = ""
+def wait_pictures(browser: Browser, count: int) -> None:
     for _ in range(40):
         loaded = browser.evaluate(
             "(() => { const imgs = [...document.images];"
-            " if (imgs.length !== 4) return 'count';"
+            f" if (imgs.length < {count}) return 'count';"
             " if (imgs.some((img) => !img.complete || img.naturalWidth < 1)) return 'incomplete';"
             " return 'loaded'; })()"
         )
         if '"value":"loaded"' in loaded.replace(" ", ""):
-            break
+            return
         time.sleep(0.25)
-    else:
-        raise SystemExit("comic pictures did not render")
-    print("render: chrome showed The Fold and four pictures")
+    raise SystemExit("page pictures did not render")
+
+
+def open_comic(browser: Browser) -> None:
+    browser.click_selector('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
+    comic = browser.wait_text("A hull does not need a coastline.")
+    if "The Fold" not in comic or "Four pictures" not in comic:
+        raise SystemExit("comic page did not show The Fold")
+    wait_pictures(browser, 4)
+
+
+def open_prose(browser: Browser) -> None:
     browser.click_selector('a[href="/ss-publish/demo/paper-harbor/margin-note"]')
     prose = browser.wait_text("What the Margin Kept")
     if "cold pear" not in prose:
         raise SystemExit("prose page did not show the reading")
-    print("render: chrome showed What the Margin Kept")
+
+
+def read_synthetic_demo(browser: Browser) -> None:
+    browser.viewport(1280, 800)
+    browser.navigate(ORIGIN + "/")
+    home = browser.wait_text("Read the sample comic and prose")
+    if "Enter the synthetic demo" not in home or "A hull does not need a coastline." in home:
+        raise SystemExit("landing did not show the sample entry alone")
+    if "Fixture Lane" in home:
+        raise SystemExit("landing showed a creator episode")
+    browser.shot("landing-desktop.png")
+    print("render: chrome landing at 1280 showed the sample entry")
+    focused = False
+    for _ in range(6):
+        browser.press("Tab")
+        if "Enter the synthetic demo" in browser.active_text():
+            focused = True
+            break
+    if not focused:
+        raise SystemExit("keyboard: Tab did not reach Enter the synthetic demo")
+    browser.press("Enter")
+    browser.wait_text("Paper Harbor")
+    print("keyboard: Enter opened the synthetic demo")
+    open_comic(browser)
+    browser.shot("comic-desktop.png")
+    print("render: chrome comic at 1280 showed The Fold")
+    open_prose(browser)
+    browser.shot("prose-desktop.png")
+    print("render: chrome prose at 1280 showed What the Margin Kept")
     browser.click_selector('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
     browser.wait_text("The Fold")
     print("render: chrome used Previous to return to The Fold")
-    browser.click_selector('a[href="/ss-publish/demo/paper-harbor"]')
+    browser.viewport(390, 844)
+    browser.navigate(ORIGIN + "/")
+    browser.wait_text("Enter the synthetic demo")
+    browser.shot("landing-narrow.png")
+    browser.click_selector("a.enter")
     browser.wait_text("Paper Harbor")
-    print("render: chrome used Back to the series")
+    open_comic(browser)
+    browser.shot("comic-narrow.png")
+    open_prose(browser)
+    browser.shot("prose-narrow.png")
+    print("render: chrome repeated landing, comic, and prose at 390")
+    browser.viewport(1280, 800)
 
 
 def main() -> None:
