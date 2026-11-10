@@ -4,6 +4,7 @@ This is the local procedure. It is not a physical Windows desktop test of the eg
 
 The package this guide starts:
 
+- Desktop sources for the passing hosted run: `69d1f9b2a7e5839880d948e2e289125c76ae89cb`
 - Service pin: `91ba4894750d4e0d22a784c05b50ba89837451cf`
 - Start route: http://127.0.0.1:19427/
 
@@ -100,6 +101,18 @@ test_phone_viewport_screenshot
 ## Portable app
 
 Download the Actions artifact whose name starts with `scroll-studio-0.13.2-` and ends with `-windows-portable` from the same run. Unzip it and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job builds that exe and does not launch it.
+
+## Hosted proof
+
+Run https://github.com/456C/scroll-studio/actions/runs/42746459364 at desktop `69d1f9b2a7e5839880d948e2e289125c76ae89cb`.
+
+- Process: listener pid 5484, working directory `D:\a\_temp\demo-work\extracted`, command `python -m prototypes.publishing.listener`.
+- HTTP: `GET /` returned `HTTP/1.1 200 OK`. Each `panel-fold.jpg`, `panel-hull.jpg`, `panel-sill.jpg`, and `panel-puddle.jpg` returned `HTTP/1.1 200 OK` and `image/jpeg`. `GET /ss-publish/browser/series` and `GET /ss-publish/browser/operator` returned `HTTP/1.1 401 Unauthorized`.
+- Render: Windows Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` showed Enter the synthetic demo, entered it, opened Paper Harbor, showed The Fold and four pictures, showed What the Margin Kept, used Previous back to The Fold, and used Back to the series. The same browser then completed the existing creator route: affirm, preview paragraph, reader paragraph, and unavailable after withdraw.
+- Selected tests, including `test_demo_catalogue_is_separate_from_creator_state`: `Ran 31 tests in 7.723s` / `OK`.
+- Service package sha256 `b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873`. Uploaded artifact `scroll-studio-service-91ba489`, id 13731975216, 13232992 bytes: https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13731975216
+- Portable zip `scroll-studio-0.13.2-69d1f9b-windows-portable`, id 13730379871, 5760452 bytes: https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13730379871
+- `Scroll Studio.exe` was not launched. This run saved no Windows screenshot.
 
 ## Earlier hosted pair
 
