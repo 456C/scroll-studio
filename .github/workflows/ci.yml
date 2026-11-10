@@ -234,9 +234,12 @@ jobs:
           "@ | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
           $evidence = Join-Path $env:RUNNER_TEMP 'frozen91ba-harness-evidence'
           $stdout = Join-Path $env:RUNNER_TEMP 'frozen91ba-harness-stdout.json'
+          Get-Content -LiteralPath $manifestPath
           python $support --manifest $manifestPath --evidence-dir $evidence > $stdout
           $code = $LASTEXITCODE
           Get-Content -LiteralPath $stdout
+          $detail = Join-Path $evidence 'process-listener.json'
+          if (Test-Path -LiteralPath $detail) { Get-Content -LiteralPath $detail }
           Write-Host "harness exit $code"
           $parsed = Get-Content -LiteralPath $stdout -Raw | ConvertFrom-Json
           if ($parsed.packagedDemoProved -ne $false) { throw 'harness claimed packaged-demo proof' }
@@ -244,6 +247,7 @@ jobs:
           "HARNESS_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "HARNESS_STDOUT=$stdout" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Upload harness evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: frozen-91ba-harness-e4ba7b3
