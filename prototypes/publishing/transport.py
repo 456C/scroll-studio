@@ -5,6 +5,7 @@ from html import escape
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from prototypes.publishing.demo_site import resolve as resolve_demo
 from prototypes.publishing.fixture_harness import FixtureHarness
 from prototypes.publishing.oracle import PROTOCOL, apply, issue_browser_code
 from prototypes.publishing.runtime_rules import new_csrf, new_session_id, server_now
@@ -38,6 +39,9 @@ def dispatch(world, request, harness=None):
     query = request.get("query") or {}
     body = request.get("body") or b""
     clock = harness.now() if harness is not None else server_now()
+    demo = resolve_demo(method, path)
+    if demo is not None:
+        return _demo_result(demo)
     if path == SPEC["command"]["path"]:
         return _command(world, method, headers, body, harness)
     if path == "/ss-publish/browser/series" and method == "GET":
@@ -65,6 +69,14 @@ def dispatch(world, request, harness=None):
     if path.startswith(SPEC["routes"]["preview"]) and method == "GET":
         return _preview(world, path[len(SPEC["routes"]["preview"]) :], headers, clock, harness)
     return _json_error(404, "not_found")
+
+
+def _demo_result(resolved):
+    kind, status, payload = resolved
+    if kind == "html":
+        return _html(status, payload)
+    content_type, body = payload
+    return HttpResult(status, {"cache-control": "no-store", "content-type": content_type}, body)
 
 
 def browser_affirm(world, authorization_url, account_id, harness):

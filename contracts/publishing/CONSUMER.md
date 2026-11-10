@@ -110,6 +110,14 @@ Cookies ignore port, so the issuer and the reader share `http://127.0.0.1:19427`
 
 Open `canonicalUrl` or `browserPreviewUrl` in the system browser. Do not put `credential.secret` on those URLs. The browser session cookie is the reader proof. `GET` reader and asset routes send `Cache-Control: no-store` and check the live session and the current publication status. `withdrawn` and `held` return 410 and no episode bytes. Another account's session returns 404. No session returns 401 and the TEST ONLY sign-in form. `POST /ss-publish/browser/session/revoke` clears that browser session and does not revoke the desktop credential.
 
+## Local demo website
+
+`GET http://127.0.0.1:19427/` is the visitor start. It does not open the story by itself. The visitor chooses **Enter the synthetic demo**, which goes to `/ss-publish/demo`. That catalogue is an immutable file set in `prototypes/publishing/demo_site.py` and `prototypes/publishing/demo_assets/`. It is not seeded into the creator world, it sets no session, and it does not call upload, confirm, or preview.
+
+The fixture sign-in link on that page is the existing test-only creator flow. Preview and reader JSON fields are unchanged. Command wire, host, origin, and CSRF rules are unchanged. The editor’s `--demo` sample is unrelated and does not publish this site.
+
+`prototypes/publishing/reader_content_kit/` is not part of this service and is not imported.
+
 ## Running the listener
 
 From the repository root:

@@ -21,9 +21,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 from prototypes.publishing.image_decode import decode_size
 from prototypes.publishing.listener import HOST, MAX_IN_FLIGHT, PORT, TIMEOUT_SECONDS, Listener, assert_loopback, live_world
 from prototypes.publishing.media import facts
-from prototypes.publishing.oracle import PROTOCOL, SCHEMA, pkce_s256
+from prototypes.publishing.oracle import PROTOCOL, SCHEMA, fresh_world, pkce_s256
 from prototypes.publishing.schema_validate import validate
-from prototypes.publishing.transport import SPEC
+from prototypes.publishing.transport import SPEC, dispatch
 
 ORIGIN = "http://127.0.0.1:19427"
 REDIRECT = "http://127.0.0.1:43121/ss-publish/callback"
@@ -766,6 +766,77 @@ class ListenerTests(unittest.TestCase):
         self.assertEqual(validate({"$ref": "#/$defs/response"}, admitted, SCHEMA), [])
         self.assertTrue(validate({"$ref": "#/$defs/errorObject"}, admitted["error"], SCHEMA))
 
+    def test_demo_catalogue_is_separate_from_creator_state(self):
+        world = fresh_world()
+        before = copy.deepcopy(world)
+        pages = {
+            "/": b"Enter the synthetic demo",
+            "/ss-publish/demo": b"Paper Harbor",
+            "/ss-publish/demo/paper-harbor": b"The Fold",
+            "/ss-publish/demo/paper-harbor/the-fold": b"A hull does not need a coastline.",
+            "/ss-publish/demo/paper-harbor/margin-note": b"She would not say that the harbor",
+        }
+        for path, needle in pages.items():
+            result = dispatch(world, _get(path))
+            self.assertEqual(result.status, 200, path)
+            self.assertIn(b"Local prototype. Synthetic demo. Not a publication.", result.body)
+            self.assertIn(needle, result.body)
+            self.assertNotIn(b"Fixture Lane", result.body)
+            self.assertNotIn(b"North door", result.body)
+        home = dispatch(world, _get("/"))
+        self.assertNotIn(b"panel-fold.jpg", home.body)
+        self.assertNotIn(b"A hull does not need a coastline.", home.body)
+        picture = dispatch(world, _get("/ss-publish/demo/assets/panel-fold.jpg"))
+        self.assertEqual(picture.status, 200)
+        self.assertTrue(picture.body.startswith(b"\xff\xd8"))
+        self.assertEqual(picture.headers["content-type"], "image/jpeg")
+        missing = dispatch(world, _get("/ss-publish/demo/assets/../listener.py"))
+        self.assertEqual(missing.status, 404)
+        rejected = dispatch(world, {"method": "POST", "path": "/", "headers": {"host": "127.0.0.1:19427"}, "body": b""})
+        self.assertEqual(rejected.status, 405)
+        self.assertEqual(world, before)
+        door = dispatch(world, _get("/ss-publish/browser/series"))
+        self.assertEqual(door.status, 401)
+        self.assertIn(b"TEST ONLY", door.body)
+        for name in ("demo_site.py", "transport.py"):
+            text = (Path(__file__).resolve().parent / name).read_text(encoding="utf-8")
+            self.assertNotIn("reader_content_kit", text)
+
+    def test_demo_reading_in_chrome(self):
+        chrome = _Chrome()
+        shots = Path("/opt/cursor/artifacts")
+        shots.mkdir(parents=True, exist_ok=True)
+        try:
+            chrome.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": False},
+            )
+            chrome.navigate(ORIGIN + "/")
+            self.assertIn("Enter the synthetic demo", chrome.text("document.body.innerText"))
+            self.assertNotIn("A hull does not need a coastline.", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "demo-home-desktop.png")
+            chrome.click('a.enter')
+            self.assertIn("Paper Harbor", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "demo-browse-desktop.png")
+            chrome.click('a[href="/ss-publish/demo/paper-harbor"]')
+            chrome.click('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
+            self.assertIn("The Fold", chrome.text("document.body.innerText"))
+            self.assertIn("A hull does not need a coastline.", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "demo-comic-desktop.png")
+            chrome.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": False},
+            )
+            chrome.navigate(ORIGIN + "/ss-publish/demo/paper-harbor/margin-note")
+            self.assertIn("What the Margin Kept", chrome.text("document.body.innerText"))
+            self.assertIn("cold pear", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "demo-prose-narrow.png")
+            chrome.click('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
+            self.assertIn("The Fold", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "demo-comic-narrow.png")
+        finally:
+            chrome.close()
+
     def test_chrome_sign_in_sends_service_origin(self):
         callback = _CallbackServer(43121)
         foreign = _ForeignFormServer(43122)
@@ -1120,6 +1191,15 @@ class _Chrome:
         except subprocess.TimeoutExpired:
             os.killpg(self.proc.pid, 9)
             self.proc.wait(timeout=3)
+
+
+def _get(path):
+    return {"method": "GET", "path": path, "headers": {"host": "127.0.0.1:19427"}, "body": b""}
+
+
+def _shot(chrome, path):
+    png = chrome.call("Page.captureScreenshot", {"format": "png"})
+    path.write_bytes(base64.b64decode(png["result"]["data"]))
 
 
 def _json_body(raw):
