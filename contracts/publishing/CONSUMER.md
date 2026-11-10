@@ -112,7 +112,7 @@ Open `canonicalUrl` or `browserPreviewUrl` in the system browser. Do not put `cr
 
 ## Local demo website
 
-`GET http://127.0.0.1:19427/` is the visitor start. It does not open the story by itself. The visitor chooses **Enter the synthetic demo**, which goes to `/ss-publish/demo`. That catalogue is an immutable file set in `prototypes/publishing/demo_site.py` and `prototypes/publishing/demo_assets/`. It is not seeded into the creator world, it sets no session, and it does not call upload, confirm, or preview.
+`GET http://127.0.0.1:19427/` is the visitor start. The heading is “Read the sample comic and prose.” It does not load story pictures. The visitor chooses **Enter the synthetic demo**, which goes to `/ss-publish/demo`, where the sample is titled and marked comic or prose. That catalogue is an immutable file set in `prototypes/publishing/demo_site.py` and `prototypes/publishing/demo_assets/`. It is not seeded into the creator world, it sets no session, and it does not call upload, confirm, or preview.
 
 The fixture sign-in link on that page is the existing test-only creator flow. Preview and reader JSON fields are unchanged. Command wire, host, origin, and CSRF rules are unchanged. The editor’s `--demo` sample is unrelated and does not publish this site.
 

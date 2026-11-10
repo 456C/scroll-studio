@@ -771,21 +771,30 @@ class ListenerTests(unittest.TestCase):
         before = copy.deepcopy(world)
         pages = {
             "/": b"Enter the synthetic demo",
-            "/ss-publish/demo": b"Paper Harbor",
-            "/ss-publish/demo/paper-harbor": b"The Fold",
+            "/ss-publish/demo": b"Read the comic",
+            "/ss-publish/demo/paper-harbor": b"Read the prose",
             "/ss-publish/demo/paper-harbor/the-fold": b"A hull does not need a coastline.",
             "/ss-publish/demo/paper-harbor/margin-note": b"She would not say that the harbor",
         }
         for path, needle in pages.items():
             result = dispatch(world, _get(path))
             self.assertEqual(result.status, 200, path)
-            self.assertIn(b"Local prototype. Synthetic demo. Not a publication.", result.body)
+            self.assertIn(b"Local prototype. Synthetic demo. Not a real publication.", result.body)
+            self.assertIn(b"Scroll Studio", result.body)
             self.assertIn(needle, result.body)
             self.assertNotIn(b"Fixture Lane", result.body)
             self.assertNotIn(b"North door", result.body)
         home = dispatch(world, _get("/"))
+        self.assertIn(b"Read the sample comic and prose", home.body)
+        self.assertIn(b"Creator test sign-in", home.body)
         self.assertNotIn(b"panel-fold.jpg", home.body)
+        self.assertNotIn(b"not a catalogue of visitors", home.body)
         self.assertNotIn(b"A hull does not need a coastline.", home.body)
+        browse = dispatch(world, _get("/ss-publish/demo"))
+        self.assertIn(b"The Fold", browse.body)
+        self.assertIn(b"What the Margin Kept", browse.body)
+        self.assertIn(b"Read the prose", browse.body)
+        self.assertIn(b'width="1152"', browse.body)
         picture = dispatch(world, _get("/ss-publish/demo/assets/panel-fold.jpg"))
         self.assertEqual(picture.status, 200)
         self.assertTrue(picture.body.startswith(b"\xff\xd8"))
@@ -812,17 +821,20 @@ class ListenerTests(unittest.TestCase):
                 {"width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": False},
             )
             chrome.navigate(ORIGIN + "/")
+            self.assertIn("Read the sample comic and prose", chrome.text("document.body.innerText"))
             self.assertIn("Enter the synthetic demo", chrome.text("document.body.innerText"))
             self.assertNotIn("A hull does not need a coastline.", chrome.text("document.body.innerText"))
-            _shot(chrome, shots / "demo-home-desktop.png")
+            _shot(chrome, shots / "followup-home-desktop.png")
             chrome.click('a.enter')
             self.assertIn("Paper Harbor", chrome.text("document.body.innerText"))
-            _shot(chrome, shots / "demo-browse-desktop.png")
+            self.assertIn("Read the comic", chrome.text("document.body.innerText"))
+            self.assertIn("Read the prose", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "followup-browse-desktop.png")
             chrome.click('a[href="/ss-publish/demo/paper-harbor"]')
             chrome.click('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
             self.assertIn("The Fold", chrome.text("document.body.innerText"))
             self.assertIn("A hull does not need a coastline.", chrome.text("document.body.innerText"))
-            _shot(chrome, shots / "demo-comic-desktop.png")
+            _shot(chrome, shots / "followup-comic-desktop.png")
             chrome.call(
                 "Emulation.setDeviceMetricsOverride",
                 {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": False},
@@ -830,10 +842,49 @@ class ListenerTests(unittest.TestCase):
             chrome.navigate(ORIGIN + "/ss-publish/demo/paper-harbor/margin-note")
             self.assertIn("What the Margin Kept", chrome.text("document.body.innerText"))
             self.assertIn("cold pear", chrome.text("document.body.innerText"))
-            _shot(chrome, shots / "demo-prose-narrow.png")
-            chrome.click('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
+            self.assertTrue(chrome.eval(_NO_OVERFLOW))
+            _shot(chrome, shots / "followup-prose-390.png")
+            _fit(chrome, 320, 700)
+            chrome.navigate(ORIGIN + "/ss-publish/demo/paper-harbor/the-fold")
+            self.assertTrue(chrome.eval(_NO_OVERFLOW))
+            _shot(chrome, shots / "followup-comic-320.png")
             self.assertIn("The Fold", chrome.text("document.body.innerText"))
-            _shot(chrome, shots / "demo-comic-narrow.png")
+        finally:
+            chrome.close()
+
+    def test_demo_keyboard_and_narrow_layout(self):
+        chrome = _Chrome()
+        try:
+            chrome.navigate(ORIGIN + "/")
+            _press(chrome, "Tab", 9)
+            self.assertIn("Skip to content", chrome.eval(_ACTIVE))
+            _press(chrome, "Enter", 13)
+            self.assertEqual(chrome.eval("document.activeElement && document.activeElement.id"), "content")
+            focused = _tab_until(chrome, "Enter the synthetic demo")
+            self.assertIn("Enter the synthetic demo", focused)
+            _press(chrome, "Enter", 13)
+            chrome.drain(1.0)
+            self.assertIn("Read the comic", chrome.text("document.body.innerText"))
+            chrome.navigate(ORIGIN + "/ss-publish/demo/paper-harbor/the-fold")
+            self.assertEqual(chrome.eval("document.querySelectorAll('h1').length"), 1)
+            self.assertTrue(chrome.eval("!!document.querySelector('main#content') && !!document.querySelector('header')"))
+            self.assertEqual(chrome.eval("Array.from(document.images).filter(img => !img.alt).length"), 0)
+            self.assertEqual(chrome.eval("document.images[0].getAttribute('width')"), "1152")
+            self.assertEqual(chrome.eval("document.images[0].getAttribute('height')"), "864")
+            _tab_until(chrome, "Next: What the Margin Kept")
+            _press(chrome, "Enter", 13)
+            chrome.drain(1.0)
+            self.assertIn("What the Margin Kept", chrome.text("document.body.innerText"))
+            _tab_until(chrome, "Previous: The Fold")
+            _press(chrome, "Enter", 13)
+            chrome.drain(1.0)
+            self.assertIn("The Fold", chrome.text("document.body.innerText"))
+            for width in (320, 390):
+                _fit(chrome, width, 800)
+                chrome.navigate(ORIGIN + "/ss-publish/demo/paper-harbor/the-fold")
+                self.assertTrue(chrome.eval(_NO_OVERFLOW), width)
+                chrome.navigate(ORIGIN + "/ss-publish/demo/paper-harbor/margin-note")
+                self.assertTrue(chrome.eval(_NO_OVERFLOW), width)
         finally:
             chrome.close()
 
@@ -1195,6 +1246,41 @@ class _Chrome:
 
 def _get(path):
     return {"method": "GET", "path": path, "headers": {"host": "127.0.0.1:19427"}, "body": b""}
+
+
+_ACTIVE = "document.activeElement ? (document.activeElement.innerText || document.activeElement.id || '') : ''"
+_NO_OVERFLOW = "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+
+
+def _fit(chrome, width, height):
+    chrome.call(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
+    )
+
+
+def _press(chrome, key, code):
+    for phase in ("keyDown", "keyUp"):
+        chrome.call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": phase,
+                "key": key,
+                "code": key,
+                "windowsVirtualKeyCode": code,
+                "nativeVirtualKeyCode": code,
+            },
+        )
+
+
+def _tab_until(chrome, label):
+    seen = ""
+    for _ in range(12):
+        _press(chrome, "Tab", 9)
+        seen = chrome.eval(_ACTIVE) or ""
+        if label in seen:
+            return seen
+    raise AssertionError(seen)
 
 
 def _shot(chrome, path):
@@ -1574,6 +1660,95 @@ def _read(sock, length):
             raise OSError("socket closed")
         data += chunk
     return data
+
+
+class StaticToonsTests(unittest.TestCase):
+    def test_export_links_stay_in_the_bundle_or_on_the_live_site(self):
+        import tempfile
+        from prototypes.publishing.export_toons import APPROVED_SITE, export_toons
+
+        out = Path(tempfile.mkdtemp(prefix="toons-export-"))
+        root = export_toons(out)
+        pages = list(root.rglob("*.html"))
+        self.assertGreaterEqual(len(pages), 4)
+        bundled = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
+        self.assertIn("assets/panel-fold.jpg", bundled)
+        self.assertIn("assets/Karla.ttf", bundled)
+        self.assertIn("assets/toons.css", bundled)
+        home = (root / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Read the sample comic and prose", home)
+        self.assertIn("Enter the synthetic demo", home)
+        self.assertNotIn("panel-fold.jpg", home)
+        self.assertNotIn("ss-publish", home)
+        self.assertNotIn("localhost", home)
+        self.assertNotIn("19427", home)
+        for page in pages:
+            text = page.read_text(encoding="utf-8")
+            self.assertNotIn("<script", text.lower())
+            self.assertNotIn("Fixture sign-in", text)
+            self.assertNotIn("localhost", text)
+            self.assertNotIn("127.0.0.1", text)
+            self.assertNotIn("ss-publish", text)
+            self.assertIn("Not a real publication.", text)
+            for match in re_attr(text):
+                ref = match
+                if ref.startswith("#"):
+                    continue
+                if ref in APPROVED_SITE:
+                    continue
+                target = (page.parent / ref).resolve()
+                self.assertTrue(str(target).startswith(str(root.resolve())), ref)
+                self.assertTrue(target.is_file(), ref)
+
+    def test_toons_static_in_chrome(self):
+        import tempfile
+        from http.server import ThreadingHTTPServer
+        from functools import partial
+        from prototypes.publishing.export_toons import export_toons
+
+        out = Path(tempfile.mkdtemp(prefix="toons-serve-"))
+        export_toons(out)
+        handler = partial(__import__("http.server", fromlist=["SimpleHTTPRequestHandler"]).SimpleHTTPRequestHandler, directory=str(out))
+        httpd = ThreadingHTTPServer(("127.0.0.1", 8877), handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        chrome = _Chrome()
+        shots = Path("/opt/cursor/artifacts")
+        try:
+            chrome.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": False},
+            )
+            chrome.navigate("http://127.0.0.1:8877/toons/")
+            self.assertIn("Read the sample comic and prose", chrome.text("document.body.innerText"))
+            self.assertNotIn("panel-fold", chrome.eval("document.documentElement.outerHTML"))
+            self.assertEqual(chrome.eval("document.images.length"), 1)
+            _shot(chrome, shots / "toons-home-desktop.png")
+            chrome.click('a.button')
+            self.assertIn("Read the comic", chrome.text("document.body.innerText"))
+            self.assertIn("The Fold", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "toons-series-desktop.png")
+            chrome.click('a[href="the-fold.html"]')
+            self.assertIn("A hull does not need a coastline.", chrome.text("document.body.innerText"))
+            _shot(chrome, shots / "toons-comic-desktop.png")
+            _fit(chrome, 390, 844)
+            chrome.navigate("http://127.0.0.1:8877/toons/paper-harbor/margin-note.html")
+            self.assertIn("cold pear", chrome.text("document.body.innerText"))
+            self.assertTrue(chrome.eval(_NO_OVERFLOW))
+            _shot(chrome, shots / "toons-prose-390.png")
+            _fit(chrome, 320, 700)
+            chrome.navigate("http://127.0.0.1:8877/toons/paper-harbor/the-fold.html")
+            self.assertTrue(chrome.eval(_NO_OVERFLOW))
+            _shot(chrome, shots / "toons-comic-320.png")
+        finally:
+            chrome.close()
+            httpd.shutdown()
+            httpd.server_close()
+
+
+def re_attr(text):
+    import re
+    return re.findall(r'''(?:href|src)="([^"]+)"''', text)
 
 
 if __name__ == "__main__":
