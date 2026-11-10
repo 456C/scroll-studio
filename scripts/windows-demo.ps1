@@ -96,15 +96,15 @@ try {
     foreach ($attempt in 1..40) {
         Start-Sleep -Milliseconds 250
         try {
-            $home = Read-Loopback '/' 12000
-            $status = ($home -split "`n")[0].Trim()
+            $landing = Read-Loopback '/' 12000
+            $status = ($landing -split "`n")[0].Trim()
             if ($status -notmatch '^HTTP/1\.[01] 200') { throw "landing status $status" }
-            if ($home -notmatch 'Enter the synthetic demo') { throw 'landing had no enter link' }
-            if ($home -match 'A hull does not need a coastline') { throw 'landing already showed the story' }
+            if ($landing -notmatch 'Enter the synthetic demo') { throw 'landing had no enter link' }
+            if ($landing -match 'A hull does not need a coastline') { throw 'landing already showed the story' }
             Write-Host "http: GET / $status"
             foreach ($panel in @('panel-fold.jpg', 'panel-hull.jpg', 'panel-sill.jpg', 'panel-puddle.jpg')) {
                 $assetPath = "/ss-publish/demo/assets/$panel"
-                $asset = Read-Loopback $assetPath 512
+                $asset = Read-Loopback $assetPath 2048
                 $assetStatus = ($asset -split "`n")[0].Trim()
                 if ($assetStatus -notmatch '^HTTP/1\.[01] 200') { throw "asset status $panel $assetStatus" }
                 if ($asset -notmatch '(?i)content-type: image/jpeg') { throw "asset type $panel" }
@@ -122,7 +122,7 @@ try {
             $ready = $true
             break
         } catch {
-            if ($attempt -eq 40) { throw }
+            if ($attempt -eq 40) { throw $_ }
         }
     }
     if (-not $ready) { throw 'listener did not answer' }
