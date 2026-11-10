@@ -85,9 +85,13 @@ class Callback(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path, _, query = self.path.partition("?")
+        if path != "/ss-publish/callback":
+            self.send_response(404)
+            self.end_headers()
+            return
         keys = [key for key, _value in parse_qsl(query, keep_blank_values=True)]
-        if path != "/ss-publish/callback" or keys != ["code", "state"]:
-            Callback.error = f"unexpected callback path keys {keys}"
+        if keys != ["code", "state"]:
+            Callback.error = "unexpected callback query keys"
             self.send_response(400)
         else:
             values = dict(parse_qsl(query))
