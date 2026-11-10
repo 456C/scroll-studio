@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <rect width="800" height="500" fill="#1c2740"/>
+  <circle cx="96" cy="64" r="1.8" fill="#f4e6c4"/>
+  <circle cx="700" cy="48" r="1.7" fill="#f4e6c4"/>
+  <polygon points="0,400 800,386 800,500 0,500" fill="#2c261f"/>
+  <polygon points="150,430 128,150 470,150 500,430" fill="#7a5b49"/>
+  <polygon points="104,152 308,62 516,152" fill="#5c463b"/>
+  <polygon points="128,152 308,84 488,152" fill="#8a7564"/>
+  <rect x="360" y="36" width="28" height="46" fill="#3a2e28"/>
+  <circle cx="310" cy="368" r="28" fill="#1a120f"/>
+  <circle cx="310" cy="368" r="11" fill="#8d3a22"/>
+  <polyline points="168,286 214,328 262,292 318,336" fill="none" stroke="#d9d2c8" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="336,336 392,292 444,336 490,300" fill="none" stroke="#f0b14a" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M326 250 C260 108 150 150 196 246 C246 214 296 236 326 258" fill="#f3d48a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M326 250 C400 100 530 154 474 248 C424 214 360 236 326 258" fill="#e0b45a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M326 270 C286 252 246 286 286 304 C304 284 318 280 326 292" fill="#f3d48a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M326 270 C366 252 412 286 372 304 C350 284 334 280 326 292" fill="#e0b45a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <ellipse cx="326" cy="300" rx="15" ry="34" fill="#8a6230" stroke="#5c4120" stroke-width="4"/>
+  <path d="M316 272 L292 214" fill="none" stroke="#5c4120" stroke-width="4" stroke-linecap="round"/>
+  <path d="M336 272 L362 210" fill="none" stroke="#5c4120" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="288" cy="210" r="5" fill="#5c4120"/>
+  <circle cx="366" cy="206" r="5" fill="#5c4120"/>
+  <ellipse cx="640" cy="300" rx="22" ry="12" fill="#2a2420"/>
+  <circle cx="640" cy="318" r="20" fill="#efc7a6"/>
+  <rect x="624" y="336" width="32" height="9" rx="3" fill="#e6d3b0"/>
+  <polygon points="608,348 676,348 686,432 598,432" fill="#3f6178"/>
+  <rect x="612" y="428" width="16" height="40" fill="#2a3d4e"/>
+  <rect x="648" y="428" width="16" height="40" fill="#2a3d4e"/>
+  <rect x="8" y="8" width="784" height="484" fill="none" stroke="#10141c" stroke-width="8"/>
+</svg>

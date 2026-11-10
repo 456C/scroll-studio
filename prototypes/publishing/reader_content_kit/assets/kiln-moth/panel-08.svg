@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <rect width="800" height="230" fill="#8ea4b8"/>
+  <rect y="230" width="800" height="270" fill="#f0d7c4"/>
+  <circle cx="132" cy="58" r="14" fill="#f7efe0"/>
+  <polygon points="0,330 800,300 800,500 0,500" fill="#cbb59a"/>
+  <ellipse cx="214" cy="250" rx="22" ry="12" fill="#2a2420"/>
+  <circle cx="214" cy="268" r="20" fill="#efc7a6"/>
+  <rect x="198" y="286" width="32" height="9" rx="3" fill="#e6d3b0"/>
+  <polygon points="184,298 250,298 260,386 174,386" fill="#3f6178"/>
+  <rect x="188" y="382" width="16" height="40" fill="#2a3d4e"/>
+  <rect x="222" y="382" width="16" height="40" fill="#2a3d4e"/>
+  <polygon points="184,340 156,390 170,394" fill="#3f6178"/>
+  <polygon points="246,340 274,390 260,394" fill="#3f6178"/>
+  <polygon points="300,360 360,332 560,332 620,368 560,404 360,404" fill="#8d8478"/>
+  <polygon points="318,352 368,338 540,338 596,360 540,384 368,384" fill="#a79f94"/>
+  <circle cx="470" cy="332" r="46" fill="#d5ebe6" stroke="#3f6f68" stroke-width="8"/>
+  <ellipse cx="470" cy="346" rx="28" ry="12" fill="#b7d4ce"/>
+  <path d="M470 322 C452 304 434 312 438 328 C452 320 464 324 470 328" fill="#f0c85a" stroke="#8a5a18" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M470 322 C488 304 508 312 502 328 C488 320 476 324 470 328" fill="#e0b45a" stroke="#8a5a18" stroke-width="3" stroke-linejoin="round"/>
+  <ellipse cx="470" cy="328" rx="4" ry="9" fill="#a87428"/>
+  <ellipse cx="520" cy="418" rx="78" ry="34" fill="#f6e3a4"/>
+  <polygon points="456,396 508,416 464,430" fill="#e4c56a"/>
+  <polygon points="516,422 568,442 524,456" fill="#e4c56a"/>
+  <polygon points="604,444 656,464 612,478" fill="#6e675e"/>
+  <rect x="8" y="8" width="784" height="484" fill="none" stroke="#10141c" stroke-width="8"/>
+</svg>

@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "label": "Synthetic demo content. Separate from creator content and production content. Not a publication.",
+  "accessibility": {
+    "readingOrder": "Array order is the only reading order. Read works from first to last, then each work's episodes from first to last, then each comic's panels or each prose episode's paragraphs from first to last.",
+    "images": "Comic panels are shape drawings with no lettering. Alt text describes the visible shapes. The transcript states the full story of that panel, including names and intent.",
+    "prose": "Prose paragraphs are plain text in array order.",
+    "shapes": "Story changes are drawn as shape changes. The crack is a jagged line and later a smooth arc. The kiln-moth is a four-wing form. The bowl is a circle held in the hands and later set on a stone. Meaning is not carried by color alone."
+  },
+  "works": [
+    {
+      "id": "synthetic-demo-kiln-moth",
+      "slug": "kiln-moth",
+      "kind": "comic",
+      "synthetic": true,
+      "label": "Synthetic demo content. Separate from creator content and production content.",
+      "title": "The Kiln-Moth",
+      "summary": "On a cold ridge, glassworker Sera tries to keep a failing kiln hot long enough to form one clear bowl. A kiln-moth seals the crack in the clay. At dawn the bowl holds a moth-shaped gleam, and Sera sets it so its light marks the downhill path.",
+      "episodes": [
+        {
+          "id": "synthetic-demo-kiln-moth-episode-1",
+          "title": "Night on the Ridge",
+          "panels": [
+            {
+              "id": "synthetic-demo-kiln-moth-panel-01",
+              "asset": "assets/kiln-moth/panel-01.svg",
+              "alt": "Night on a dark ridge under a deep blue sky. A pale crescent moon and a few small stars are above a low hill. A clay kiln with a triangular roof and a dark round mouth stands left of center. A cloaked person stands to the right of the kiln, holding a two-part bellows aimed at the kiln. Two dark arrow shapes on the lower right point downhill.",
+              "transcript": "Sera, a glassworker, stands on the ridge at night beside the cold kiln. She has promised to keep the kiln alive until it can form a single clear bowl for the path-watchers below. The mouth of the kiln is dark. She holds the bellows ready and has not yet pumped them. The path arrows at the lower right are still dark."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-02",
+              "asset": "assets/kiln-moth/panel-02.svg",
+              "alt": "A closer view of the kiln, which fills the left side. The round mouth holds three nested circles of orange, gold, and pale yellow. Small pale circles rise above the chimney. A cloaked person leans in from the right and works a wide two-part bellows against the kiln.",
+              "transcript": "Sera pumps the bellows. Fire fills the kiln mouth, and sparks leave the chimney. She is trying to raise enough heat to form the bowl before the night ends."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-03",
+              "asset": "assets/kiln-moth/panel-03.svg",
+              "alt": "The kiln is centered under a darker sky and a smaller crescent moon. The mouth holds only a small dull red circle. A thick pale jagged line crosses the front of the kiln. A cloaked person stands to the left with both arms lowered.",
+              "transcript": "The fire falls to an ember. A crack opens across the kiln wall. Sera steps back and lets her arms fall. If the crack widens, the night's heat will leave and the bowl will not form."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-04",
+              "asset": "assets/kiln-moth/panel-04.svg",
+              "alt": "A large moth with four pale gold wings, a narrow body, and two knobbed antennae fills the right side. A smaller kiln sits at the left, still marked by a short jagged pale line. A cloaked person stands below the moth with the head tilted up.",
+              "transcript": "A kiln-moth, a large four-winged shape drawn to cooling clay, comes across the ridge. Sera looks up. The moth is heading for the cracked kiln, not for her."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-05",
+              "asset": "assets/kiln-moth/panel-05.svg",
+              "alt": "The four-winged moth sits on the kiln over a jagged line. Left of the moth the line is pale gray. Right of the moth the line is amber. The moth's body covers the middle of the line. A small dull red circle remains low in the kiln mouth. A cloaked person stands at the right with arms down.",
+              "transcript": "The kiln-moth lands on the crack. Where its body touches the clay, the crack warms from gray to amber. The rest of the crack is still cold. Sera stays still and does not wave the moth away."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-06",
+              "asset": "assets/kiln-moth/panel-06.svg",
+              "alt": "A smaller four-winged moth is high at the upper left, leaving the kiln. The kiln's crack is now one smooth amber arc. The mouth again holds nested orange and yellow circles of fire. A cloaked person at the right lifts one arm toward the moth.",
+              "transcript": "The moth lifts away. The jagged crack has sealed into a smooth warm arc, and the fire swells again inside the mouth. Sera raises a hand, not to catch the moth, but to mark that it is leaving now that the kiln can hold heat."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-07",
+              "asset": "assets/kiln-moth/panel-07.svg",
+              "alt": "A pale dawn sky with a small light moon. The kiln at the left has a clay slab swung open and a dark rectangular interior. A cloaked person holds a large pale circle at chest height between two hands. Inside the circle is a small gold pair of wings and a short body, with no antennae. No moth is in the sky.",
+              "transcript": "At dawn Sera opens the kiln. In her hands is the clear bowl. A moth-shaped gleam sits in the glass, the kiln-moth's form kept as light inside the bowl, while the moth itself is gone from the sky."
+            },
+            {
+              "id": "synthetic-demo-kiln-moth-panel-08",
+              "asset": "assets/kiln-moth/panel-08.svg",
+              "alt": "Dawn light. A cloaked person stands at the left with arms lowered. A pale circle with a small gold wing shape rests on a flat stone. A pale oval lies below and right of the stone. Two gold arrow shapes sit on that oval, and a darker arrow shape continues past the oval, stepping down toward the right. A small moon is in the sky. No moth is present.",
+              "transcript": "Sera sets the bowl on the ridge stone so its light falls on the downhill path. Arrow shapes lead away under that light and continue past it. The bowl stays. The moth does not return. The light on the path is the kept promise, for the path-watchers below to follow."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "synthetic-demo-orchard-that-remembered-water",
+      "slug": "orchard-that-remembered-water",
+      "kind": "prose",
+      "synthetic": true,
+      "label": "Synthetic demo content. Separate from creator content and production content.",
+      "title": "The Orchard That Remembered Water",
+      "summary": "On a dry chalk plateau, orchard keeper Ivo finds the salt fruits drawing the river from a family story. Ivo follows that line to a cliff, tastes only salt, and plants a new row instead of keeping the map.",
+      "episodes": [
+        {
+          "id": "synthetic-demo-orchard-water-episode-1",
+          "title": "The Fruits Point East",
+          "paragraphs": [
+            "On the high chalk of Merrow Plateau, Ivo kept twelve rows of salt trees. The trees were trunks of crusted mineral, each about as tall as Ivo's ribs. In late autumn they fruited in clear cubes. When the wind turned, the cubes struck one another and made a small bright sound. People from the lower farms climbed the chalk path when their wells ran bitter, and they traded wool for a handful of fruit that could season a month of soup.",
+            "Ivo's grandmother had spoken of a river that once crossed the plateau, broad enough to carry a flat boat of wool. She named two bends and a place where the water let go of its boats in a fan of little mouths. No channel remained. Rain sank into the chalk and came back later as the salt on the trunks. Ivo had decided the river was only a story meant to explain why the fruit tasted of stone from somewhere else.",
+            "In the first hard frost of Ivo's ninth year on the plateau, the cubes did not chime. They grew long instead of square. By evening every row had turned its points the same way, east-northeast, and the orchard looked like a comb drawn through the chalk. Ivo took a lamp and walked the rows slowly, counting, because a frost that only changed a shape could still be ordinary.",
+            "The points were not merely parallel. From the gate to the far stone they stepped, row by row, into one branching line, with two bends and a fan at the end. Ivo stopped at the fan and held the lamp low. The long fruits there spread like fingers. No one else was on the plateau. The wind had dropped, and for the first time that season the orchard made no sound at all.",
+            "Ivo found a charcoal stick in the gate basket and marked the line on the back of a wooden trencher. The drawing was clumsy, but the branches sat where the grandmother had put them: a main stem, two bends, and the fan of mouths. Ivo laughed once, because the match was too neat, and then stopped laughing. The lamp still showed the same fan in the farthest row, made of fruit that no hand had arranged."
+          ]
+        },
+        {
+          "id": "synthetic-demo-orchard-water-episode-2",
+          "title": "The Cliff and the New Row",
+          "paragraphs": [
+            "At dawn Ivo wrapped three of the long fruits, the trencher, and a wool cloak, and walked the line off the orchard onto the open chalk. The points continued in the frost itself, a faint glittering that would not survive the sun. Ivo followed them without hurrying. The plateau was wide, and the line did not wander. It held the two bends from the trencher, then ran straight at the sky.",
+            "The line ended where the plateau ended, at a pale cliff. Below lay the same dry country as always: sheep tracks, the pale roof of a cistern, and no water moving anywhere. Ivo stood until the cold left the cloak and the three fruits in the pocket had warmed and gone dull. One fruit had cracked from that warmth. Ivo broke it the rest of the way and touched the broken face to their tongue.",
+            "It was salt, sharp and ordinary. There was no sweetness of river water in it, and no cold taste of the frost. The map on the trencher was still a map. The cliff was still a cliff. Ivo looked from one to the other and understood that the story and the ground did not have to agree. The ground was the thing under their boots, and it had not opened into a river.",
+            "On the walk back the glittering points had already sunk into the chalk. In the orchard the long fruits were cubes again, as if the frost had been a passing mood. They chimed once when Ivo shut the gate. Ivo set the trencher on the gatepost, charcoal side up, and did not copy the drawing into the orchard book. The book stayed a record of rows and yields. A river that could not be tasted did not belong in it.",
+            "Ivo broke the remaining two fruits into clean shards and planted the shards along a new row on the west side of the gate, where the grandmother had never placed a river. The shards took the soil the way cuttings take soil. By the next autumn that row fruited square, and its cubes chimed in the wind with the same ordinary salt taste as the old rows. When the lower farms came up the path, Ivo sold fruit from the new row and from the old, and did not say which handful was which.",
+            "The trencher stayed on the gatepost until rain lifted the charcoal away. What remained was a blank board, a west row that had not existed the winter before, and Ivo's habit of looking east at the first frost. The habit was only a look. The choice had already been made: a living orchard, and not a remembered river."
+          ]
+        }
+      ]
+    }
+  ]
+}

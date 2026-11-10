@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <rect width="800" height="500" fill="#1c2740"/>
+  <circle cx="90" cy="48" r="1.8" fill="#f4e6c4"/>
+  <circle cx="300" cy="36" r="1.6" fill="#f4e6c4"/>
+  <circle cx="430" cy="88" r="2" fill="#f4e6c4"/>
+  <polygon points="0,390 800,370 800,500 0,500" fill="#2c261f"/>
+  <polygon points="46,400 36,300 150,300 164,400" fill="#7a5b49"/>
+  <polygon points="24,302 100,246 176,302" fill="#5c463b"/>
+  <rect x="118" y="226" width="16" height="28" fill="#3a2e28"/>
+  <circle cx="100" cy="348" r="18" fill="#1a120f"/>
+  <polyline points="70,318 86,336 100,324 118,348 132,330 156,356" fill="none" stroke="#d9d2c8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M520 210 C430 70 250 120 286 250 C360 210 470 230 520 240" fill="#f3d48a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M520 210 C620 60 790 130 742 260 C660 210 560 230 520 240" fill="#e0b45a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M520 250 C430 270 360 390 450 410 C500 350 520 300 520 270" fill="#f3d48a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M520 250 C610 280 700 390 600 420 C540 350 520 310 520 270" fill="#e0b45a" stroke="#5c4120" stroke-width="6" stroke-linejoin="round"/>
+  <ellipse cx="520" cy="250" rx="18" ry="52" fill="#8a6230" stroke="#5c4120" stroke-width="4"/>
+  <path d="M508 204 L478 150" fill="none" stroke="#5c4120" stroke-width="4" stroke-linecap="round"/>
+  <path d="M532 204 L566 146" fill="none" stroke="#5c4120" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="474" cy="146" r="5" fill="#5c4120"/>
+  <circle cx="570" cy="142" r="5" fill="#5c4120"/>
+  <ellipse cx="300" cy="360" rx="20" ry="11" fill="#2a2420"/>
+  <circle cx="300" cy="374" r="18" fill="#efc7a6"/>
+  <rect x="286" y="390" width="28" height="8" rx="3" fill="#e6d3b0"/>
+  <polygon points="274,400 332,400 340,464 266,464" fill="#3f6178"/>
+  <rect x="278" y="460" width="14" height="28" fill="#2a3d4e"/>
+  <rect x="308" y="460" width="14" height="28" fill="#2a3d4e"/>
+  <rect x="8" y="8" width="784" height="484" fill="none" stroke="#10141c" stroke-width="8"/>
+</svg>

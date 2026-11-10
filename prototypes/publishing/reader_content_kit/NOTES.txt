@@ -1,0 +1,50 @@
+SYNTHETIC DEMO CONTENT
+
+This directory is an inert version-1 reader-content kit.
+It is synthetic demo content.
+It is separate from creator content and from production content.
+It is not a publication, not a fallback catalogue, and not imported by the application.
+
+Interface choice
+
+Two shapes were compared for this kit.
+
+Sketch A is one embedded catalogue. catalogue.json holds the version, the synthetic flag, both works, ordered episodes, comic panel paths, alt text, transcripts, and prose paragraphs. Drawings live under assets/ and are named by relative paths from the catalogue directory.
+
+Sketch B is a catalogue of references. catalogue.json would list works and point at separate work JSON files, and those files would hold episodes and panels.
+
+Sketch A is the version-1 interface.
+It is the smaller surface: one document owns identity, order, text, and asset paths.
+Path checks have one root, the directory that contains catalogue.json.
+Sketch B would keep a second list of the same works, so the index and the files could drift, and it would leave the asset path root ambiguous.
+Version 1 has two short works, so one document stays readable.
+This kit adds no executable types and no scaffolds.
+
+Reading order
+
+Reading order, alt text, and transcripts live in catalogue.json.
+Array order is the only reading order: works, then episodes, then panels or paragraphs.
+This note does not copy the transcripts.
+If this note and catalogue.json ever disagree, catalogue.json is the content.
+
+For the comic, panel array order is the reading order.
+The drawings use shapes only and contain no lettering.
+Alt text describes the visible shapes.
+The transcript of each panel states the story of that panel, including names and intent.
+A change in the story is also a change in shape: a jagged crack becomes a smooth arc, the moth is a four-wing form, and the bowl is a circle held in the hands.
+Meaning is not carried by color alone.
+
+Prose paragraphs are plain text in array order.
+
+Creation
+
+The comic "The Kiln-Moth" and the prose "The Orchard That Remembered Water" are separate original stories.
+They are not a retelling of Paper Harbor or of any other reader story in this repository.
+The eight drawings are original flat shapes made for this kit.
+No external image, font, font file, script, or remote asset is included.
+The SVG xmlns attribute is the standard XML namespace. It is syntax, not a linked resource.
+No legal clearance, registration, or license is asserted.
+No metrics, accounts, or publication records are included.
+
+Asset paths are relative to the catalogue directory.
+They use forward slashes, stay inside assets/, and do not use absolute paths, parent segments, or links.
