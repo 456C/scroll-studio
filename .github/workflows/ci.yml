@@ -92,19 +92,24 @@ jobs:
           if (-not $hasPng -or -not $hasMjpeg) {
             throw 'Blocked. The pinned FFmpeg build is missing a png or mjpeg decoder.'
           }
-      - name: Check out isolated service pin 464766d
+      - name: Check out isolated service pin 91ba489
         uses: actions/checkout@v4
         with:
-          ref: 464766d97087cb26a12de6e009323951c43e1596
-          path: service-464766d
+          ref: 91ba4894750d4e0d22a784c05b50ba89837451cf
+          path: service-91ba489
           fetch-depth: 1
           persist-credentials: false
       - name: Confirm the isolated service tree
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:GITHUB_WORKSPACE 'service-464766d'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'service-91ba489'
           foreach ($needed in @(
+            'prototypes\publishing\demo_site.py',
+            'prototypes\publishing\demo_assets\panel-fold.jpg',
+            'prototypes\publishing\demo_assets\panel-hull.jpg',
+            'prototypes\publishing\demo_assets\panel-sill.jpg',
+            'prototypes\publishing\demo_assets\panel-puddle.jpg',
             'prototypes\publishing\test_contract.py',
             'prototypes\publishing\test_listener.py',
             'src\app\reader_ui.rs',
@@ -123,14 +128,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host 'Not run, and a skip would not be Windows browser proof:'
+          Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_demo_reading_in_chrome'
           Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_chrome_sign_in_sends_service_origin'
           Write-Host '  prototypes.publishing.test_listener.ListenerTests.test_phone_viewport_screenshot'
           & (Join-Path $env:GITHUB_WORKSPACE 'scripts\windows-demo.ps1') -ServiceCheckout $env:SERVICE_DIR -BrowserScript (Join-Path $env:GITHUB_WORKSPACE 'tests\windows_browser_publish.py') -WorkRoot (Join-Path $env:RUNNER_TEMP 'demo-work')
       - name: Upload the service demo archive
         uses: actions/upload-artifact@v4
         with:
-          name: scroll-studio-service-464766d
-          path: ${{ runner.temp }}/demo-work/scroll-studio-service-464766d.zip
+          name: scroll-studio-service-91ba489
+          path: ${{ runner.temp }}/demo-work/scroll-studio-service-91ba489.zip
           if-no-files-found: error
           retention-days: 14
 

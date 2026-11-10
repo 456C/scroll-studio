@@ -269,6 +269,48 @@ class Browser:
                 return
         raise SystemExit("browser navigation timed out")
 
+    def body_text(self) -> str:
+        raw = self.evaluate("document.body ? document.body.innerText : ''")
+        marker = '"value":"'
+        if marker not in raw:
+            return raw
+        value = raw.split(marker, 1)[1]
+        out = []
+        escaped = False
+        for character in value:
+            if escaped:
+                out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(character, character))
+                escaped = False
+                continue
+            if character == "\\":
+                escaped = True
+                continue
+            if character == '"':
+                break
+            out.append(character)
+        return "".join(out)
+
+    def wait_text(self, needle: str) -> str:
+        for _ in range(40):
+            text = self.body_text()
+            if needle in text:
+                return text
+            time.sleep(0.25)
+        raise SystemExit("page text was not visible")
+
+    def click_selector(self, selector: str) -> None:
+        expression = (
+            "(() => { const node = document.querySelector("
+            + json.dumps(selector)
+            + "); if (!node) return 'waiting'; node.click(); return 'clicked'; })()"
+        )
+        for _ in range(40):
+            value = self.evaluate(expression)
+            if '"value":"clicked"' in value.replace(" ", ""):
+                return
+            time.sleep(0.25)
+        raise SystemExit("page link did not appear")
+
     def click_account(self, account_id: str) -> None:
         expression = (
             "(() => { const button = document.querySelector("
@@ -313,6 +355,51 @@ class Browser:
             self.proc.kill()
 
 
+def read_synthetic_demo(browser: Browser) -> None:
+    browser.navigate(ORIGIN + "/")
+    home = browser.wait_text("Enter the synthetic demo")
+    if "A hull does not need a coastline." in home or "Fixture Lane" in home:
+        raise SystemExit("landing already showed the story or a creator episode")
+    print("render: chrome landing showed Enter the synthetic demo")
+    browser.click_selector("a.enter")
+    browser.wait_text("Paper Harbor")
+    print("render: chrome entered the synthetic demo")
+    browser.click_selector('a[href="/ss-publish/demo/paper-harbor"]')
+    series = browser.wait_text("What the Margin Kept")
+    if "The Fold" not in series:
+        raise SystemExit("series page did not show The Fold")
+    print("render: chrome opened Paper Harbor")
+    browser.click_selector('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
+    comic = browser.wait_text("A hull does not need a coastline.")
+    if "The Fold" not in comic or "Four pictures" not in comic:
+        raise SystemExit("comic page did not show The Fold")
+    loaded = ""
+    for _ in range(40):
+        loaded = browser.evaluate(
+            "(() => { const imgs = [...document.images];"
+            " if (imgs.length !== 4) return 'count';"
+            " if (imgs.some((img) => !img.complete || img.naturalWidth < 1)) return 'incomplete';"
+            " return 'loaded'; })()"
+        )
+        if '"value":"loaded"' in loaded.replace(" ", ""):
+            break
+        time.sleep(0.25)
+    else:
+        raise SystemExit("comic pictures did not render")
+    print("render: chrome showed The Fold and four pictures")
+    browser.click_selector('a[href="/ss-publish/demo/paper-harbor/margin-note"]')
+    prose = browser.wait_text("What the Margin Kept")
+    if "cold pear" not in prose:
+        raise SystemExit("prose page did not show the reading")
+    print("render: chrome showed What the Margin Kept")
+    browser.click_selector('a[href="/ss-publish/demo/paper-harbor/the-fold"]')
+    browser.wait_text("The Fold")
+    print("render: chrome used Previous to return to The Fold")
+    browser.click_selector('a[href="/ss-publish/demo/paper-harbor"]')
+    browser.wait_text("Paper Harbor")
+    print("render: chrome used Back to the series")
+
+
 def main() -> None:
     browser_path = find_browser()
     callback_server = ThreadingHTTPServer(("127.0.0.1", 0), Callback)
@@ -343,6 +430,7 @@ def main() -> None:
     print("opened fixture authorize page")
     browser = Browser(browser_path)
     try:
+        read_synthetic_demo(browser)
         browser.navigate(authorization)
         browser.click_account("acct_test_owner_a")
         deadline = time.time() + 30

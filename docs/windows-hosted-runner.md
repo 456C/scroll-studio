@@ -2,12 +2,14 @@
 
 This is the local procedure. It is not a physical Windows desktop test of the egui window. The hosted runner executed `scripts/windows-demo.ps1` and did not start `Scroll Studio.exe`.
 
-The pair the hosted script run used:
+The package this guide starts:
 
-- Desktop sources: `e70248036f1180a96fcd0b9a585960f406a72613`
-- Service pin: `464766d97087cb26a12de6e009323951c43e1596`
+- Service pin: `91ba4894750d4e0d22a784c05b50ba89837451cf`
+- Start route: http://127.0.0.1:19427/
 
-A later documentation commit does not move the Linux window onto that service pin. The Linux window that showed comic withdrawal used listener `e3eb462a63b86f793cdf9de5a37a07090ccbc8b7`.
+The homepage does not show the story. Choose **Enter the synthetic demo**, then Paper Harbor, episode 1 The Fold, and episode 2 What the Margin Kept. Reading those pages does not sign in and does not publish a creator episode. FFmpeg is not required to read the demo. It is required for a creator image upload.
+
+A machine already running desktop `e70248036f1180a96fcd0b9a585960f406a72613` with service `464766d97087cb26a12de6e009323951c43e1596` stays on that pair until a reviewed next action. This guide does not switch it.
 
 ## Identity and limits
 
@@ -63,40 +65,42 @@ The hosted run logged `ffmpeg version 7.1-essentials_build-www.gyan.dev`, png de
 
 ## Service archive
 
-The passing run uploaded `scroll-studio-service-464766d`, artifact id 13720169582, 11607074 bytes:
+Download the Actions artifact named `scroll-studio-service-91ba489` while signed in to GitHub. That zip is the runnable service package. The repository is private, so an unsigned download fails. The guide does not contain a token. The hosted job builds this zip from service pin `91ba4894750d4e0d22a784c05b50ba89837451cf`. A person does not check out that pin to start the listener.
 
-https://github.com/456C/scroll-studio/actions/runs/42723986006/artifacts/13720169582
+The zip contains `prototypes\publishing\demo_site.py` and these panel files, unchanged from the pin:
 
-Download it while signed in to GitHub. The repository is private, so an unsigned download fails. The guide does not contain a token.
+```
+panel-fold.jpg    166b246d70a3b6d55601db68d6c0da042f6aa651921b03e13b7e2fb23fe7c7bd
+panel-hull.jpg    b9b8e277b8191a10d47050e8b66a93b32ce0daf1a15bcae7003590314ddaba70
+panel-sill.jpg    5ab59c0b261e86d81dd628dde809af15ababbada64d1da41980103b1b1d260a3
+panel-puddle.jpg  e9ca13b83505f0d3b26cabc45db3ac369dd192b3ab87a9b954705296a298bcb5
+```
 
 ```powershell
-Expand-Archive -LiteralPath scroll-studio-service-464766d.zip -DestinationPath C:\scroll-demo -Force
+Expand-Archive -LiteralPath scroll-studio-service-91ba489.zip -DestinationPath C:\scroll-demo -Force
 Set-Location C:\scroll-demo
-python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close prototypes.publishing.test_listener.ListenerTests.test_busy_admission_does_not_follow_a_trickle
+python -m unittest prototypes.publishing.test_contract prototypes.publishing.test_listener.ListenerTests.test_bind_refuses_non_loopback prototypes.publishing.test_listener.ListenerTests.test_publish_preview_reader_and_pixels prototypes.publishing.test_listener.ListenerTests.test_prose_unicode_preview_and_byte_cap prototypes.publishing.test_listener.ListenerTests.test_replay_revoke_expiry_cancel_and_recovery prototypes.publishing.test_listener.ListenerTests.test_browser_csrf_host_origin_and_withdrawal prototypes.publishing.test_listener.ListenerTests.test_operator_report_hold_remove prototypes.publishing.test_listener.ListenerTests.test_body_cap_closes_before_the_payload prototypes.publishing.test_listener.ListenerTests.test_hold_and_remove_do_not_yield_to_the_owner prototypes.publishing.test_listener.ListenerTests.test_sign_in_csrf_expires_once_and_matches_next prototypes.publishing.test_listener.ListenerTests.test_rejected_connections_close prototypes.publishing.test_listener.ListenerTests.test_busy_admission_does_not_follow_a_trickle prototypes.publishing.test_listener.ListenerTests.test_demo_catalogue_is_separate_from_creator_state
 python -m prototypes.publishing.listener
 ```
+
+Open http://127.0.0.1:19427/ in a browser. The first page offers Enter the synthetic demo. It does not show The Fold.
 
 `python -m prototypes.publishing.listener` keeps running in that PowerShell window. Stop it by pressing Ctrl+C in that window. Publications and sessions exist only in process memory and disappear when that process exits.
 
 `scripts/windows-demo.ps1` is the hosted runner's non-interactive copy of the extract, test, and browser sequence. The runner has no console for Ctrl+C, so the script stops the listener process it started after the browser check. A person using the commands above presses Ctrl+C.
 
-These two tests are Linux Chrome tests and are not part of the command above. Skipping them is not Windows browser proof:
+These Linux Chrome tests are not part of the command above. Skipping them is not Windows browser proof:
 
 ```
+test_demo_reading_in_chrome
 test_chrome_sign_in_sends_service_origin
 test_phone_viewport_screenshot
 ```
 
 ## Portable app
 
-The same run uploaded `scroll-studio-0.13.2-e702480-windows-portable`, artifact id 13720274253, 5760452 bytes:
+Download the Actions artifact whose name starts with `scroll-studio-0.13.2-` and ends with `-windows-portable` from the same run. Unzip it and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job builds that exe and does not launch it.
 
-https://github.com/456C/scroll-studio/actions/runs/42723986006/artifacts/13720274253
+## Earlier hosted pair
 
-Download it while signed in, unzip it, and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job built that exe and did not launch it. A physical Windows GUI check still requires that launch on a machine with a desktop. This session did not do that launch.
-
-## What the hosted run already showed
-
-Run https://github.com/456C/scroll-studio/actions/runs/42723986006 at desktop `e70248036f1180a96fcd0b9a585960f406a72613` executed `scripts/windows-demo.ps1`. It logged Python 3.12.10 at `C:\hostedtoolcache\windows\Python\3.12.10\x64\python.exe`, png decoder True, mjpeg decoder True, `Ran 30 tests in 6.171s` / `OK`, and Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` with the lines `opened fixture authorize page`, `affirm reached the callback with code and state only`, `preview showed the uploaded paragraph`, `reader showed the published paragraph`, and `reader showed unavailable after withdraw`. Those browser lines share one log timestamp. The job uploaded `scroll-studio-service-464766d` (artifact id 13720169582, 11607074 bytes) and `scroll-studio-0.13.2-e702480-windows-portable` (artifact id 13720274253, 5760452 bytes). It did not start `Scroll Studio.exe`.
-
-Run https://github.com/456C/scroll-studio/actions/runs/42722190076 at desktop `72c0ed65c671fab099a7203a74f43695a9288685` passed the same 30 tests and the same Chrome route before `scripts/windows-demo.ps1` existed.
+Run https://github.com/456C/scroll-studio/actions/runs/42723986006 at desktop `e70248036f1180a96fcd0b9a585960f406a72613` and service `464766d97087cb26a12de6e009323951c43e1596` passed 30 tests and the creator Chrome route. Its portable artifact id is 13720274253. It did not include this demo website. Linux proof of pin `91ba4894750d4e0d22a784c05b50ba89837451cf` was 34 tests and Chrome 156. That Linux run is not Windows proof.
