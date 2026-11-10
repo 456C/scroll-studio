@@ -22,11 +22,24 @@ The hosted runner already had Python and did not download it:
 C:\hostedtoolcache\windows\Python\3.12.10\x64\python.exe
 ```
 
-On another machine, install Python 3.12 so that `python` is on `PATH`, then run:
+On another machine, install that same release from the official page https://www.python.org/downloads/release/python-31210/. The Windows installer (64-bit) is https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe. That page lists it as Recommended, 25.7 MB, MD5 `5eddb0b6f12c852725de071ae681dde4`. The file is 26964224 bytes. Installer switches are the ones documented at https://docs.python.org/3.12/using/windows.html (`/quiet`, `PrependPath`, `Include_test`).
+
+```powershell
+$exe = Join-Path $env:TEMP 'python-3.12.10-amd64.exe'
+Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe' -OutFile $exe
+if ((Get-Item -LiteralPath $exe).Length -ne 26964224) { throw 'size' }
+$md5 = (Get-FileHash -Algorithm MD5 -LiteralPath $exe).Hash.ToLowerInvariant()
+if ($md5 -ne '5eddb0b6f12c852725de071ae681dde4') { throw "md5 $md5" }
+Start-Process -FilePath $exe -ArgumentList '/quiet','PrependPath=1','Include_test=0' -Wait
+```
+
+Close that PowerShell window and open a new one so the installer change to PATH is visible. Then run:
 
 ```powershell
 python -c "import sys; print(sys.version); print(sys.executable)"
 ```
+
+The version line must be `3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]`. The executable path is whichever directory the installer added. It is not the hosted toolcache path.
 
 ## FFmpeg
 
@@ -50,7 +63,11 @@ The hosted run logged `ffmpeg version 7.1-essentials_build-www.gyan.dev`, png de
 
 ## Service archive
 
-The workflow builds `scroll-studio-service-464766d.zip` from the pin checkout and uploads it as an Actions artifact of that name. Download that artifact from the run page while signed in to GitHub. The guide does not contain a token.
+The passing run uploaded `scroll-studio-service-464766d`, artifact id 13720169582, 11607074 bytes:
+
+https://github.com/456C/scroll-studio/actions/runs/42723986006/artifacts/13720169582
+
+Download it while signed in to GitHub. The repository is private, so an unsigned download fails. The guide does not contain a token.
 
 ```powershell
 Expand-Archive -LiteralPath scroll-studio-service-464766d.zip -DestinationPath C:\scroll-demo -Force
@@ -59,7 +76,9 @@ python -m unittest prototypes.publishing.test_contract prototypes.publishing.tes
 python -m prototypes.publishing.listener
 ```
 
-`scripts/windows-demo.ps1` is the same extract, test, start, browser, and stop sequence. The hosted job runs that file. Stop the listener by ending that process. State is memory only.
+`python -m prototypes.publishing.listener` keeps running in that PowerShell window. Stop it by pressing Ctrl+C in that window. Publications and sessions exist only in process memory and disappear when that process exits.
+
+`scripts/windows-demo.ps1` is the hosted runner's non-interactive copy of the extract, test, and browser sequence. The runner has no console for Ctrl+C, so the script stops the listener process it started after the browser check. A person using the commands above presses Ctrl+C.
 
 These two tests are Linux Chrome tests and are not part of the command above. Skipping them is not Windows browser proof:
 
@@ -70,7 +89,11 @@ test_phone_viewport_screenshot
 
 ## Portable app
 
-Download the Actions artifact whose name starts with `scroll-studio-0.13.2-` and ends with `-windows-portable`. Unzip it and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job built that exe and did not launch it. A physical Windows GUI check still requires that launch on a machine with a desktop. This session did not do that launch.
+The same run uploaded `scroll-studio-0.13.2-e702480-windows-portable`, artifact id 13720274253, 5760452 bytes:
+
+https://github.com/456C/scroll-studio/actions/runs/42723986006/artifacts/13720274253
+
+Download it while signed in, unzip it, and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job built that exe and did not launch it. A physical Windows GUI check still requires that launch on a machine with a desktop. This session did not do that launch.
 
 ## What the hosted run already showed
 
