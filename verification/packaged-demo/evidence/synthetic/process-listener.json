@@ -1,0 +1,18 @@
+{
+  "evidenceKind": "process-listener",
+  "label": "synthetic",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "synthetic",
+    "fragmentExit": 2,
+    "fragmentHashedArchive": false,
+    "hashMismatchCode": "hash-mismatch",
+    "hashMismatchFilePreserved": true,
+    "occupiedPort": 49033,
+    "occupiedRefused": true,
+    "occupantAcceptedProbe": true,
+    "port19427Used": false,
+    "spawnOfOwnerArgv": false
+  }
+}

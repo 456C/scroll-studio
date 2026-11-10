@@ -1,0 +1,16 @@
+{
+  "evidenceKind": "http",
+  "label": "synthetic",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "synthetic",
+    "source": "local-fixture-not-the-packaged-listener",
+    "notBrowserRender": true,
+    "discoveredLinks": [
+      "http://127.0.0.1:19427/synthetic/kept"
+    ],
+    "droppedExternal": "http://example.com/no",
+    "liveServiceLandingFetched": false
+  }
+}

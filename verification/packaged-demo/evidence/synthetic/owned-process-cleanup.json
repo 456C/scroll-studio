@@ -1,0 +1,16 @@
+{
+  "evidenceKind": "owned-process-cleanup",
+  "label": "synthetic",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "synthetic",
+    "tamperedIdentitySignaled": false,
+    "ownedPid": 2275,
+    "ownedSignaled": true,
+    "ownedTerminated": true,
+    "aliveAfterTamper": true,
+    "killedByPort": false,
+    "killedByImageName": false
+  }
+}

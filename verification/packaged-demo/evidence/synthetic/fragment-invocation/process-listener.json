@@ -1,0 +1,16 @@
+{
+  "evidenceKind": "process-listener",
+  "label": "rejected-input",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "rejected",
+    "code": "malformed",
+    "detail": "manifest keys do not match the contract",
+    "archivesHashed": false,
+    "portProbed": false,
+    "spawnCalled": false,
+    "occupantSignaled": false,
+    "stage": "manifest"
+  }
+}

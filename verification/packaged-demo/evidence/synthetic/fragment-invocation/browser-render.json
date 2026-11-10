@@ -1,0 +1,15 @@
+{
+  "evidenceKind": "browser-render",
+  "label": "rejected-input",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "blocked",
+    "outcome": "blocked",
+    "captured": false,
+    "engine": null,
+    "capturePath": null,
+    "reason": "malformed",
+    "note": "HTTP responses are not browser-render evidence"
+  }
+}

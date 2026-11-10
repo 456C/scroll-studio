@@ -1,0 +1,147 @@
+{
+  "label": "synthetic",
+  "packagedDemoProved": false,
+  "packagedDemoAcceptance": "BLOCKED",
+  "unitPassIsNotPackagedDemoProof": true,
+  "unitTestsFailed": 0,
+  "unitTestsRun": 29,
+  "unitResults": [
+    {
+      "name": "__main__.CommandTests.test_cli_rejects_fragment",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.FragmentTests.test_fragment_is_rejected_without_hashing_or_spawning",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.FragmentTests.test_fragment_matches_owner_supplied_expected_values",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.FragmentTests.test_runtime_modules_do_not_embed_owner_pins_or_shell_helpers",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.GateTests.test_existing_evidence_is_preserved",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.GateTests.test_linux_blocks_before_spawn_or_port_probe",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.GateTests.test_reasons",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.HttpAndOrchestrationTests.test_composer_cleans_synthetic_child_and_blocks_browser",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.HttpAndOrchestrationTests.test_link_filter_is_same_origin_and_redacts_sensitive_query",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.HttpAndOrchestrationTests.test_local_http_is_labeled_and_does_not_follow_links",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.HttpAndOrchestrationTests.test_occupied_orchestration_does_not_spawn",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.LifecycleTests.test_already_exited_child_is_not_signaled",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.LifecycleTests.test_free_port_is_not_occupied",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.LifecycleTests.test_non_loopback_probe_is_refused",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.LifecycleTests.test_occupied_port_preserves_occupant",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.LifecycleTests.test_owned_pid_cleanup_and_foreign_pid_preserved",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.LifecycleTests.test_shell_argv_is_not_spawned",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_abbreviated_and_uppercase_commits_are_not_exact",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_duplicate_key_is_malformed",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_hash_mismatch_preserves_bytes",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_incomplete_app_digest_stays_rejected",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_malformed_shapes",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_missing_app_provenance",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_missing_archive",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_missing_owner_routes",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_shell_and_non_loopback_are_malformed",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_symlink_archive_is_not_followed",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_synthetic_cannot_be_sanctioned",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_tar_and_zip_digests_are_not_substituted",
+      "status": "pass"
+    }
+  ],
+  "requiredBase": "f5c2bfee403e6194eb2c7e3ab6f1021cd5bd2df3",
+  "headAtRecordTime": "f5c2bfee403e6194eb2c7e3ab6f1021cd5bd2df3",
+  "platform": "linux",
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "ownerArchiveVisibleOnThisVm": false,
+  "fragmentInvocationExit": 2,
+  "fragmentInvocationStdout": "{\"status\": \"malformed\", \"exitCode\": 2, \"label\": \"rejected-input\", \"packagedDemoProved\": false, \"evidenceDir\": \"verification/packaged-demo/evidence/synthetic/fragment-invocation\"}",
+  "proofCommand": "python verification/packaged-demo/test_harness.py --evidence-dir verification/packaged-demo/evidence/synthetic",
+  "harnessInvocation": "python verification/packaged-demo/harness.py --manifest MANIFEST.json --evidence-dir EVIDENCE_DIR",
+  "blockedChecks": [
+    "hosted-windows launch of the owner service archive",
+    "loopback listener evidence for the owner process on 127.0.0.1:19427",
+    "natural link discovery against the owner landing page",
+    "browser-render capture",
+    "owned-process cleanup of the owner listener",
+    "verification of the owner-supplied app commit against a local archive",
+    "measurement of either service digest; tar and hosted ZIP hashes are not interchangeable",
+    "app archive sha256, which the owner marked UNKNOWN",
+    "sanctioned local paths for the app ZIP and the service hosted ZIP",
+    "the owner Windows run, including its reported browser navigation; this unit did not run it and saw no EXE launch or screenshots"
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "role": "owner-supplied-expected-fragment",
+  "notAManifest": true,
+  "notMeasuredProof": true,
+  "source": "Owner-interface updates routed by Luminous. Values are expected inputs, not measurements made by this unit. No artifact was downloaded.",
+  "app": {
+    "commit": "69d1f9b2a7e5839880d948e2e289125c76ae89cb",
+    "artifact": {
+      "kind": "hosted-zip",
+      "run": "https://github.com/456C/scroll-studio/actions/runs/42746459364",
+      "url": "https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13730379871",
+      "sha256": null,
+      "sha256Status": "UNKNOWN",
+      "localPath": null,
+      "localPathStatus": "sanctioned-local-archive-path-pending"
+    }
+  },
+  "service": {
+    "commit": "91ba4894750d4e0d22a784c05b50ba89837451cf",
+    "artifacts": [
+      {
+        "kind": "coordinator-tar",
+        "path": "/workspace/service-handoff-91ba489/scroll-studio-service-91ba489.tar.gz",
+        "sha256": "a3677623d821a294644006e1a377474e92b067a65a78b0501f4cbd7d271edec6",
+        "note": "Earlier coordinator tar. Not the hosted ZIP. Do not substitute this digest for the ZIP."
+      },
+      {
+        "kind": "hosted-zip",
+        "run": "https://github.com/456C/scroll-studio/actions/runs/42746459364",
+        "url": "https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13731975216",
+        "claimedSha256": "b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873",
+        "claimedSha256MeasuredByThisUnit": false,
+        "localPath": null,
+        "localPathStatus": "sanctioned-local-archive-path-pending",
+        "note": "Distinct from the coordinator tar digest. Do not substitute either digest for the other."
+      }
+    ],
+    "extractedWorkingDirectory": "archive-root",
+    "argv": ["python", "-m", "prototypes.publishing.listener"],
+    "landingUrl": "http://127.0.0.1:19427/",
+    "routeDiscovery": "natural-links-from-landing",
+    "ownerRoutes": [
+      "/ss-publish/demo",
+      "/ss-publish/demo/paper-harbor",
+      "/ss-publish/demo/paper-harbor/the-fold",
+      "/ss-publish/demo/paper-harbor/margin-note"
+    ]
+  },
+  "ownerReportNotValidation": {
+    "windowsRun": "https://github.com/456C/scroll-studio/actions/runs/42746459364",
+    "reported": "Windows tests and browser navigation",
+    "notReported": "EXE launch and screenshots",
+    "claimedByThisUnit": false
+  },
+  "pending": [
+    "app.archive.sha256",
+    "app.archive.path sanctioned local path",
+    "service hosted ZIP sanctioned local path",
+    "complete manifest file written by the owner",
+    "sanctioned isolated hosted-Windows execution by Kaijin"
+  ]
+}

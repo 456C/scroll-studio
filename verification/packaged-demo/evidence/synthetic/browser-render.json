@@ -1,0 +1,13 @@
+{
+  "evidenceKind": "browser-render",
+  "label": "synthetic",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "blocked",
+    "outcome": "blocked",
+    "captured": false,
+    "engine": null,
+    "reason": "actual browser render was not run; synthetic HTTP is not browser evidence"
+  }
+}

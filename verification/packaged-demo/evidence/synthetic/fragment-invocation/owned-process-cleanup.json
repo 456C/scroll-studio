@@ -1,0 +1,16 @@
+{
+  "evidenceKind": "owned-process-cleanup",
+  "label": "rejected-input",
+  "packagedDemoProved": false,
+  "recordedAt": "2026-11-10T03:09:07Z",
+  "body": {
+    "status": "not-attempted",
+    "reason": "malformed",
+    "signaled": false,
+    "terminated": false,
+    "pidsSignaled": [],
+    "killedByPort": false,
+    "killedByImageName": false,
+    "stage": "manifest"
+  }
+}
