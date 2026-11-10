@@ -371,6 +371,47 @@ class ManifestTests(unittest.TestCase):
                 contract.validate_manifest(document)
             self.assertEqual(caught.exception.code, "malformed")
 
+    def test_archive_read_keeps_ctrl_z_and_nontext_bytes(self) -> None:
+        payload = bytes((0x50, 0x4B, 0x03, 0x04, 0x1A, 0x00, 0xFF, 0x0D, 0x0A, 0x1A, 0x7F))
+        with tempfile.TemporaryDirectory() as root:
+            document = _document(root, service_bytes=payload)
+            manifest = contract.validate_manifest(document)
+            checked = contract.verify_archives(manifest)
+            service = checked[1]
+            self.assertEqual(service.actual_size, len(payload))
+            self.assertEqual(service.actual_sha256, hashlib.sha256(payload).hexdigest())
+            self.assertFalse(service.as_evidence()["siblingHashed"])
+            path = document["provenance"]["service"]["validated"]["path"]  # type: ignore[index]
+            digest, size = contract.hash_file(path)
+            self.assertEqual((digest, size), (hashlib.sha256(payload).hexdigest(), len(payload)))
+
+    def test_binary_mode_flag_follows_the_interpreter(self) -> None:
+        if hasattr(os, "O_BINARY"):
+            self.assertTrue(contract.binary_io_flags(os.O_RDONLY) & os.O_BINARY)
+        else:
+            self.assertEqual(contract.binary_io_flags(os.O_RDONLY), os.O_RDONLY)
+        with mock.patch.object(contract.os, "O_BINARY", 0x8000, create=True):
+            flagged = contract.binary_io_flags(os.O_RDONLY)
+            self.assertEqual(flagged & 0x8000, 0x8000)
+        with tempfile.TemporaryDirectory() as root:
+            payload = b"\x1aPK\x00\xff"
+            path = os.path.join(root, "bytes.bin")
+            with open(path, "wb") as handle:
+                handle.write(payload)
+            seen: list[int] = []
+            real_open = contract.os.open
+
+            def spy(opened: str, flags: int, *args: object, **kwargs: object) -> int:
+                seen.append(flags)
+                return real_open(opened, flags, *args, **kwargs)
+
+            with mock.patch.object(contract.os, "open", spy):
+                contract.hash_file(path)
+            expected = contract.binary_io_flags(os.O_RDONLY)
+            if hasattr(os, "O_NOFOLLOW"):
+                expected |= os.O_NOFOLLOW
+            self.assertEqual(seen, [expected])
+
     def test_hash_mismatch_preserves_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             payload = b"synthetic-archive-bytes"
@@ -867,6 +908,7 @@ def record_evidence(dest: str, tests_run: int, failed: int, events: list[dict[st
             "measurement of owner-reported wrapper and inner digests; no local file was hashed",
             "sanctioned local paths for the app ZIP and the service hosted ZIP",
             "the owner Windows run, including its reported browser navigation; this unit did not run it and saw no EXE launch or screenshots",
+            "hosted Windows recheck of binary archive reads; the reported exit 4 artifact was not downloaded",
         ],
     }
     with open(os.path.join(dest, "index.json"), "w", encoding="utf-8") as handle:

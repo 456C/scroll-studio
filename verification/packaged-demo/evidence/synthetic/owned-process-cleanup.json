@@ -2,11 +2,11 @@
   "evidenceKind": "owned-process-cleanup",
   "label": "synthetic",
   "packagedDemoProved": false,
-  "recordedAt": "2026-11-10T03:12:37Z",
+  "recordedAt": "2026-11-10T03:46:53Z",
   "body": {
     "status": "synthetic",
     "tamperedIdentitySignaled": false,
-    "ownedPid": 2461,
+    "ownedPid": 2650,
     "ownedSignaled": true,
     "ownedTerminated": true,
     "aliveAfterTamper": true,

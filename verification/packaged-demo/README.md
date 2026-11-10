@@ -24,7 +24,7 @@ python harness.py --manifest MANIFEST.json --evidence-dir EVIDENCE_DIR
 | --- | --- |
 | 2 | Malformed manifest |
 | 3 | Provenance missing, artifact missing, or unsafe path |
-| 4 | Selected wrapper or inner bytes differ in size or SHA256 |
+| 4 | Selected wrapper or inner bytes differ in size or SHA256. A short read also lands here, including a Windows text-mode stop at byte 0x1A. |
 | 5 | Loopback port occupied; occupant was not signaled |
 | 6 | Acceptance blocked, including every run of this unit on Linux |
 | 7 | Evidence path already had files; nothing was written |

@@ -4,7 +4,7 @@
   "packagedDemoAcceptance": "BLOCKED",
   "unitPassIsNotPackagedDemoProof": true,
   "unitTestsFailed": 0,
-  "unitTestsRun": 31,
+  "unitTestsRun": 33,
   "unitResults": [
     {
       "name": "__main__.CommandTests.test_cli_rejects_fragment",
@@ -79,6 +79,14 @@
       "status": "pass"
     },
     {
+      "name": "__main__.ManifestTests.test_archive_read_keeps_ctrl_z_and_nontext_bytes",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_binary_mode_flag_follows_the_interpreter",
+      "status": "pass"
+    },
+    {
       "name": "__main__.ManifestTests.test_docs_prefix_is_not_a_frozen_pin",
       "status": "pass"
     },
@@ -132,7 +140,7 @@
     }
   ],
   "requiredBase": "f5c2bfee403e6194eb2c7e3ab6f1021cd5bd2df3",
-  "headAtRecordTime": "13784c53efa71191f558dfc9ef1941714c8966dc",
+  "headAtRecordTime": "e4ba7b3172a3a6072facc41bd37805b3a97b9b6f",
   "platform": "linux",
   "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
   "ownerArchiveVisibleOnThisVm": false,
@@ -150,6 +158,7 @@
     "measurement of either service digest; tar and hosted ZIP hashes are not interchangeable",
     "measurement of owner-reported wrapper and inner digests; no local file was hashed",
     "sanctioned local paths for the app ZIP and the service hosted ZIP",
-    "the owner Windows run, including its reported browser navigation; this unit did not run it and saw no EXE launch or screenshots"
+    "the owner Windows run, including its reported browser navigation; this unit did not run it and saw no EXE launch or screenshots",
+    "hosted Windows recheck of binary archive reads; the reported exit 4 artifact was not downloaded"
   ]
 }

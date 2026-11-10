@@ -130,9 +130,21 @@ class Manifest:
     sanctioned: bool
 
 
+def binary_io_flags(base: int) -> int:
+    """Include Windows binary mode when this interpreter defines it.
+
+    A text-mode read stops at byte 0x1A and translates CRLF, while fstat still
+    reports the on-disk size. hash_file then raises size-mismatch, "archive
+    changed while reading". POSIX has no O_BINARY and reads are raw bytes.
+    """
+    if hasattr(os, "O_BINARY"):
+        return base | os.O_BINARY
+    return base
+
+
 def load_manifest_document(path: str) -> object:
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, binary_io_flags(os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
     except OSError as exc:
         raise ManifestError("malformed", "manifest path could not be opened") from exc
     try:
@@ -237,7 +249,7 @@ def inspect_working_directory(path: str, archive_paths: tuple[str, ...]) -> None
 
 def hash_file(path: str) -> tuple[str, int]:
     _assert_regular_file(path)
-    flags = os.O_RDONLY
+    flags = binary_io_flags(os.O_RDONLY)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

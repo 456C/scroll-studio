@@ -47,6 +47,8 @@ Browser pixels stay a separate evidence file. This unit does not launch a browse
 
 `run()` hashes and validates first. It then refuses launch unless the manifest is non-synthetic, `environment.sanctioned` is true, `environment.kind` is `isolated-hosted-windows`, and the process platform is `win32`. On this cloud Linux host the gate stays closed, so the real listener argv is not executed. Synthetic tests call the port and cleanup primitives directly and label the records `synthetic`.
 
+Archive and manifest bytes are opened with `O_BINARY` when the interpreter defines it. Windows text mode would stop a read at byte `0x1A` and translate CRLF, so the counted length would disagree with `fstat` and `hash_file` would report that the archive changed. POSIX reads are already raw bytes. Kaijin reported that exit on hosted Windows; the artifact was not retrieved here, and this host did not re-run that file.
+
 The checked-in fragment records the owner-reported wrapper and inner sizes and digests for both artifacts, plus the earlier coordinator tar as a separate service identity. It is not a manifest. No local path is invented for the inner archives, the coordinator path is not treated as a file on this VM, and none of those digests were measured here. The owner Windows run is an owner report, not validation by this unit.
 
 Exit 0 is reserved for a future accepted run that includes a real browser capture. This unit does not return 0.

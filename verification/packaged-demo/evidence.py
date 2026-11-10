@@ -6,6 +6,8 @@ import json
 import os
 from datetime import datetime, timezone
 
+import contract
+
 FILES = {
     "http": "http.json",
     "process-listener": "process-listener.json",
@@ -47,7 +49,7 @@ def write_evidence(path: str, *, label: str, records: dict[str, dict[str, object
         }
         target = os.path.join(path, filename)
         data = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
-        fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(target, contract.binary_io_flags(os.O_CREAT | os.O_EXCL | os.O_WRONLY), 0o644)
         try:
             os.write(fd, data)
         finally:
