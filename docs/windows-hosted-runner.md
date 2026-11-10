@@ -100,7 +100,7 @@ test_phone_viewport_screenshot
 
 ## Portable app
 
-Download the Actions artifact whose name starts with `scroll-studio-0.13.2-` and ends with `-windows-portable` from the same run. Unzip it and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job builds that exe and does not launch it.
+Download artifact 13730379871 from the proof run while signed in. The download is 5760452 bytes, sha256 `09d55a859c6e8bc8603c934b672d8ba07458aae8c8a4f7c880c031e65729e4d1`. That download is a zip whose one member is `scroll-studio-0.13.2-69d1f9b-windows-portable.zip`, 5760240 bytes, sha256 `33889c6d99fba1599b23a9e0ea07d5b1eb1275a216ee2ad419da811a9861d337`. Unzip that member and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job built that exe and did not launch it.
 
 ## Hosted proof
 
@@ -110,8 +110,8 @@ Run https://github.com/456C/scroll-studio/actions/runs/42746459364 at desktop `6
 - HTTP: `GET /` returned `HTTP/1.1 200 OK`. Each `panel-fold.jpg`, `panel-hull.jpg`, `panel-sill.jpg`, and `panel-puddle.jpg` returned `HTTP/1.1 200 OK` and `image/jpeg`. `GET /ss-publish/browser/series` and `GET /ss-publish/browser/operator` returned `HTTP/1.1 401 Unauthorized`.
 - Render: Windows Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` showed Enter the synthetic demo, entered it, opened Paper Harbor, showed The Fold and four pictures, showed What the Margin Kept, used Previous back to The Fold, and used Back to the series. The same browser then completed the existing creator route: affirm, preview paragraph, reader paragraph, and unavailable after withdraw.
 - Selected tests, including `test_demo_catalogue_is_separate_from_creator_state`: `Ran 31 tests in 7.723s` / `OK`.
-- Service package sha256 `b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873`. Uploaded artifact `scroll-studio-service-91ba489`, id 13731975216, 13232992 bytes: https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13731975216
-- Portable zip `scroll-studio-0.13.2-69d1f9b-windows-portable`, id 13730379871, 5760452 bytes: https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13730379871
+- Service inner zip `scroll-studio-service-91ba489.zip`, 13260377 bytes, sha256 `b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873`. The GitHub download of artifact 13731975216 is the wrapper around that zip: 13232992 bytes, sha256 `c0e638ddceda13d4540002882ccaf416b304deac66e809f822346dd653dc9c89`. https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13731975216
+- App download of artifact 13730379871 is 5760452 bytes, sha256 `09d55a859c6e8bc8603c934b672d8ba07458aae8c8a4f7c880c031e65729e4d1`. Its inner member `scroll-studio-0.13.2-69d1f9b-windows-portable.zip` is 5760240 bytes, sha256 `33889c6d99fba1599b23a9e0ea07d5b1eb1275a216ee2ad419da811a9861d337`. https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13730379871
 - `Scroll Studio.exe` was not launched. This run saved no Windows screenshot.
 
 ## Earlier hosted pair
