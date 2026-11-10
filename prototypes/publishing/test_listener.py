@@ -1689,7 +1689,8 @@ class StaticToonsTests(unittest.TestCase):
             self.assertNotIn("localhost", text)
             self.assertNotIn("127.0.0.1", text)
             self.assertNotIn("ss-publish", text)
-            self.assertIn("Not a real publication.", text)
+            self.assertIn("Prototype. Synthetic sample. Not a real publication.", text)
+            self.assertNotIn("Local prototype", text)
             for match in re_attr(text):
                 ref = match
                 if ref.startswith("#"):

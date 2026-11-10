@@ -14,7 +14,7 @@ SITE_LINKS = (
     ("/#download", "Download"),
 )
 APPROVED_SITE = {href for href, _label in SITE_LINKS} | {"/privacy.html"}
-NOTICE = "Local prototype. Synthetic demo. Not a real publication."
+NOTICE = "Prototype. Synthetic sample. Not a real publication."
 
 
 def export_toons(out: Path, folder: str = "toons") -> Path:

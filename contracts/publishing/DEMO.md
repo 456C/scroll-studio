@@ -20,4 +20,6 @@ The first homepage led with a story headline and then listed what the page was n
 
 The four JPEGs were created for this synthetic demo. This note does not claim a legal clearance, a license review, or a right to use them anywhere else.
 
+The listener homepage keeps the notice “Local prototype. Synthetic demo. Not a real publication.” The public static export uses “Prototype. Synthetic sample. Not a real publication.” and does not say Local.
+
 Keyboard and narrow checks use the existing Linux Chrome helper (`google-chrome`, `os.killpg`). They are not Kaijin’s Windows real-Chrome path. Do not treat a skip of `test_demo_reading_in_chrome` or `test_demo_keyboard_and_narrow_layout` as browser proof on Windows. The same exclusion already covers `test_chrome_sign_in_sends_service_origin` and `test_phone_viewport_screenshot`.
