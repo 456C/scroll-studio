@@ -2,7 +2,13 @@
 
 This is the local procedure. It is not a physical Windows desktop test of the egui window. The hosted runner executed `scripts/windows-demo.ps1` and did not start `Scroll Studio.exe`.
 
-The package this guide starts is service pin `66582c2fe38dbf85ce7e8ac7300c5fa5b74f7e0b`. The desktop SHA is the commit whose hosted run checks that pin out. Start route: http://127.0.0.1:19427/. The landing heading is "Read the sample comic and prose". Choose **Enter the synthetic demo**. The story pictures stay off that first page.
+The package this guide starts:
+
+- Tested desktop: `a2729199288945f98008084df1525d51fdc5531d`
+- Service pin: `66582c2fe38dbf85ce7e8ac7300c5fa5b74f7e0b`
+- Start route: http://127.0.0.1:19427/
+
+The landing heading is "Read the sample comic and prose". Choose **Enter the synthetic demo**. The story pictures stay off that first page. A later documentation commit that records this run is not a new tested desktop SHA.
 
 The frozen earlier pair remains desktop `69d1f9b2a7e5839880d948e2e289125c76ae89cb` and service `91ba4894750d4e0d22a784c05b50ba89837451cf`, run https://github.com/456C/scroll-studio/actions/runs/42746459364. Its checksums below are not replaced by this pin.
 
@@ -101,6 +107,19 @@ test_phone_viewport_screenshot
 ## Portable app
 
 The hosted run that uploads `scroll-studio-service-66582c2` also uploads the portable zip built from that same desktop commit. Use that zip with this service pin. Do not pair it with the frozen 91ba489 service archive. Unzip it and start `Scroll Studio.exe` only on a machine where you can see the window. The hosted job builds the exe and does not launch it.
+
+## Hosted proof of 66582c2
+
+Run https://github.com/456C/scroll-studio/actions/runs/42748295370 at desktop `a2729199288945f98008084df1525d51fdc5531d`.
+
+- Process: listener pid 5236, working directory `D:\a\_temp\demo-work\extracted`, command `python -m prototypes.publishing.listener`.
+- HTTP: `GET /` returned `HTTP/1.1 200 OK` and the sample heading. The four panel JPEGs returned `HTTP/1.1 200 OK` and `image/jpeg`. Unsigned series and operator returned `HTTP/1.1 401 Unauthorized`.
+- Keyboard and render: Windows Chrome at 1280 by 800 showed the landing, reached **Enter the synthetic demo** with Tab, and opened it with Enter. It then showed The Fold and What the Margin Kept. The same three pages were captured again at 390 by 844. Previous returned to The Fold. The creator route then completed affirm, preview, reader, and unavailable after withdraw.
+- Selected tests, including `test_demo_catalogue_is_separate_from_creator_state`: `Ran 31 tests in 8.458s` / `OK`. The Linux Chrome tests were not run.
+- Service inner zip `scroll-studio-service-66582c2.zip`, 13388865 bytes, sha256 `35af8cb82c73c18518289f5c62e5d10cb15cd304d17e38c0f211419c2b63ba26`. GitHub download of artifact 13731678374 is the wrapper: 13361032 bytes, sha256 `f505253d760ae6ef844d8024e9e5f893bfd2a17a0edd6ea2d06990fc14617d08`. https://github.com/456C/scroll-studio/actions/runs/42748295370/artifacts/13731678374
+- App download of artifact 13732187660 is 5760452 bytes, sha256 `265acfae74614641352111b767ac175bddb5082a7c7ff21840a7211a00504e9d`. Inner member `scroll-studio-0.13.2-a272919-windows-portable.zip` is 5760240 bytes, sha256 `32251e13776e6b4da6bdea73d6a4a8d057c731901983c098c6c738ba0850b3db`. https://github.com/456C/scroll-studio/actions/runs/42748295370/artifacts/13732187660
+- Screenshot download of artifact 13733100062 is 984160 bytes, sha256 `cba15b89a511abe63f503c593a7916f1bdd2bce4bd2c95e7435aed6718f3bfdc`. https://github.com/456C/scroll-studio/actions/runs/42748295370/artifacts/13733100062
+- `Scroll Studio.exe` was not launched. The comic screenshot is the browser viewport, so it shows the heading and the first panel; the script also required four loaded pictures.
 
 ## Frozen 91ba489 proof
 
