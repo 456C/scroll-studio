@@ -2,39 +2,54 @@
   "role": "owner-supplied-expected-fragment",
   "notAManifest": true,
   "notMeasuredProof": true,
-  "source": "Owner-interface updates routed by Luminous. Values are expected inputs, not measurements made by this unit. No artifact was downloaded.",
+  "measuredByThisUnit": false,
+  "source": "Owner-reported digest clarification routed by Luminous. Sizes and SHA256 values were not measured by this unit. No file was transferred or opened.",
+  "frozenPair": {
+    "app": "69d1f9b2a7e5839880d948e2e289125c76ae89cb",
+    "service": "91ba4894750d4e0d22a784c05b50ba89837451cf",
+    "not": "A docs commit beginning 6815aeb is not the app pin or the service pin."
+  },
   "app": {
     "commit": "69d1f9b2a7e5839880d948e2e289125c76ae89cb",
-    "artifact": {
-      "kind": "hosted-zip",
-      "run": "https://github.com/456C/scroll-studio/actions/runs/42746459364",
-      "url": "https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13730379871",
-      "sha256": null,
-      "sha256Status": "UNKNOWN",
+    "artifact": "13730379871",
+    "wrapper": {
+      "size": 5760452,
+      "sha256": "09d55a859c6e8bc8603c934b672d8ba07458aae8c8a4f7c880c031e65729e4d1",
+      "ownerReportedPath": "/cursor/stores/user/grok-bot/agents/5dbc5fbf-04bd-4c97-8dfd-c0e764b5e800/assets/01M71PWKV4XN5T0YVA63PK6E21.zip",
+      "ownerReportedSiblingManifest": "/cursor/stores/user/grok-bot/agents/5dbc5fbf-04bd-4c97-8dfd-c0e764b5e800/assets/01M71PWKV44Z3AQ9S3RK7QDM7N.txt",
+      "ownerReportedPathHost": "coordinator-shared-box",
       "localPath": null,
-      "localPathStatus": "sanctioned-local-archive-path-pending"
+      "measuredByThisUnit": false
+    },
+    "inner": {
+      "kind": "portable-zip",
+      "size": 5760240,
+      "sha256": "33889c6d99fba1599b23a9e0ea07d5b1eb1275a216ee2ad419da811a9861d337",
+      "localPath": null,
+      "measuredByThisUnit": false
     }
   },
   "service": {
     "commit": "91ba4894750d4e0d22a784c05b50ba89837451cf",
-    "artifacts": [
-      {
-        "kind": "coordinator-tar",
-        "path": "/workspace/service-handoff-91ba489/scroll-studio-service-91ba489.tar.gz",
-        "sha256": "a3677623d821a294644006e1a377474e92b067a65a78b0501f4cbd7d271edec6",
-        "note": "Earlier coordinator tar. Not the hosted ZIP. Do not substitute this digest for the ZIP."
-      },
-      {
-        "kind": "hosted-zip",
-        "run": "https://github.com/456C/scroll-studio/actions/runs/42746459364",
-        "url": "https://github.com/456C/scroll-studio/actions/runs/42746459364/artifacts/13731975216",
-        "claimedSha256": "b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873",
-        "claimedSha256MeasuredByThisUnit": false,
-        "localPath": null,
-        "localPathStatus": "sanctioned-local-archive-path-pending",
-        "note": "Distinct from the coordinator tar digest. Do not substitute either digest for the other."
-      }
-    ],
+    "artifact": "13731975216",
+    "coordinatorTar": {
+      "path": "/workspace/service-handoff-91ba489/scroll-studio-service-91ba489.tar.gz",
+      "sha256": "a3677623d821a294644006e1a377474e92b067a65a78b0501f4cbd7d271edec6",
+      "note": "Earlier coordinator tar. Distinct from artifact 13731975216 wrapper and inner. Not a substitute for either."
+    },
+    "wrapper": {
+      "size": 13232992,
+      "sha256": "c0e638ddceda13d4540002882ccaf416b304deac66e809f822346dd653dc9c89",
+      "localPath": null,
+      "measuredByThisUnit": false
+    },
+    "inner": {
+      "kind": "zip",
+      "size": 13260377,
+      "sha256": "b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873",
+      "localPath": null,
+      "measuredByThisUnit": false
+    },
     "extractedWorkingDirectory": "archive-root",
     "argv": ["python", "-m", "prototypes.publishing.listener"],
     "landingUrl": "http://127.0.0.1:19427/",
@@ -53,10 +68,8 @@
     "claimedByThisUnit": false
   },
   "pending": [
-    "app.archive.sha256",
-    "app.archive.path sanctioned local path",
-    "service hosted ZIP sanctioned local path",
-    "complete manifest file written by the owner",
+    "validated local path for the exact bytes to hash",
+    "complete manifest naming wrapper or inner as validated.bytes",
     "sanctioned isolated hosted-Windows execution by Kaijin"
   ]
 }

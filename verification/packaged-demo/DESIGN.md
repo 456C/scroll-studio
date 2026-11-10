@@ -9,7 +9,7 @@ Read-only grounding, then a lane-local design. This directory does not replace o
 - `src/publish_wire.rs` is the desktop loopback client (`127.0.0.1`, port `19427`). This harness does not link to it.
 - `docs/windows-hosted-runner.md` is the owner's manual procedure. Pins in that document are not inputs to this harness.
 
-Owner-supplied expected values from the Luminous-routed update are stored only in `fixtures/owner-expected-fragment.json`. They are not a manifest and were not measured here. The service archive path was not opened. App commit, app archive path, and app archive SHA256 are still absent, so no complete manifest is checked in.
+Owner-supplied expected values are stored only in `fixtures/owner-expected-fragment.json`. They are not a manifest and were not measured here. No coordinator file was opened, and no local path was invented for a missing archive.
 
 ## Sketch A — manifest gate only
 
@@ -43,11 +43,11 @@ The supervisor:
 
 Browser pixels stay a separate evidence file. This unit does not launch a browser and cannot mark that file captured. HTTP is not treated as browser-render proof.
 
-`routes.paths` is the owner-supplied route list. Natural discovery still parses the landing response when a fetch is allowed. The supplied paths are expectations, not a crawl and not evidence that those URLs were served. Each archive has one path and one SHA256. A second digest for a different artifact is not a fallback.
+`routes.paths` is the owner-supplied route list. Natural discovery still parses the landing response when a fetch is allowed. The supplied paths are expectations, not a crawl and not evidence that those URLs were served. Each component declares distinct `wrapper` and `inner` byte identities. `validated.bytes` selects which identity the path's bytes are checked against. The sibling identity is stored on the evidence record and is not hashed.
 
 `run()` hashes and validates first. It then refuses launch unless the manifest is non-synthetic, `environment.sanctioned` is true, `environment.kind` is `isolated-hosted-windows`, and the process platform is `win32`. On this cloud Linux host the gate stays closed, so the real listener argv is not executed. Synthetic tests call the port and cleanup primitives directly and label the records `synthetic`.
 
-The checked-in fragment records the owner-supplied app commit, two distinct service digests, and the owner route list. It is not a manifest: the app SHA256 is unknown, local ZIP paths are pending, and neither digest was measured here. The owner Windows run is recorded as an owner report, not as validation by this unit.
+The checked-in fragment records the owner-reported wrapper and inner sizes and digests for both artifacts, plus the earlier coordinator tar as a separate service identity. It is not a manifest. No local path is invented for the inner archives, the coordinator path is not treated as a file on this VM, and none of those digests were measured here. The owner Windows run is an owner report, not validation by this unit.
 
 Exit 0 is reserved for a future accepted run that includes a real browser capture. This unit does not return 0.
 

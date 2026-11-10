@@ -46,22 +46,72 @@ _MAX_MANIFEST_BYTES = 1_000_000
 
 
 class ManifestError(Exception):
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(self, code: str, detail: str, checked: tuple["ByteCheck", ...] = ()) -> None:
         super().__init__(detail)
         self.code = code
         self.detail = detail
+        self.checked = checked
 
 
 @dataclass(frozen=True)
-class ArchivePin:
-    path: str
+class ByteIdentity:
+    size: int
     sha256: str
+
+
+@dataclass(frozen=True)
+class ValidatedBytes:
+    layer: str
+    path: str
 
 
 @dataclass(frozen=True)
 class ComponentPin:
     commit: str
-    archive: ArchivePin
+    wrapper: ByteIdentity
+    inner: ByteIdentity
+    validated: ValidatedBytes
+
+    def selected(self) -> ByteIdentity:
+        if self.validated.layer == "wrapper":
+            return self.wrapper
+        return self.inner
+
+    def sibling(self) -> tuple[str, ByteIdentity]:
+        if self.validated.layer == "wrapper":
+            return "inner", self.inner
+        return "wrapper", self.wrapper
+
+
+@dataclass(frozen=True)
+class ByteCheck:
+    """Bytes actually read for one component. The sibling layer is not hashed."""
+
+    component: str
+    validated_bytes: str
+    path: str
+    declared_size: int
+    actual_size: int
+    declared_sha256: str
+    actual_sha256: str
+    sibling_layer: str
+    sibling_size: int
+    sibling_sha256: str
+
+    def as_evidence(self) -> dict[str, object]:
+        return {
+            "component": self.component,
+            "validatedBytes": self.validated_bytes,
+            "path": self.path,
+            "declaredSize": self.declared_size,
+            "actualSize": self.actual_size,
+            "declaredSha256": self.declared_sha256,
+            "actualSha256": self.actual_sha256,
+            "siblingLayer": self.sibling_layer,
+            "siblingSize": self.sibling_size,
+            "siblingSha256": self.sibling_sha256,
+            "siblingHashed": False,
+        }
 
 
 @dataclass(frozen=True)
@@ -164,9 +214,14 @@ def validate_manifest(document: object) -> Manifest:
     )
 
 
-def verify_archives(manifest: Manifest) -> None:
-    _verify_one("app", manifest.app.archive)
-    _verify_one("service", manifest.service.archive)
+def verify_archives(manifest: Manifest) -> tuple[ByteCheck, ...]:
+    checked: list[ByteCheck] = []
+    for label, component in (("app", manifest.app), ("service", manifest.service)):
+        try:
+            checked.append(_verify_one(label, component))
+        except ManifestError as exc:
+            raise ManifestError(exc.code, exc.detail, tuple(checked) + exc.checked) from exc
+    return tuple(checked)
 
 
 def inspect_working_directory(path: str, archive_paths: tuple[str, ...]) -> None:
@@ -180,7 +235,7 @@ def inspect_working_directory(path: str, archive_paths: tuple[str, ...]) -> None
             raise ManifestError("unsafe-path", "working directory is an archive path")
 
 
-def hash_file(path: str) -> str:
+def hash_file(path: str) -> tuple[str, int]:
     _assert_regular_file(path)
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -190,29 +245,56 @@ def hash_file(path: str) -> str:
     except OSError as exc:
         raise ManifestError("unsafe-path", "archive path could not be opened") from exc
     digest = hashlib.sha256()
+    total = 0
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
             raise ManifestError("unsafe-path", "archive path is not a regular file")
         while True:
             block = os.read(fd, 1024 * 1024)
             if not block:
                 break
             digest.update(block)
+            total += len(block)
+        if os.fstat(fd).st_size != total:
+            raise ManifestError("size-mismatch", "archive changed while reading")
     finally:
         os.close(fd)
-    return digest.hexdigest()
+    return digest.hexdigest(), total
 
 
-def _verify_one(label: str, archive: ArchivePin) -> None:
+def _verify_one(label: str, component: ComponentPin) -> ByteCheck:
+    selected = component.selected()
+    sibling_layer, sibling = component.sibling()
     try:
-        actual = hash_file(archive.path)
+        actual_sha, actual_size = hash_file(component.validated.path)
     except ManifestError:
         raise
-    if not hmac.compare_digest(actual, archive.sha256):
+    check = ByteCheck(
+        component=label,
+        validated_bytes=component.validated.layer,
+        path=component.validated.path,
+        declared_size=selected.size,
+        actual_size=actual_size,
+        declared_sha256=selected.sha256,
+        actual_sha256=actual_sha,
+        sibling_layer=sibling_layer,
+        sibling_size=sibling.size,
+        sibling_sha256=sibling.sha256,
+    )
+    if actual_size != selected.size:
+        raise ManifestError(
+            "size-mismatch",
+            f"{label} {component.validated.layer} size {actual_size} != {selected.size}; {sibling_layer} was not hashed",
+            (check,),
+        )
+    if not hmac.compare_digest(actual_sha, selected.sha256):
         raise ManifestError(
             "hash-mismatch",
-            f"{label} archive sha256 {actual} != {archive.sha256}",
+            f"{label} {component.validated.layer} sha256 {actual_sha} != {selected.sha256}; {sibling_layer} was not hashed",
+            (check,),
         )
+    return check
 
 
 def _assert_regular_file(path: str) -> None:
@@ -236,7 +318,20 @@ def _object(value: object, keys: set[str], label: str) -> dict[str, object]:
         raise ManifestError("malformed", f"{label} must be an object")
     present = set(value)
     missing = keys - present
-    if missing & {"app", "service", "commit", "archive", "path", "sha256", "workingDirectory", "paths"}:
+    if missing & {
+        "app",
+        "service",
+        "commit",
+        "wrapper",
+        "inner",
+        "validated",
+        "path",
+        "sha256",
+        "size",
+        "bytes",
+        "workingDirectory",
+        "paths",
+    }:
         raise ManifestError("missing-provenance", f"{label} is missing exact provenance")
     if present != keys:
         raise ManifestError("malformed", f"{label} keys do not match the contract")
@@ -244,15 +339,35 @@ def _object(value: object, keys: set[str], label: str) -> dict[str, object]:
 
 
 def _component(value: object, label: str) -> ComponentPin:
-    body = _object(value, {"commit", "archive"}, label)
+    body = _object(value, {"commit", "wrapper", "inner", "validated"}, label)
     commit = body["commit"]
     if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
         raise ManifestError("missing-provenance", f"{label} commit is not 40 lowercase hex characters")
-    archive = _object(body["archive"], {"path", "sha256"}, f"{label} archive")
-    digest = archive["sha256"]
+    wrapper = _byte_identity(body["wrapper"], f"{label} wrapper")
+    inner = _byte_identity(body["inner"], f"{label} inner")
+    if wrapper.sha256 == inner.sha256 or wrapper.size == inner.size:
+        raise ManifestError("malformed", f"{label} wrapper and inner must be distinct byte identities")
+    validated = _validated(body["validated"], label)
+    return ComponentPin(commit=commit, wrapper=wrapper, inner=inner, validated=validated)
+
+
+def _byte_identity(value: object, label: str) -> ByteIdentity:
+    body = _object(value, {"size", "sha256"}, label)
+    size = body["size"]
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise ManifestError("malformed", f"{label} size must be a non-negative integer")
+    digest = body["sha256"]
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
-        raise ManifestError("missing-provenance", f"{label} archive sha256 is not 64 lowercase hex characters")
-    return ComponentPin(commit=commit, archive=ArchivePin(path=_absolute(archive["path"], f"{label} archive path"), sha256=digest))
+        raise ManifestError("missing-provenance", f"{label} sha256 is not 64 lowercase hex characters")
+    return ByteIdentity(size=size, sha256=digest)
+
+
+def _validated(value: object, label: str) -> ValidatedBytes:
+    body = _object(value, {"bytes", "path"}, f"{label} validated")
+    layer = body["bytes"]
+    if layer not in {"wrapper", "inner"}:
+        raise ManifestError("malformed", f"{label} validated.bytes must be wrapper or inner")
+    return ValidatedBytes(layer=str(layer), path=_absolute(body["path"], f"{label} validated path"))
 
 
 def _argv(value: object) -> tuple[str, ...]:

@@ -28,7 +28,21 @@ FRAGMENT = os.path.join(HERE, "fixtures", "owner-expected-fragment.json")
 OWNER_COMMIT = "91ba4894750d4e0d22a784c05b50ba89837451cf"
 APP_COMMIT = "69d1f9b2a7e5839880d948e2e289125c76ae89cb"
 TAR_SHA = "a3677623d821a294644006e1a377474e92b067a65a78b0501f4cbd7d271edec6"
-ZIP_SHA = "b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873"
+APP_WRAPPER_SHA = "09d55a859c6e8bc8603c934b672d8ba07458aae8c8a4f7c880c031e65729e4d1"
+APP_WRAPPER_SIZE = 5760452
+APP_INNER_SHA = "33889c6d99fba1599b23a9e0ea07d5b1eb1275a216ee2ad419da811a9861d337"
+APP_INNER_SIZE = 5760240
+SERVICE_WRAPPER_SHA = "c0e638ddceda13d4540002882ccaf416b304deac66e809f822346dd653dc9c89"
+SERVICE_WRAPPER_SIZE = 13232992
+SERVICE_INNER_SHA = "b61d17fb307320a229475fdaeb970e9b0d9a72282f77200ace2d25d591882873"
+SERVICE_INNER_SIZE = 13260377
+OWNER_DIGESTS = (
+    TAR_SHA,
+    APP_WRAPPER_SHA,
+    APP_INNER_SHA,
+    SERVICE_WRAPPER_SHA,
+    SERVICE_INNER_SHA,
+)
 OWNER_PATH = "/workspace/service-handoff-91ba489/scroll-studio-service-91ba489.tar.gz"
 OWNER_ROUTES = (
     "/ss-publish/demo",
@@ -51,6 +65,21 @@ def _listen_ephemeral() -> socket.socket:
         sock.close()
 
 
+def _identity(payload: bytes) -> dict[str, object]:
+    return {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def _component(commit: str, payload: bytes, path: str, layer: str = "wrapper") -> dict[str, object]:
+    other = payload + b"#"
+    wrapper_payload, inner_payload = (payload, other) if layer == "wrapper" else (other, payload)
+    return {
+        "commit": commit,
+        "wrapper": _identity(wrapper_payload),
+        "inner": _identity(inner_payload),
+        "validated": {"bytes": layer, "path": path},
+    }
+
+
 def _document(root: str, **overrides: object) -> dict[str, object]:
     app_bytes = overrides.pop("app_bytes", b"synthetic-app")
     service_bytes = overrides.pop("service_bytes", b"synthetic-service")
@@ -68,20 +97,8 @@ def _document(root: str, **overrides: object) -> dict[str, object]:
         "contract": contract.CONTRACT,
         "synthetic": True,
         "provenance": {
-            "app": {
-                "commit": "a" * 40,
-                "archive": {
-                    "path": app_path,
-                    "sha256": hashlib.sha256(app_bytes).hexdigest(),  # type: ignore[arg-type]
-                },
-            },
-            "service": {
-                "commit": "b" * 40,
-                "archive": {
-                    "path": service_path,
-                    "sha256": hashlib.sha256(service_bytes).hexdigest(),  # type: ignore[arg-type]
-                },
-            },
+            "app": _component("a" * 40, app_bytes, app_path),  # type: ignore[arg-type]
+            "service": _component("b" * 40, service_bytes, service_path),  # type: ignore[arg-type]
         },
         "lifecycle": {
             "workingDirectory": work,
@@ -113,29 +130,34 @@ class FragmentTests(unittest.TestCase):
             body = json.load(handle)
         self.assertTrue(body["notAManifest"])
         self.assertTrue(body["notMeasuredProof"])
-        self.assertEqual(body["app"]["commit"], APP_COMMIT)
-        self.assertEqual(len(APP_COMMIT), 40)
-        self.assertIsNone(body["app"]["artifact"]["sha256"])
-        self.assertEqual(body["app"]["artifact"]["sha256Status"], "UNKNOWN")
-        self.assertIsNone(body["app"]["artifact"]["localPath"])
-        self.assertEqual(body["service"]["commit"], OWNER_COMMIT)
-        self.assertEqual(len(OWNER_COMMIT), 40)
-        artifacts = {item["kind"]: item for item in body["service"]["artifacts"]}
-        self.assertEqual(artifacts["coordinator-tar"]["path"], OWNER_PATH)
-        self.assertEqual(artifacts["coordinator-tar"]["sha256"], TAR_SHA)
-        self.assertEqual(artifacts["hosted-zip"]["claimedSha256"], ZIP_SHA)
-        self.assertFalse(artifacts["hosted-zip"]["claimedSha256MeasuredByThisUnit"])
-        self.assertIsNone(artifacts["hosted-zip"]["localPath"])
-        self.assertNotEqual(TAR_SHA, ZIP_SHA)
-        self.assertEqual(len(TAR_SHA), 64)
-        self.assertEqual(len(ZIP_SHA), 64)
+        self.assertFalse(body["measuredByThisUnit"])
+        self.assertEqual(body["frozenPair"]["app"], APP_COMMIT)
+        self.assertEqual(body["frozenPair"]["service"], OWNER_COMMIT)
+        self.assertNotIn("6815aeb", body["frozenPair"]["app"])
+        self.assertNotIn("6815aeb", body["frozenPair"]["service"])
+        self.assertEqual(body["app"]["wrapper"]["size"], APP_WRAPPER_SIZE)
+        self.assertEqual(body["app"]["wrapper"]["sha256"], APP_WRAPPER_SHA)
+        self.assertEqual(body["app"]["inner"]["size"], APP_INNER_SIZE)
+        self.assertEqual(body["app"]["inner"]["sha256"], APP_INNER_SHA)
+        self.assertIsNone(body["app"]["inner"]["localPath"])
+        self.assertFalse(body["app"]["wrapper"]["measuredByThisUnit"])
+        self.assertFalse(body["app"]["inner"]["measuredByThisUnit"])
+        self.assertEqual(body["service"]["wrapper"]["size"], SERVICE_WRAPPER_SIZE)
+        self.assertEqual(body["service"]["wrapper"]["sha256"], SERVICE_WRAPPER_SHA)
+        self.assertEqual(body["service"]["inner"]["size"], SERVICE_INNER_SIZE)
+        self.assertEqual(body["service"]["inner"]["sha256"], SERVICE_INNER_SHA)
+        self.assertIsNone(body["service"]["wrapper"]["localPath"])
+        self.assertIsNone(body["service"]["inner"]["localPath"])
+        self.assertEqual(body["service"]["coordinatorTar"]["sha256"], TAR_SHA)
+        self.assertEqual(len(set(OWNER_DIGESTS)), len(OWNER_DIGESTS))
+        for digest in OWNER_DIGESTS:
+            self.assertEqual(len(digest), 64)
         self.assertEqual(body["service"]["argv"], ["python", "-m", "prototypes.publishing.listener"])
         self.assertEqual(body["service"]["landingUrl"], "http://127.0.0.1:19427/")
         self.assertEqual(tuple(body["service"]["ownerRoutes"]), OWNER_ROUTES)
         self.assertFalse(body["ownerReportNotValidation"]["claimedByThisUnit"])
         self.assertIn("EXE launch", body["ownerReportNotValidation"]["notReported"])
-        self.assertIn("app.archive.sha256", body["pending"])
-        self.assertFalse(os.path.exists(OWNER_PATH))
+        self.assertIn("validated local path for the exact bytes to hash", body["pending"])
 
     def test_fragment_is_rejected_without_hashing_or_spawning(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -168,9 +190,10 @@ class FragmentTests(unittest.TestCase):
             text = open(os.path.join(HERE, name), encoding="utf-8").read()
             self.assertNotIn(OWNER_COMMIT, text)
             self.assertNotIn(APP_COMMIT, text)
-            self.assertNotIn(TAR_SHA, text)
-            self.assertNotIn(ZIP_SHA, text)
+            for digest in OWNER_DIGESTS:
+                self.assertNotIn(digest, text)
             self.assertNotIn(OWNER_PATH, text)
+            self.assertNotIn("01M71PWKV4XN5T0YVA63PK6E21", text)
             self.assertNotIn("42746459364", text)
             self.assertNotIn("shell=True", text)
             self.assertNotIn("os.system", text)
@@ -218,31 +241,68 @@ class ManifestTests(unittest.TestCase):
             document = _document(root)
             document["provenance"]["app"]["commit"] = APP_COMMIT  # type: ignore[index]
             document["provenance"]["service"]["commit"] = OWNER_COMMIT  # type: ignore[index]
-            document["provenance"]["service"]["archive"]["sha256"] = ZIP_SHA  # type: ignore[index]
             document["routes"]["paths"] = list(OWNER_ROUTES)  # type: ignore[index]
-            document["provenance"]["app"]["archive"]["sha256"] = "UNKNOWN"  # type: ignore[index]
+            document["provenance"]["app"]["wrapper"]["sha256"] = "UNKNOWN"  # type: ignore[index]
             with mock.patch("contract.hash_file", side_effect=AssertionError("hashed")):
                 with self.assertRaises(ManifestError) as caught:
                     contract.validate_manifest(document)
             self.assertEqual(caught.exception.code, "missing-provenance")
-            del document["provenance"]["app"]["archive"]["sha256"]  # type: ignore[attr-defined]
+            del document["provenance"]["app"]["validated"]["path"]  # type: ignore[attr-defined]
+            document["provenance"]["app"]["wrapper"]["sha256"] = "ab" * 32  # type: ignore[index]
             with self.assertRaises(ManifestError) as caught:
                 contract.validate_manifest(document)
             self.assertEqual(caught.exception.code, "missing-provenance")
 
-    def test_tar_and_zip_digests_are_not_substituted(self) -> None:
-        self.assertNotEqual(TAR_SHA, ZIP_SHA)
+    def test_selected_layer_is_the_only_bytes_hashed(self) -> None:
+        self.assertEqual(len(set(OWNER_DIGESTS)), len(OWNER_DIGESTS))
         with tempfile.TemporaryDirectory() as root:
-            document = _document(root, service_bytes=b"synthetic-bytes-not-either-owner-archive")
-            for declared in (ZIP_SHA, TAR_SHA):
-                document["provenance"]["service"]["archive"]["sha256"] = declared  # type: ignore[index]
-                manifest = contract.validate_manifest(document)
-                with self.assertRaises(ManifestError) as caught:
-                    contract.verify_archives(manifest)
-                self.assertEqual(caught.exception.code, "hash-mismatch")
-                self.assertIn(declared, caught.exception.detail)
-                other = TAR_SHA if declared == ZIP_SHA else ZIP_SHA
-                self.assertNotIn(other, caught.exception.detail)
+            document = _document(root, service_bytes=b"synthetic-bytes-not-an-owner-archive")
+            manifest = contract.validate_manifest(document)
+            checked = contract.verify_archives(manifest)
+            service = checked[1].as_evidence()
+            self.assertEqual(service["validatedBytes"], "wrapper")
+            self.assertEqual(service["actualSize"], service["declaredSize"])
+            self.assertFalse(service["siblingHashed"])
+            self.assertEqual(service["siblingLayer"], "inner")
+            self.assertNotEqual(service["declaredSha256"], service["siblingSha256"])
+            document["provenance"]["service"]["validated"]["bytes"] = "inner"  # type: ignore[index]
+            switched = contract.validate_manifest(document)
+            with self.assertRaises(ManifestError) as caught:
+                contract.verify_archives(switched)
+            self.assertEqual(caught.exception.code, "size-mismatch")
+            self.assertIn("inner", caught.exception.detail)
+            self.assertIn("wrapper was not hashed", caught.exception.detail)
+            self.assertNotIn(str(service["declaredSha256"]), caught.exception.detail)
+            for digest in OWNER_DIGESTS:
+                self.assertNotIn(digest, caught.exception.detail)
+            document["provenance"]["service"]["validated"]["bytes"] = "wrapper"  # type: ignore[index]
+            document["provenance"]["service"]["wrapper"]["sha256"] = SERVICE_INNER_SHA  # type: ignore[index]
+            document["provenance"]["service"]["wrapper"]["size"] = len(b"synthetic-bytes-not-an-owner-archive")  # type: ignore[index]
+            document["provenance"]["service"]["inner"]["size"] = SERVICE_INNER_SIZE  # type: ignore[index]
+            document["provenance"]["service"]["inner"]["sha256"] = TAR_SHA  # type: ignore[index]
+            mismatched = contract.validate_manifest(document)
+            with self.assertRaises(ManifestError) as caught:
+                contract.verify_archives(mismatched)
+            self.assertEqual(caught.exception.code, "hash-mismatch")
+            self.assertIn(SERVICE_INNER_SHA, caught.exception.detail)
+            self.assertNotIn(TAR_SHA, caught.exception.detail)
+            self.assertNotIn(SERVICE_WRAPPER_SHA, caught.exception.detail)
+
+    def test_identical_wrapper_and_inner_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            document = _document(root)
+            document["provenance"]["app"]["inner"] = dict(document["provenance"]["app"]["wrapper"])  # type: ignore[index]
+            with self.assertRaises(ManifestError) as caught:
+                contract.validate_manifest(document)
+            self.assertEqual(caught.exception.code, "malformed")
+
+    def test_docs_prefix_is_not_a_frozen_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            document = _document(root)
+            document["provenance"]["app"]["commit"] = "6815aeb"  # type: ignore[index]
+            with self.assertRaises(ManifestError) as caught:
+                contract.validate_manifest(document)
+            self.assertEqual(caught.exception.code, "missing-provenance")
 
     def test_missing_owner_routes(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -296,7 +356,7 @@ class ManifestTests(unittest.TestCase):
             port_text["lifecycle"]["loopback"]["port"] = "19427"  # type: ignore[index]
             cases.append(port_text)
             relative = _document(root)
-            relative["provenance"]["service"]["archive"]["path"] = "service.bin"  # type: ignore[index]
+            relative["provenance"]["service"]["validated"]["path"] = "service.bin"  # type: ignore[index]
             cases.append(relative)
             for document in cases:
                 with self.assertRaises(ManifestError) as caught:
@@ -315,10 +375,10 @@ class ManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             payload = b"synthetic-archive-bytes"
             document = _document(root, service_bytes=payload)
-            archive = document["provenance"]["service"]["archive"]["path"]  # type: ignore[index]
+            archive = document["provenance"]["service"]["validated"]["path"]  # type: ignore[index]
             before = open(archive, "rb").read()
             stamp = os.stat(archive).st_mtime_ns
-            document["provenance"]["service"]["archive"]["sha256"] = "f" * 64  # type: ignore[index]
+            document["provenance"]["service"]["wrapper"]["sha256"] = "f" * 64  # type: ignore[index]
             manifest = contract.validate_manifest(document)
             with self.assertRaises(ManifestError) as caught:
                 contract.verify_archives(manifest)
@@ -329,10 +389,10 @@ class ManifestTests(unittest.TestCase):
     def test_symlink_archive_is_not_followed(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             document = _document(root, service_bytes=b"target-bytes")
-            target = document["provenance"]["service"]["archive"]["path"]  # type: ignore[index]
+            target = document["provenance"]["service"]["validated"]["path"]  # type: ignore[index]
             link = os.path.join(root, "linked.bin")
             os.symlink(target, link)
-            document["provenance"]["service"]["archive"]["path"] = link  # type: ignore[index]
+            document["provenance"]["service"]["validated"]["path"] = link  # type: ignore[index]
             manifest = contract.validate_manifest(document)
             with self.assertRaises(ManifestError) as caught:
                 contract.verify_archives(manifest)
@@ -342,7 +402,7 @@ class ManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             document = _document(root)
             missing = os.path.join(root, "missing.bin")
-            document["provenance"]["app"]["archive"]["path"] = missing  # type: ignore[index]
+            document["provenance"]["app"]["validated"]["path"] = missing  # type: ignore[index]
             manifest = contract.validate_manifest(document)
             with self.assertRaises(ManifestError) as caught:
                 contract.verify_archives(manifest)
@@ -664,8 +724,8 @@ class CommandTests(unittest.TestCase):
             payload = json.loads(completed.stdout)
             self.assertFalse(payload["packagedDemoProved"])
             self.assertEqual(payload["exitCode"], harness.EXIT_MALFORMED)
-            self.assertNotIn(TAR_SHA, completed.stdout)
-            self.assertNotIn(ZIP_SHA, completed.stdout)
+            for digest in OWNER_DIGESTS:
+                self.assertNotIn(digest, completed.stdout)
 
 
 def _git_head() -> str | None:
@@ -707,9 +767,9 @@ def record_evidence(dest: str, tests_run: int, failed: int, events: list[dict[st
     with tempfile.TemporaryDirectory() as root:
         payload = b"recorded-synthetic-service"
         document = _document(root, service_bytes=payload)
-        archive = document["provenance"]["service"]["archive"]["path"]  # type: ignore[index]
+        archive = document["provenance"]["service"]["validated"]["path"]  # type: ignore[index]
         before = open(archive, "rb").read()
-        document["provenance"]["service"]["archive"]["sha256"] = "f" * 64  # type: ignore[index]
+        document["provenance"]["service"]["wrapper"]["sha256"] = "f" * 64  # type: ignore[index]
         manifest = contract.validate_manifest(document)
         mismatch = None
         try:
@@ -804,7 +864,7 @@ def record_evidence(dest: str, tests_run: int, failed: int, events: list[dict[st
             "owned-process cleanup of the owner listener",
             "verification of the owner-supplied app commit against a local archive",
             "measurement of either service digest; tar and hosted ZIP hashes are not interchangeable",
-            "app archive sha256, which the owner marked UNKNOWN",
+            "measurement of owner-reported wrapper and inner digests; no local file was hashed",
             "sanctioned local paths for the app ZIP and the service hosted ZIP",
             "the owner Windows run, including its reported browser navigation; this unit did not run it and saw no EXE launch or screenshots",
         ],

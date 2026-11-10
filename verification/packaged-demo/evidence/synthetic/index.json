@@ -4,7 +4,7 @@
   "packagedDemoAcceptance": "BLOCKED",
   "unitPassIsNotPackagedDemoProof": true,
   "unitTestsFailed": 0,
-  "unitTestsRun": 29,
+  "unitTestsRun": 31,
   "unitResults": [
     {
       "name": "__main__.CommandTests.test_cli_rejects_fragment",
@@ -79,11 +79,19 @@
       "status": "pass"
     },
     {
+      "name": "__main__.ManifestTests.test_docs_prefix_is_not_a_frozen_pin",
+      "status": "pass"
+    },
+    {
       "name": "__main__.ManifestTests.test_duplicate_key_is_malformed",
       "status": "pass"
     },
     {
       "name": "__main__.ManifestTests.test_hash_mismatch_preserves_bytes",
+      "status": "pass"
+    },
+    {
+      "name": "__main__.ManifestTests.test_identical_wrapper_and_inner_are_rejected",
       "status": "pass"
     },
     {
@@ -107,6 +115,10 @@
       "status": "pass"
     },
     {
+      "name": "__main__.ManifestTests.test_selected_layer_is_the_only_bytes_hashed",
+      "status": "pass"
+    },
+    {
       "name": "__main__.ManifestTests.test_shell_and_non_loopback_are_malformed",
       "status": "pass"
     },
@@ -117,14 +129,10 @@
     {
       "name": "__main__.ManifestTests.test_synthetic_cannot_be_sanctioned",
       "status": "pass"
-    },
-    {
-      "name": "__main__.ManifestTests.test_tar_and_zip_digests_are_not_substituted",
-      "status": "pass"
     }
   ],
   "requiredBase": "f5c2bfee403e6194eb2c7e3ab6f1021cd5bd2df3",
-  "headAtRecordTime": "f5c2bfee403e6194eb2c7e3ab6f1021cd5bd2df3",
+  "headAtRecordTime": "13784c53efa71191f558dfc9ef1941714c8966dc",
   "platform": "linux",
   "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
   "ownerArchiveVisibleOnThisVm": false,
@@ -140,7 +148,7 @@
     "owned-process cleanup of the owner listener",
     "verification of the owner-supplied app commit against a local archive",
     "measurement of either service digest; tar and hosted ZIP hashes are not interchangeable",
-    "app archive sha256, which the owner marked UNKNOWN",
+    "measurement of owner-reported wrapper and inner digests; no local file was hashed",
     "sanctioned local paths for the app ZIP and the service hosted ZIP",
     "the owner Windows run, including its reported browser navigation; this unit did not run it and saw no EXE launch or screenshots"
   ]

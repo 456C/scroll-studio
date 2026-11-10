@@ -30,6 +30,7 @@ _STATUS_FOR = {
     "missing-artifact": EXIT_PROVENANCE,
     "unsafe-path": EXIT_PROVENANCE,
     "hash-mismatch": EXIT_HASH,
+    "size-mismatch": EXIT_HASH,
 }
 
 
@@ -137,11 +138,12 @@ def run(manifest_path: str, evidence_dir: str) -> int:
         records["process-listener"]["manifestSynthetic"] = manifest.synthetic
         records["process-listener"]["ownerRoutes"] = list(manifest.route_paths)
         records["http"]["ownerRoutesFetched"] = False
-        contract.verify_archives(manifest)
+        checked = contract.verify_archives(manifest)
         records["process-listener"]["archivesHashed"] = True
+        records["process-listener"]["validatedBytes"] = [item.as_evidence() for item in checked]
         contract.inspect_working_directory(
             manifest.working_directory,
-            (manifest.app.archive.path, manifest.service.archive.path),
+            (manifest.app.validated.path, manifest.service.validated.path),
         )
         reason = acceptance_block_reason(manifest, sys.platform)
         if reason is not None:
@@ -167,6 +169,9 @@ def run(manifest_path: str, evidence_dir: str) -> int:
         exit_code = _STATUS_FOR.get(exc.code, EXIT_MALFORMED)
         label = "synthetic" if records["process-listener"].get("manifestSynthetic") else "rejected-input"
         records["process-listener"].update({"status": "rejected", "code": exc.code, "detail": exc.detail[:300]})
+        if exc.checked:
+            records["process-listener"]["archivesHashed"] = True
+            records["process-listener"]["validatedBytes"] = [item.as_evidence() for item in exc.checked]
         records["http"]["reason"] = exc.code
         records["browser-render"]["reason"] = exc.code
         records["owned-process-cleanup"]["reason"] = exc.code
