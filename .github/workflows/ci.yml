@@ -164,8 +164,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
           path: support-e4ba7b3
-          sparse-checkout: verification/packaged-demo
-          sparse-checkout-cone-mode: true
+          sparse-checkout: /verification/packaged-demo/
+          sparse-checkout-cone-mode: false
       - name: Invoke the pinned harness on the frozen 91ba wrappers
         shell: pwsh
         env:
