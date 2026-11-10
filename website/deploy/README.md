@@ -55,3 +55,49 @@ The PHP editor accepts native format versions 1–11, preserves chapter artwork/
 Run `php` with ZIP and GD enabled for `website/tests/roundtrip.php`. With a local preview running, `node website/tests/api.mjs <origin>` tests session isolation, CSRF, revision conflicts, recovery copies, image upload/previews, immutable chapters, export and thumbnail persistence. `scripts/build.ps1 run --example verify_web_roundtrip` opens those exports with the actual desktop loader. All 350 desktop tests passed. Browser checks covered the empty workspace, phone-size sheets and editing, local `.scro` import, and basic lore creation before a saved browser permission block prevented the remaining visual checks. Do not describe the final thumbnail menu as visually verified until browser access is restored.
 
 After activation, rerun the API checks against the live HTTPS origin with synthetic fixtures only. Verify the PHP source routes return 404, cookies are Secure/HttpOnly/SameSite, both full download hashes match, and the unrelated host configuration hashes remain unchanged. Preserve the previous release for rollback.
+
+## Scroll Comics (`/read/`)
+
+A public reading and publishing platform: accounts, series and episode pages, a vertical reader, likes, ratings, comments, subscriptions, reading history, daily schedule, ranking, search, a gated Mature 18+ section, reports and moderation, a creator dashboard, and a token API for publishing from the desktop app. It is plain PHP 8.3 with SQLite. There is no framework, Composer or build step.
+
+### Server setup (once)
+
+```sh
+apt install php8.3-sqlite3 php8.3-gd php8.3-zip php8.3-mbstring php8.3-intl
+install -d -o scrollstudio -g scrollstudio -m 0700 /var/lib/scroll-studio-web/comics /var/lib/scroll-studio-web/comics-uploads
+cp deploy/comics-pool.conf /etc/php/8.3/fpm/pool.d/scroll-comics.conf
+php-fpm8.3 -t && systemctl reload php8.3-fpm
+```
+
+Render the host with `node website/deploy/render-nginx.mjs scroll.project456.net https`. It adds the `/read/` front controller, static `/read/assets/`, and the internal `/_comics_media/` location. Validate with `nginx -t` before reloading.
+
+- **Data:** `/var/lib/scroll-studio-web/comics/comics.sqlite` (WAL mode), `media/` (original episode bytes; covers and thumbnails are resampled), and `secret.key`. Back up the whole directory. Releases never contain user data.
+- **Media access:** every image request passes through PHP, which checks drafts, scheduling, moderation and Mature 18+ access. Nginx then sends the file via `X-Accel-Redirect`.
+- **First account:** the first account registered becomes the admin. Register yours before announcing the page. Admins see **Moderation** in the account menu.
+- **Limits:** 120 images per episode, 20 MB per image, 200 MB per episode, images at most 2000 × 20000 px. Upload a ZIP or select a Scroll Studio export folder; files are ordered by natural filename. JPEG EXIF/XMP metadata is stripped without re-encoding.
+- **Rate limits:** sign-in (10 per 15 min), registration (5 per hour), comments (20 per 10 min), reports and API uploads per IP, plus the Nginx `scroll_write` zone.
+
+### Mature content
+
+Registration requires a date of birth (13 and older only). Mature 18+ series are excluded from every listing, search result, profile and image response unless the reader is signed in, is 18 or older, and has turned on mature content (prompted at the gate or in Settings). Series pages and the Mature section are `noindex`. Age is self-declared. If you need stronger verification for your jurisdiction, add a provider before promoting mature content.
+
+### API for the desktop app
+
+Create a token in **Settings → Publish from Scroll Studio**. Requests use `Authorization: Bearer sct_…`.
+
+- `GET /read/api/me`: your account and series, with each series' next episode number.
+- `GET /read/api/series/<slug>/episodes`: list episodes.
+- `POST /read/api/series/<slug>/episodes`: multipart `images[]` (files or a ZIP), optional `number`, `title`, `note`, `status` (`draft` default, `published`, `scheduled` with `publish_at`), and `replace=1` to replace an existing episode number. Returns `201` with the episode URL.
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -F status=draft -F "images[]=@episode.zip" https://scroll.project456.net/read/api/series/my-series/episodes
+```
+
+### Local preview
+
+```sh
+SCROLL_COMICS=/tmp/comics-preview php website/tests/seed-comics.php
+SCROLL_COMICS=/tmp/comics-preview php -S 127.0.0.1:8090 -t website/src website/tests/comics-router.php
+```
+
+Open `http://127.0.0.1:8090/read/`. The seed creates synthetic series with procedurally drawn art. Sign in as `moonharbor` (admin) or `reader_ana`, password `preview-password`. Never seed the production directory.
