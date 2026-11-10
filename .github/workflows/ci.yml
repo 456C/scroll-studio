@@ -157,13 +157,13 @@ jobs:
       contents: read
       actions: read
     steps:
-      - name: Check out pinned support directory e4ba7b3
+      - name: Check out pinned support directory 6a118df
         uses: actions/checkout@v4
         with:
-          ref: e4ba7b3172a3a6072facc41bd37805b3a97b9b6f
+          ref: 6a118df1cc92a89229a6f4b45652876ea6f37df5
           persist-credentials: false
           fetch-depth: 1
-          path: support-e4ba7b3
+          path: support-6a118df
           sparse-checkout: /verification/packaged-demo/
           sparse-checkout-cone-mode: false
       - name: Invoke the pinned harness on the frozen 91ba wrappers
@@ -172,9 +172,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $support = Join-Path $env:GITHUB_WORKSPACE 'support-e4ba7b3\verification\packaged-demo\harness.py'
+          $support = Join-Path $env:GITHUB_WORKSPACE 'support-6a118df\verification\packaged-demo\harness.py'
           if (-not (Test-Path -LiteralPath $support -PathType Leaf)) { throw 'pinned harness.py is missing' }
-          $extra = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'support-e4ba7b3') -Force | Where-Object { $_.Name -ne 'verification' -and $_.Name -ne '.git' }
+          $extra = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'support-6a118df') -Force | Where-Object { $_.Name -ne 'verification' -and $_.Name -ne '.git' }
           if ($extra) { throw 'support checkout contains files outside verification/' }
           $app = Join-Path $env:RUNNER_TEMP 'frozen91ba-app-wrapper.zip'
           $service = Join-Path $env:RUNNER_TEMP 'frozen91ba-service-wrapper.zip'
@@ -250,7 +250,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: frozen-91ba-harness-e4ba7b3
+          name: frozen-91ba-harness-6a118df
           path: |
             ${{ runner.temp }}/frozen91ba-harness-evidence
             ${{ runner.temp }}/frozen91ba-harness-stdout.json
