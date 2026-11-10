@@ -60,16 +60,19 @@ After activation, rerun the API checks against the live HTTPS origin with synthe
 
 A public reading and publishing platform: accounts, series and episode pages, a vertical reader, likes, ratings, comments, subscriptions, reading history, daily schedule, ranking, search, a gated Mature 18+ section, reports and moderation, a creator dashboard, and a token API for publishing from the desktop app. It is plain PHP 8.3 with SQLite. There is no framework, Composer or build step.
 
-### Server setup (once)
+### Deploy or update
+
+From the repository root on a machine that can SSH to the server:
 
 ```sh
-apt install php8.3-sqlite3 php8.3-gd php8.3-zip php8.3-mbstring php8.3-intl
-install -d -o scrollstudio -g scrollstudio -m 0700 /var/lib/scroll-studio-web/comics /var/lib/scroll-studio-web/comics-uploads
-cp deploy/comics-pool.conf /etc/php/8.3/fpm/pool.d/scroll-comics.conf
-php-fpm8.3 -t && systemctl reload php8.3-fpm
+ssh root@<server> "rm -rf /tmp/scroll-comics && mkdir -p /tmp/scroll-comics"
+scp -r website/src/read website/deploy root@<server>:/tmp/scroll-comics/
+ssh root@<server> "bash /tmp/scroll-comics/deploy/install-comics.sh"
 ```
 
-Render the host with `node website/deploy/render-nginx.mjs scroll.project456.net https`. It adds the `/read/` front controller, static `/read/assets/`, and the internal `/_comics_media/` location. Validate with `nginx -t` before reloading.
+`install-comics.sh` installs missing PHP extensions (`sqlite3`, `gd`, `zip`, `mbstring`, `intl`), creates the data directories and the `scroll-comics` FPM pool, and copies the active release into a new release with `read/` added. It installs `nginx-read.conf` as `/etc/nginx/snippets/scroll-comics.conf` and adds one `include` before `location /` in the HTTPS server block. It then runs `nginx -t`, switches `current`, reloads, and checks `/`, `/read/`, `/studio/`, static assets and source-file denial. Any failure restores the previous release, vhost and pool. Re-running it is safe; each run creates a fresh release from the active one.
+
+A config rendered fresh with `render-nginx.mjs` already contains the same block from `nginx-read.conf`, so the installer skips the include.
 
 - **Data:** `/var/lib/scroll-studio-web/comics/comics.sqlite` (WAL mode), `media/` (original episode bytes; covers and thumbnails are resampled), and `secret.key`. Back up the whole directory. Releases never contain user data.
 - **Media access:** every image request passes through PHP, which checks drafts, scheduling, moderation and Mature 18+ access. Nginx then sends the file via `X-Accel-Redirect`.

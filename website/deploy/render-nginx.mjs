@@ -1,5 +1,5 @@
 // Render only: the caller must inspect DNS and validate the full server config before enabling.
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const [domain,mode='http']=process.argv.slice(2);
@@ -43,37 +43,8 @@ location /studio/ {
     ${studioSecurity}
     add_header Cache-Control "no-cache" always;
 }`;
-const readSecurity=`add_header X-Content-Type-Options "nosniff" always;
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" always;`;
-// Comics: every path except static assets goes to one PHP front controller. Episode media is served by Nginx
-// after PHP checks visibility (X-Accel-Redirect into an internal location outside the release).
-const read=`location = /read { return 301 /read/; }
-location ^~ /read/assets/ {
-    try_files $uri =404;
-    ${readSecurity}
-    add_header Cache-Control "no-cache" always;
-}
-location ^~ /_comics_media/ {
-    internal;
-    alias /var/lib/scroll-studio-web/comics/media/;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Content-Security-Policy "default-src 'none'" always;
-}
-location ^~ /read/ {
-    ${readSecurity}
-    include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME $realpath_root/read/index.php;
-    fastcgi_param SCRIPT_NAME /read/index.php;
-    fastcgi_pass unix:/run/php/scroll-comics.sock;
-    fastcgi_read_timeout 300s;
-    fastcgi_hide_header X-Powered-By;
-    client_max_body_size 210m;
-    client_body_timeout 120s;
-    limit_req zone=scroll_write burst=20 nodelay;
-    limit_req_status 429;
-    limit_conn scroll_active 12;
-}`;
+// Comics locations live in nginx-read.conf so install-comics.sh can include the same block on the live host.
+const read=(await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),'nginx-read.conf'),'utf8')).replace(/^#.*\n/gm,'').trim();
 const content=`server_name ${domain};
 root /var/www/scroll-studio/current;
 index index.html;
