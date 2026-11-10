@@ -1746,6 +1746,112 @@ class StaticToonsTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_late_resources_do_not_move_reading_controls(self):
+        import tempfile
+        from http.server import SimpleHTTPRequestHandler
+        from prototypes.publishing.export_toons import export_toons
+
+        out = Path(tempfile.mkdtemp(prefix="toons-stable-"))
+        root = export_toons(out)
+        css = (root / "assets" / "toons.css").read_text(encoding="utf-8")
+        self.assertIn("font-display:optional", css)
+        self.assertNotIn("font-display:swap", css)
+        self.assertIn("width:min(100%,1152px)", css)
+        self.assertIn("aspect-ratio:1152/864", css)
+        self.assertIn("background:#202326", css)
+        home = (root / "index.html").read_text(encoding="utf-8")
+        self.assertIn('rel="preload"', home)
+        self.assertIn("as=\"font\"", home)
+        self.assertNotIn("panel-", home)
+        self.assertNotIn("<script", home.lower())
+
+        gate = threading.Event()
+
+        class Handler(SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(out), **kwargs)
+
+            def do_GET(self):
+                if self.path.split("?", 1)[0].endswith((".jpg", ".ttf")):
+                    gate.wait(8)
+                super().do_GET()
+
+            def log_message(self, fmt, *args):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        chrome = _Chrome()
+        shots = Path("/opt/cursor/artifacts")
+        try:
+            chrome.call("Network.setCacheDisabled", {"cacheDisabled": True})
+            chrome.call(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": "window.__shifts=[];new PerformanceObserver(l=>{for (const e of l.getEntries()) if(!e.hadRecentInput) window.__shifts.push(e.value)}).observe({type:'layout-shift',buffered:true});"},
+            )
+            checks = (
+                ("series-desktop", 1280, 800, "/toons/paper-harbor/index.html", "a.button", "Read the comic"),
+                ("comic-desktop", 1280, 800, "/toons/paper-harbor/the-fold.html", 'nav.ep a[href="margin-note.html"]', "Next: What the Margin Kept"),
+                ("series-390", 390, 844, "/toons/paper-harbor/index.html", "a.button", "Read the comic"),
+                ("comic-390", 390, 844, "/toons/paper-harbor/the-fold.html", 'nav.ep a[href="margin-note.html"]', "Next: What the Margin Kept"),
+            )
+            for name, width, height, path, selector, label in checks:
+                gate.clear()
+                _fit(chrome, width, height)
+                chrome.navigate(f"http://127.0.0.1:{port}{path}")
+                self.assertIn(label, chrome.text("document.body.innerText"))
+                chrome.eval(f"document.querySelector('{selector}').scrollIntoView({{block:'center'}})")
+                time.sleep(0.5)
+                before = _place(chrome, selector)
+                self.assertIn(label, before["hit"])
+                self.assertGreater(min(before["imgs"]), 200)
+                self.assertLessEqual(before["overflow"], 1)
+                if name.endswith("390") or name.startswith("comic"):
+                    _shot(chrome, shots / f"stable-{name}-held.png")
+                gate.set()
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    if chrome.eval("[...document.querySelectorAll('figure img, .card img')].every(img => img.complete && img.naturalWidth > 0)"):
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail(name)
+                time.sleep(0.4)
+                after = _place(chrome, selector)
+                self.assertIn(label, after["hit"], name)
+                self.assertLess(abs(after["y"] - before["y"]), 1, name)
+                self.assertLess(abs(after["view"] - before["view"]), 1, name)
+                self.assertEqual(after["imgs"], before["imgs"], name)
+                self.assertLess(after["shifts"], 0.001, name)
+                self.assertLessEqual(after["overflow"], 1, name)
+                if name.endswith("390") or name.startswith("comic"):
+                    _shot(chrome, shots / f"stable-{name}-settled.png")
+        finally:
+            gate.set()
+            chrome.close()
+            httpd.shutdown()
+            httpd.server_close()
+
+
+def _place(chrome, selector):
+    return chrome.eval(
+        "(() => {"
+        f"const el = document.querySelector('{selector}');"
+        "const r = el.getBoundingClientRect();"
+        "const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+        "const link = hit && hit.closest ? hit.closest('a') : null;"
+        "return {"
+        "y: Math.round((r.top + window.scrollY) * 100) / 100,"
+        "view: Math.round(r.top * 100) / 100,"
+        "hit: link ? link.textContent : '',"
+        "imgs: [...document.querySelectorAll('figure img, .card img')].map(img => Math.round(img.getBoundingClientRect().height * 100) / 100),"
+        "shifts: (window.__shifts || []).reduce((sum, value) => sum + value, 0),"
+        "overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth"
+        "};})()"
+    )
+
 
 def re_attr(text):
     import re

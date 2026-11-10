@@ -55,7 +55,7 @@ Proposed:
 
 
 def _css() -> str:
-    return """@font-face{font-family:Karla;src:url('Karla.ttf') format('truetype');font-display:swap}
+    return """@font-face{font-family:Karla;src:url('Karla.ttf') format('truetype');font-display:optional}
 *{box-sizing:border-box}
 html{color-scheme:dark}
 body{margin:0;background:#151719;color:#f0f1ef;font-family:Karla,system-ui,sans-serif}
@@ -82,6 +82,7 @@ h1 em{font-style:normal;color:#a6dacb}
 .card-body{padding:18px 20px 22px}
 img{max-width:100%;height:auto;display:block}
 .card img{width:100%;height:240px;object-fit:cover;object-position:center}
+figure img{width:min(100%,1152px);aspect-ratio:1152/864;background:#202326}
 figure{margin:0 0 28px}
 figcaption,.speech{color:#d5dbdc}
 .reading{max-width:40rem}
@@ -106,6 +107,7 @@ def _shell(title: str, body: str, depth: int) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#151719">
 <title>{_esc(title)} — Scroll Studio</title>
+<link rel="preload" href="{asset}Karla.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="{asset}toons.css">
 </head>
 <body>
