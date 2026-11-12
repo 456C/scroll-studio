@@ -43,6 +43,11 @@ pub enum Query {
     LayersList {
         chapter: u64,
     },
+    /// One layer in the `.scro` layer format: exactly what `edit.set_layer` accepts, for
+    /// read-modify-write. The one answer that does not use the flat read-API shape.
+    LayerExport {
+        layer: u64,
+    },
     CharactersList,
     /// Backgrounds and images (characters have their own list).
     AssetsList,
@@ -73,6 +78,7 @@ impl Query {
             Query::ChaptersList => "chapters.list",
             Query::PanelsList { .. } => "panels.list",
             Query::LayersList { .. } => "layers.list",
+            Query::LayerExport { .. } => "layer.export",
             Query::CharactersList => "characters.list",
             Query::AssetsList => "assets.list",
             Query::LocationsList => "locations.list",
@@ -101,6 +107,9 @@ impl Query {
             },
             "layers.list" => Query::LayersList {
                 chapter: id("chapter_id")?,
+            },
+            "layer.export" => Query::LayerExport {
+                layer: id("layer_id")?,
             },
             "characters.list" => Query::CharactersList,
             "assets.list" => Query::AssetsList,
@@ -131,6 +140,7 @@ impl Query {
                 json!({ "chapter_id": chapter })
             }
             Query::ObjectGet { id } => json!({ "id": id }),
+            Query::LayerExport { layer } => json!({ "layer_id": layer }),
             Query::PanelsAt { chapter, y } => json!({ "chapter_id": chapter, "y": num(*y) }),
             _ => Value::Null,
         }
@@ -343,6 +353,17 @@ impl Story {
                 })).collect::<Vec<_>>(),
             }),
             Query::ObjectGet { id } => self.object_json(*id)?,
+            Query::LayerExport { layer } => {
+                let (chapter, layer) = self
+                    .chapters
+                    .iter()
+                    .find_map(|c| c.layers.iter().find(|l| l.id == *layer).map(|l| (c, l)))
+                    .context("That layer no longer exists")?;
+                json!({
+                    "chapter_id": chapter.id,
+                    "layer": serde_json::to_value(layer).context("Could not encode the layer")?,
+                })
+            }
             Query::LoreBoard => {
                 let targets = lore::targets(self);
                 json!({

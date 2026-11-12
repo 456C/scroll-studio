@@ -20,3 +20,4 @@ pub mod spacing;
 pub mod storage;
 pub mod thumbnails;
 pub mod timeline;
+pub mod wire;

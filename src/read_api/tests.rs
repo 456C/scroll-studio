@@ -482,3 +482,25 @@ fn answers_only_use_known_keys() {
         }
     }
 }
+
+/// `layer.export` is left out of the key whitelist on purpose: it returns the `.scro` layer
+/// format so it can be written back with `edit.set_layer`.
+#[test]
+fn layer_export_returns_the_write_form_and_survives_hostile_params() {
+    let story = Story::demo();
+    let layer = &story.chapters[0].layers[0];
+    let answer = ask(&story, "layer.export", json!({ "layer_id": layer.id }));
+    assert_eq!(answer["chapter_id"], story.chapters[0].id);
+    let back: Layer = serde_json::from_value(answer["layer"].clone()).unwrap();
+    assert_eq!(&back, layer);
+    for params in [
+        Value::Null,
+        json!({ "layer_id": u64::MAX }),
+        json!({ "layer_id": -1 }),
+        json!({ "layer_id": "1" }),
+    ] {
+        if let Ok(query) = Query::parse("layer.export", &params) {
+            assert!(story.query(&query).is_err());
+        }
+    }
+}

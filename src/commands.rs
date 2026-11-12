@@ -19,6 +19,7 @@ use crate::{
     thumbnails, timeline,
 };
 use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 
 // Byte limits mirror what `storage::validate_story` accepts, so a command can never produce
@@ -228,17 +229,164 @@ impl Field {
     }
 }
 
-/// Where [`Command::ReplaceText`] looks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// On the wire a target is an object ID, with 0 for the story, as in the read API.
+impl Serialize for Target {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_u64(match self {
+            Target::Story => STORY_ID,
+            Target::Object(id) => *id,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Target {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let id = wire_id::one(deserializer)?;
+        Ok(if id == STORY_ID {
+            Target::Story
+        } else {
+            Target::Object(id)
+        })
+    }
+}
+
+// On the wire a field is its stable name (`"visual_style"`, `"board_note"`, ...).
+impl Serialize for Field {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Field::parse(&name)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown field `{name}`")))
+    }
+}
+
+/// IDs on the wire: non-negative integers, or integral floats up to 2^53 for JSON
+/// runtimes without integers, as in the read API.
+mod wire_id {
+    use serde::{de::Error, Deserialize, Deserializer};
+
+    fn id<E: Error>(value: serde_json::Value) -> Result<u64, E> {
+        value
+            .as_u64()
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|v| v.fract() == 0.0 && (0.0..=9_007_199_254_740_992.0).contains(v))
+                    .map(|v| v as u64)
+            })
+            .ok_or_else(|| {
+                E::custom(format!(
+                    "expected an ID (a non-negative integer), got {value}"
+                ))
+            })
+    }
+
+    pub fn one<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        id(serde_json::Value::deserialize(deserializer)?)
+    }
+
+    pub fn option<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+        match serde_json::Value::deserialize(deserializer)? {
+            serde_json::Value::Null => Ok(None),
+            value => id(value).map(Some),
+        }
+    }
+
+    pub fn list<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u64>, D::Error> {
+        Vec::<serde_json::Value>::deserialize(deserializer)?
+            .into_iter()
+            .map(id)
+            .collect()
+    }
+}
+
+/// An `Option` that must still be present on the wire (`null` for none), so leaving a
+/// parameter out can never mean "clear it".
+mod wire_required {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn option<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+        deserializer: D,
+    ) -> Result<Option<T>, D::Error> {
+        Option::<T>::deserialize(deserializer)
+    }
+}
+
+/// Lowercase wire names for genders; `.scro` files keep their own spelling.
+mod wire_gender {
+    use crate::model::CharacterGender;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        gender: &Option<CharacterGender>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match gender {
+            None => serializer.serialize_none(),
+            Some(CharacterGender::Female) => serializer.serialize_str("female"),
+            Some(CharacterGender::Male) => serializer.serialize_str("male"),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<CharacterGender>, D::Error> {
+        match Option::<String>::deserialize(deserializer)?.as_deref() {
+            None => Ok(None),
+            Some("female") => Ok(Some(CharacterGender::Female)),
+            Some("male") => Ok(Some(CharacterGender::Male)),
+            Some(other) => Err(serde::de::Error::custom(format!(
+                "unknown gender `{other}` (use \"female\", \"male\" or null)"
+            ))),
+        }
+    }
+}
+
+/// Lowercase wire names for asset kinds, matching the read API.
+mod wire_asset_kind {
+    use crate::model::AssetKind;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(kind: &AssetKind, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match kind {
+            AssetKind::Character => "character",
+            AssetKind::Background => "background",
+            AssetKind::Image => "image",
+        })
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AssetKind, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "character" => Ok(AssetKind::Character),
+            "background" => Ok(AssetKind::Background),
+            "image" => Ok(AssetKind::Image),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown asset kind `{other}`"
+            ))),
+        }
+    }
+}
+
+/// Where [`Command::ReplaceText`] looks. On the wire: `"story"` or `{"target_id": <id>}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Every whitelisted text field in the story.
     Story,
     /// Only the whitelisted fields of one object (or the story's own fields).
+    #[serde(rename = "target_id")]
     Target(Target),
 }
 
-/// A new panel. Its ID is assigned when the command is applied.
-#[derive(Clone, Debug, PartialEq)]
+/// A new panel. Its ID is assigned when the command is applied. Text fields may be
+/// omitted on the wire.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PanelDraft {
     pub title: String,
     pub y: f32,
@@ -248,12 +396,17 @@ pub struct PanelDraft {
     pub prompt: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// A named, undoable edit. On the wire (JSON) a command is
+/// `{"method": "<name>", "params": {...}}`, using the names from [`Command::name`]; see
+/// [`crate::wire`] for the request format and the rules applied at that boundary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Command {
     /// Replace one whitelisted text field. Changing a text layer's `text` keeps its
     /// geometry: the bubble is not refitted (the app refits as you type). To refit, send the
     /// fitted layer with [`Command::SetLayer`].
     SetField {
+        #[serde(rename = "target_id")]
         target: Target,
         field: Field,
         value: String,
@@ -266,57 +419,75 @@ pub enum Command {
     },
     /// Insert a panel after `after`, or at the end of the chapter when `after` is `None`.
     AddPanel {
+        #[serde(rename = "chapter_id", deserialize_with = "wire_id::one")]
         chapter: u64,
+        #[serde(rename = "after_id", deserialize_with = "wire_id::option", default)]
         after: Option<u64>,
         panel: PanelDraft,
     },
     SetGender {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
+        /// Required: `null` clears the gender.
+        #[serde(with = "wire_gender")]
         gender: Option<CharacterGender>,
     },
     /// Append an outfit. The first outfit also becomes the active look, as in the sheet.
     AddOutfit {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
         outfit: CharacterOutfit,
     },
     SetOutfit {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
         index: usize,
         outfit: CharacterOutfit,
     },
     RemoveOutfit {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
         index: usize,
     },
     SetActiveOutfit {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
+        /// Required: `null` clears the active look.
+        #[serde(deserialize_with = "wire_required::option")]
         index: Option<usize>,
     },
     AddPaletteColor {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
         name: String,
         color: [u8; 4],
     },
     SetPaletteColor {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
         index: usize,
         name: String,
         color: [u8; 4],
     },
     RemovePaletteColor {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
         index: usize,
     },
     /// Edit an additional reference's label and notes. The image itself is not touched.
     SetReference {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
+        #[serde(rename = "asset_id", deserialize_with = "wire_id::one")]
         asset: u64,
         label: String,
         notes: String,
     },
     /// Detach an additional reference from a character. The image stays in the story.
     RemoveReference {
+        #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
         character: u64,
+        #[serde(rename = "asset_id", deserialize_with = "wire_id::one")]
         asset: u64,
     },
     /// Create a lore note and its card on the board.
@@ -326,38 +497,47 @@ pub enum Command {
     },
     /// Pin an existing character, location, group or note to the lore board.
     AddLoreCard {
+        #[serde(rename = "target_id", deserialize_with = "wire_id::one")]
         target: u64,
         position: [f32; 2],
     },
     /// Remove a card and its connections. With `delete_note`, a note card's note is also
     /// deleted and unlinked everywhere.
     RemoveLoreCard {
+        #[serde(rename = "card_id", deserialize_with = "wire_id::one")]
         card: u64,
         delete_note: bool,
     },
     MoveLoreCard {
+        #[serde(rename = "card_id", deserialize_with = "wire_id::one")]
         card: u64,
         position: [f32; 2],
     },
     SetLoreCardColor {
+        #[serde(rename = "card_id", deserialize_with = "wire_id::one")]
         card: u64,
         color: [u8; 3],
     },
     ConnectLore {
+        #[serde(rename = "from_id", deserialize_with = "wire_id::one")]
         from: u64,
+        #[serde(rename = "to_id", deserialize_with = "wire_id::one")]
         to: u64,
         label: String,
     },
     SetLoreConnection {
+        #[serde(rename = "connection_id", deserialize_with = "wire_id::one")]
         connection: u64,
         label: String,
         color: [u8; 3],
     },
     DisconnectLore {
+        #[serde(rename = "connection_id", deserialize_with = "wire_id::one")]
         connection: u64,
     },
     /// Change a chapter's canvas height. Panels and layers keep their positions.
     SetChapterHeight {
+        #[serde(rename = "chapter_id", deserialize_with = "wire_id::one")]
         chapter: u64,
         height: u32,
     },
@@ -366,25 +546,31 @@ pub enum Command {
         name: String,
         width: u32,
         height: u32,
+        #[serde(default)]
         opening: Option<PanelDraft>,
     },
     SetPanelGeometry {
+        #[serde(rename = "panel_id", deserialize_with = "wire_id::one")]
         panel: u64,
         y: f32,
         height: f32,
     },
     DeletePanel {
+        #[serde(rename = "panel_id", deserialize_with = "wire_id::one")]
         panel: u64,
     },
     /// Order a chapter's panels top to bottom (stable for equal positions).
     SortPanels {
+        #[serde(rename = "chapter_id", deserialize_with = "wire_id::one")]
         chapter: u64,
     },
     /// Create an asset sheet without an image (characters, backgrounds, images). A new
     /// background can be filed under a location at the same time.
     AddAsset {
         name: String,
+        #[serde(with = "wire_asset_kind")]
         kind: AssetKind,
+        #[serde(rename = "location_id", deserialize_with = "wire_id::option", default)]
         location: Option<u64>,
     },
     /// Create the sheet for an imported image and attach it. The image bytes stay with the
@@ -400,6 +586,7 @@ pub enum Command {
     /// location. A sheet that has an image keeps it and gains the new one as a separate
     /// version, joining the same groups. A background stays filed where it was.
     AddImageVersion {
+        #[serde(rename = "asset_id", deserialize_with = "wire_id::one")]
         asset: u64,
         width: u32,
         height: u32,
@@ -407,7 +594,9 @@ pub enum Command {
     /// Add a layer to a chapter, on top or at `index` (0 is the bottom). The layer's `id`
     /// is ignored; a new one is assigned.
     AddLayer {
+        #[serde(rename = "chapter_id", deserialize_with = "wire_id::one")]
         chapter: u64,
+        #[serde(default)]
         index: Option<usize>,
         layer: Layer,
     },
@@ -419,40 +608,61 @@ pub enum Command {
     SetLayer {
         layer: Layer,
     },
+    /// Change some of a layer's settings, leaving the rest as they are. `text` applies to
+    /// text layers only. This is the simple way for addons to move, hide, rename or reword
+    /// a layer; [`Command::SetLayer`] replaces the whole layer.
+    UpdateLayer {
+        #[serde(rename = "layer_id", deserialize_with = "wire_id::one")]
+        layer: u64,
+        #[serde(flatten)]
+        patch: LayerPatch,
+    },
     DeleteLayer {
+        #[serde(rename = "layer_id", deserialize_with = "wire_id::one")]
         layer: u64,
     },
     /// Move a layer to `index` in its chapter's stack (0 is the bottom).
     MoveLayer {
+        #[serde(rename = "layer_id", deserialize_with = "wire_id::one")]
         layer: u64,
         index: usize,
     },
     /// Add a speech bubble joined to `parent`, using the app's linked-bubble rules.
     AddLinkedBubble {
+        #[serde(rename = "parent_id", deserialize_with = "wire_id::one")]
         parent: u64,
     },
     AddGroup,
     SetGroupColor {
+        #[serde(rename = "group_id", deserialize_with = "wire_id::one")]
         group: u64,
         color: [u8; 3],
     },
     /// Replace a group's member and reference lists.
     SetGroupMembers {
+        #[serde(rename = "group_id", deserialize_with = "wire_id::one")]
         group: u64,
+        #[serde(rename = "character_ids", deserialize_with = "wire_id::list")]
         characters: Vec<u64>,
+        #[serde(rename = "location_ids", deserialize_with = "wire_id::list")]
         locations: Vec<u64>,
+        #[serde(rename = "reference_ids", deserialize_with = "wire_id::list")]
         references: Vec<u64>,
     },
     /// Delete a group, its lore links and its board card.
     RemoveGroup {
+        #[serde(rename = "group_id", deserialize_with = "wire_id::one")]
         group: u64,
     },
     /// Move a chapter in the chronology (not the reading order), before `before` or last.
     MoveChronology {
+        #[serde(rename = "chapter_id", deserialize_with = "wire_id::one")]
         chapter: u64,
+        #[serde(rename = "before_id", deserialize_with = "wire_id::option", default)]
         before: Option<u64>,
     },
     SetChronologyEntry {
+        #[serde(rename = "chapter_id", deserialize_with = "wire_id::one")]
         chapter: u64,
         when: String,
         summary: String,
@@ -465,12 +675,14 @@ pub enum Command {
     // The commands below exist so every command has an exact inverse. They restore state
     // captured by `apply` and are not part of the surface offered to addons.
     #[doc(hidden)]
+    #[serde(skip)]
     RemovePanel {
         chapter: u64,
         panel: u64,
         next_id: u64,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     InsertOutfit {
         character: u64,
         index: usize,
@@ -478,12 +690,14 @@ pub enum Command {
         active_outfit: Option<usize>,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     InsertPaletteColor {
         character: u64,
         index: usize,
         swatch: CharacterSwatch,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     InsertReference {
         character: u64,
         index: usize,
@@ -492,38 +706,71 @@ pub enum Command {
         thumbnail: Option<usize>,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     RestoreLore {
         lore: Vec<LoreEntry>,
         board: LoreBoard,
         next_id: u64,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     RemoveLayer {
         layer: u64,
         next_id: u64,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     InsertLayer {
         chapter: u64,
         index: usize,
         layer: Layer,
     },
     #[doc(hidden)]
+    #[serde(skip)]
     RemoveLastChapter {
         chapter: u64,
         next_id: u64,
     },
     /// Put back whole sections of the story captured before a structural edit.
     #[doc(hidden)]
+    #[serde(skip)]
     Restore(Box<Sections>),
 }
 
-/// Where [`Command::AddImageAsset`] attaches the new image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The settings [`Command::UpdateLayer`] can change. Every part is optional.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayerPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// Where [`Command::AddImageAsset`] attaches the new image. On the wire: `"library"`,
+/// `{"character_id": <id>}` (an additional reference) or `{"group_id": <id>}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Attach {
     /// A standalone image in the library.
     Library,
+    #[serde(rename = "character_id", deserialize_with = "wire_id::one")]
     CharacterReference(u64),
+    #[serde(rename = "group_id", deserialize_with = "wire_id::one")]
     GroupReference(u64),
 }
 
@@ -636,6 +883,7 @@ impl Command {
             Command::AddLayer { .. } => "add_layer",
             Command::SetLayer { .. } => "set_layer",
             Command::DeleteLayer { .. } => "delete_layer",
+            Command::UpdateLayer { .. } => "update_layer",
             Command::MoveLayer { .. } => "move_layer",
             Command::AddLinkedBubble { .. } => "add_linked_bubble",
             Command::RemoveLayer { .. } => "remove_layer",
@@ -2141,6 +2389,39 @@ impl Story {
                 let id = layer.id;
                 let old = std::mem::replace(&mut self.chapters[c].layers[l], layer);
                 Ok(Applied::new(Command::SetLayer { layer: old }).touch(id))
+            }
+            Command::UpdateLayer { layer, patch } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let mut updated = self.chapters[c].layers[l].clone();
+                let LayerPatch {
+                    name,
+                    visible,
+                    locked,
+                    opacity,
+                    x,
+                    y,
+                    width,
+                    height,
+                    text,
+                } = patch;
+                macro_rules! set {
+                    ($($field:ident),*) => {$(
+                        if let Some(value) = $field {
+                            updated.$field = value;
+                        }
+                    )*};
+                }
+                set!(name, visible, locked, opacity, x, y, width, height);
+                if let Some(value) = text {
+                    let LayerKind::Text { text, .. } = &mut updated.kind else {
+                        bail!("Only text layers have text");
+                    };
+                    *text = value;
+                }
+                // The same rules and exact inverse as replacing the whole layer.
+                self.apply_one(Command::SetLayer { layer: updated })
             }
             Command::DeleteLayer { layer } => {
                 let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
