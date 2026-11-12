@@ -14,7 +14,7 @@ use crate::{
     model::{
         Asset, AssetKind, BackgroundLocation, CardThumbnail, Chapter, CharacterGender,
         CharacterOutfit, CharacterProfile, CharacterReference, CharacterSwatch, ChronologyEntry,
-        LayerKind, LoreBoard, LoreEntry, Panel, Story, WorldGroup,
+        Layer, LayerKind, LoreBoard, LoreEntry, Panel, Story, WorldGroup,
     },
     thumbnails, timeline,
 };
@@ -34,6 +34,7 @@ const MAX_LORE_NOTES: usize = 4096;
 const MAX_REFERENCES: usize = 24;
 const MAX_PANELS: usize = 10_000;
 const MAX_CHAPTERS: usize = 1000;
+const MAX_LAYERS: usize = 100_000;
 const MIN_CHAPTER_SIDE: u32 = 64;
 const MAX_CHAPTER_WIDTH: u32 = 8192;
 const MAX_CHAPTER_HEIGHT: u32 = 200_000;
@@ -105,6 +106,10 @@ pub enum ObjectKind {
     LoreConnection,
     Chapter,
     Group,
+    /// A canvas layer other than text (image, shape, stroke, effect).
+    Layer,
+    /// A text or speech-bubble layer: its `text` is the lettered dialogue.
+    TextLayer,
 }
 
 impl Field {
@@ -217,6 +222,8 @@ impl Field {
             ObjectKind::LoreConnection => &[],
             ObjectKind::Chapter => &[Name],
             ObjectKind::Group => &[Name, Description],
+            ObjectKind::Layer => &[Name],
+            ObjectKind::TextLayer => &[Name, Text],
         }
     }
 }
@@ -395,6 +402,29 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    /// Add a layer to a chapter, on top or at `index` (0 is the bottom). The layer's `id`
+    /// is ignored; a new one is assigned.
+    AddLayer {
+        chapter: u64,
+        index: Option<usize>,
+        layer: Layer,
+    },
+    /// Replace a layer's settings and content, keeping its ID and place in the stack.
+    SetLayer {
+        layer: Layer,
+    },
+    DeleteLayer {
+        layer: u64,
+    },
+    /// Move a layer to `index` in its chapter's stack (0 is the bottom).
+    MoveLayer {
+        layer: u64,
+        index: usize,
+    },
+    /// Add a speech bubble joined to `parent`, using the app's linked-bubble rules.
+    AddLinkedBubble {
+        parent: u64,
+    },
     AddGroup,
     SetGroupColor {
         group: u64,
@@ -462,6 +492,17 @@ pub enum Command {
         next_id: u64,
     },
     #[doc(hidden)]
+    RemoveLayer {
+        layer: u64,
+        next_id: u64,
+    },
+    #[doc(hidden)]
+    InsertLayer {
+        chapter: u64,
+        index: usize,
+        layer: Layer,
+    },
+    #[doc(hidden)]
     RemoveLastChapter {
         chapter: u64,
         next_id: u64,
@@ -492,6 +533,8 @@ pub struct Sections {
     pub lore: Option<Vec<LoreEntry>>,
     pub lore_board: Option<LoreBoard>,
     pub card_thumbnails: Option<Vec<CardThumbnail>>,
+    /// One chapter's layers, by chapter ID.
+    pub layers: Option<(u64, Vec<Layer>)>,
     pub next_id: u64,
 }
 
@@ -527,6 +570,8 @@ impl Command {
             | Command::InsertReference { .. }
             | Command::RestoreLore { .. }
             | Command::RemoveLastChapter { .. }
+            | Command::RemoveLayer { .. }
+            | Command::InsertLayer { .. }
             | Command::Restore(_) => true,
             Command::Batch(commands) => commands.iter().any(Command::is_internal),
             _ => false,
@@ -582,6 +627,13 @@ impl Command {
             Command::AddAsset { .. } => "add_asset",
             Command::AddImageAsset { .. } => "add_image_asset",
             Command::AddGroup => "add_group",
+            Command::AddLayer { .. } => "add_layer",
+            Command::SetLayer { .. } => "set_layer",
+            Command::DeleteLayer { .. } => "delete_layer",
+            Command::MoveLayer { .. } => "move_layer",
+            Command::AddLinkedBubble { .. } => "add_linked_bubble",
+            Command::RemoveLayer { .. } => "remove_layer",
+            Command::InsertLayer { .. } => "insert_layer",
             Command::AddImageVersion { .. } => "add_image_version",
             Command::SetGroupColor { .. } => "set_group_color",
             Command::SetGroupMembers { .. } => "set_group_members",
@@ -651,6 +703,7 @@ enum Slot {
     LoreConnection,
     Chapter(usize),
     Group(usize),
+    Layer(usize, usize),
 }
 
 impl Story {
@@ -726,6 +779,10 @@ impl Story {
             Slot::LoreConnection => ObjectKind::LoreConnection,
             Slot::Chapter(_) => ObjectKind::Chapter,
             Slot::Group(_) => ObjectKind::Group,
+            Slot::Layer(c, l) => match self.chapters[c].layers[l].kind {
+                LayerKind::Text { .. } => ObjectKind::TextLayer,
+                _ => ObjectKind::Layer,
+            },
         })
     }
 
@@ -758,6 +815,13 @@ impl Story {
             (Slot::Chapter(c), _) => &self.chapters[c].name,
             (Slot::Group(g), Field::Name) => &self.groups[g].name,
             (Slot::Group(g), _) => &self.groups[g].description,
+            (Slot::Layer(c, l), field) => {
+                let layer = &self.chapters[c].layers[l];
+                match (&layer.kind, field) {
+                    (LayerKind::Text { text, .. }, Field::Text) => text,
+                    _ => &layer.name,
+                }
+            }
             (Slot::LoreNote(i), Field::Title) => &self.lore[i].title,
             (Slot::LoreNote(i), _) => &self.lore[i].text,
             (Slot::LoreCard(i), _) => &self.lore_board.cards[i].note,
@@ -776,6 +840,11 @@ impl Story {
         targets.extend(self.chapters.iter().map(|c| Target::Object(c.id)));
         targets.extend(self.assets.iter().map(|asset| Target::Object(asset.id)));
         targets.extend(self.groups.iter().map(|g| Target::Object(g.id)));
+        targets.extend(
+            self.chapters
+                .iter()
+                .flat_map(|c| c.layers.iter().map(|l| Target::Object(l.id))),
+        );
         targets.extend(self.locations.iter().map(|l| Target::Object(l.id)));
         targets.extend(self.lore.iter().map(|n| Target::Object(n.id)));
         targets.extend(self.lore_board.cards.iter().map(|c| Target::Object(c.id)));
@@ -802,6 +871,9 @@ impl Story {
         for (c, chapter) in self.chapters.iter().enumerate() {
             if let Some(p) = chapter.panels.iter().position(|panel| panel.id == id) {
                 return Ok(Slot::Panel(c, p));
+            }
+            if let Some(l) = chapter.layers.iter().position(|layer| layer.id == id) {
+                return Ok(Slot::Layer(c, l));
             }
         }
         if let Some(i) = self.assets.iter().position(|a| a.id == id) {
@@ -880,6 +952,13 @@ impl Story {
             (Slot::Chapter(c), _) => &mut self.chapters[c].name,
             (Slot::Group(g), Field::Name) => &mut self.groups[g].name,
             (Slot::Group(g), _) => &mut self.groups[g].description,
+            (Slot::Layer(c, l), field) => {
+                let layer = &mut self.chapters[c].layers[l];
+                match (&mut layer.kind, field) {
+                    (LayerKind::Text { text, .. }, Field::Text) => text,
+                    _ => &mut layer.name,
+                }
+            }
             (Slot::LoreNote(i), Field::Title) => &mut self.lore[i].title,
             (Slot::LoreNote(i), _) => &mut self.lore[i].text,
             (Slot::LoreCard(i), _) => &mut self.lore_board.cards[i].note,
@@ -974,6 +1053,17 @@ impl Story {
         Ok(id)
     }
 
+    /// The rules storage applies to a saved layer. The command layer has no image bytes,
+    /// so an image layer must point at a sheet that has an image.
+    fn check_layer(&self, layer: &Layer) -> Result<()> {
+        let presets: HashSet<_> = self.bubble_presets.iter().map(|p| p.id).collect();
+        crate::storage::validate_layer(self, layer, &presets, |id| {
+            self.assets
+                .iter()
+                .any(|a| a.id == id && a.width > 0 && a.height > 0)
+        })
+    }
+
     /// `count` more IDs can be allocated without exhausting the ID space.
     fn ensure_ids(&self, count: u64) -> Result<()> {
         ensure!(
@@ -1052,12 +1142,19 @@ impl Story {
             Some((id, _)) => Some(self.chapter_index(*id)?),
             None => None,
         };
+        let layer_chapter = match &sections.layers {
+            Some((id, _)) => Some(self.chapter_index(*id)?),
+            None => None,
+        };
         let mut old = Sections {
             next_id: self.next_id,
             ..Default::default()
         };
         if let (Some(c), Some((id, panels))) = (chapter, sections.panels) {
             old.panels = Some((id, std::mem::replace(&mut self.chapters[c].panels, panels)));
+        }
+        if let (Some(c), Some((id, layers))) = (layer_chapter, sections.layers) {
+            old.layers = Some((id, std::mem::replace(&mut self.chapters[c].layers, layers)));
         }
         macro_rules! swap {
             ($field:ident) => {
@@ -1083,6 +1180,7 @@ impl Story {
         ensure!(self.assets.len() <= MAX_ASSETS, "Too many assets");
         for chapter in &self.chapters {
             ensure!(chapter.panels.len() <= MAX_PANELS, "Chapter is too large");
+            ensure!(chapter.layers.len() <= MAX_LAYERS, "Chapter is too large");
             for panel in &chapter.panels {
                 ensure!(
                     panel.y.is_finite() && panel.height.is_finite() && panel.height > 0.0,
@@ -1933,6 +2031,121 @@ impl Story {
                     ..Applied::new(inverse).touch(asset).create(id)
                 })
             }
+            Command::AddLayer {
+                chapter,
+                index,
+                mut layer,
+            } => {
+                let c = self.chapter_index(chapter)?;
+                let layers = self.chapters[c].layers.len();
+                ensure!(
+                    layers < MAX_LAYERS,
+                    "A chapter can have at most {MAX_LAYERS} layers"
+                );
+                let index = index.unwrap_or(layers);
+                ensure!(index <= layers, "Invalid layer position");
+                self.ensure_ids(1)?;
+                let next_id = self.next_id;
+                layer.id = next_id;
+                self.check_layer(&layer)?;
+                let id = self.alloc_id();
+                self.chapters[c].layers.insert(index, layer);
+                Ok(Applied::new(Command::RemoveLayer { layer: id, next_id })
+                    .touch(chapter)
+                    .create(id))
+            }
+            Command::RemoveLayer { layer, next_id } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let chapter = self.chapters[c].id;
+                let removed = self.chapters[c].layers.remove(l);
+                self.next_id = self.safe_next_id(next_id);
+                Ok(Applied::new(Command::AddLayer {
+                    chapter,
+                    index: Some(l),
+                    layer: removed,
+                })
+                .touch(chapter)
+                .touch(layer))
+            }
+            Command::SetLayer { layer } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer.id))? else {
+                    bail!("That layer no longer exists")
+                };
+                self.check_layer(&layer)?;
+                let id = layer.id;
+                let old = std::mem::replace(&mut self.chapters[c].layers[l], layer);
+                Ok(Applied::new(Command::SetLayer { layer: old }).touch(id))
+            }
+            Command::DeleteLayer { layer } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let chapter = self.chapters[c].id;
+                let removed = self.chapters[c].layers.remove(l);
+                Ok(Applied::new(Command::InsertLayer {
+                    chapter,
+                    index: l,
+                    layer: removed,
+                })
+                .touch(chapter)
+                .touch(layer))
+            }
+            Command::InsertLayer {
+                chapter,
+                index,
+                layer,
+            } => {
+                let c = self.chapter_index(chapter)?;
+                ensure!(
+                    index <= self.chapters[c].layers.len()
+                        && self.chapters[c].layers.len() < MAX_LAYERS,
+                    "Invalid layer position"
+                );
+                ensure!(
+                    layer.id > 0
+                        && layer.id < self.next_id
+                        && !self.all_ids().any(|id| id == layer.id),
+                    "That layer ID is already in use"
+                );
+                self.check_layer(&layer)?;
+                let id = layer.id;
+                self.chapters[c].layers.insert(index, layer);
+                Ok(Applied::new(Command::DeleteLayer { layer: id })
+                    .touch(chapter)
+                    .touch(id))
+            }
+            Command::MoveLayer { layer, index } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let layers = &mut self.chapters[c].layers;
+                ensure!(index < layers.len(), "Invalid layer position");
+                let moved = layers.remove(l);
+                layers.insert(index, moved);
+                Ok(Applied::new(Command::MoveLayer { layer, index: l })
+                    .touch(self.chapters[c].id)
+                    .touch(layer))
+            }
+            Command::AddLinkedBubble { parent } => {
+                let Slot::Layer(c, _) = self.slot(Target::Object(parent))? else {
+                    bail!("That bubble no longer exists")
+                };
+                // The helper validates the parent and adjusts the whole cluster; capture
+                // the chapter's layers so undo puts every bubble back exactly.
+                let inverse = self.restore(Sections {
+                    layers: Some((self.chapters[c].id, self.chapters[c].layers.clone())),
+                    ..Default::default()
+                });
+                let mut next = self.clone();
+                let id = crate::bubbles::add_cluster_bubble(&mut next, c, parent)?;
+                *self = next;
+                Ok(Applied::new(inverse)
+                    .touch(self.chapters[c].id)
+                    .touch(parent)
+                    .create(id))
+            }
             Command::AddGroup => {
                 let inverse = self.restore(Sections {
                     groups: Some(self.groups.clone()),
@@ -2041,10 +2254,21 @@ impl Story {
             Command::Restore(sections) => {
                 let previous_next = self.next_id;
                 let restored_next = sections.next_id;
+                let layer_chapter = sections.layers.as_ref().map(|(id, _)| *id);
                 let old = self.swap_sections(*sections)?;
                 // Decide the counter after the swap, once the restored objects are in place.
                 self.next_id = self.safe_next_id(restored_next);
-                if let Err(error) = self.check_sections() {
+                let checked = self.check_sections().and_then(|_| match layer_chapter {
+                    Some(id) => {
+                        let c = self.chapter_index(id)?;
+                        self.chapters[c]
+                            .layers
+                            .iter()
+                            .try_for_each(|l| self.check_layer(l))
+                    }
+                    None => Ok(()),
+                });
+                if let Err(error) = checked {
                     self.swap_sections(old.clone())
                         .expect("restoring the sections just replaced");
                     self.next_id = previous_next;

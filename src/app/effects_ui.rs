@@ -48,11 +48,9 @@ impl Studio {
         );
     }
     fn add_effect(&mut self, name: &str, rect: [f32; 4], effect: Effect, before: Option<usize>) {
-        self.checkpoint();
-        let id = self.story.alloc_id();
         let [x, y, width, height] = rect;
         let layer = Layer {
-            id,
+            id: 0,
             name: name.into(),
             visible: true,
             locked: false,
@@ -63,11 +61,9 @@ impl Studio {
             height,
             kind: LayerKind::Effect { effect },
         };
-        let layers = &mut self.story.chapters[self.chapter].layers;
-        layers.insert(before.unwrap_or(layers.len()), layer);
+        let id = self.add_layer(before, layer);
         self.selected = Some(id);
         self.selected_asset = None;
-        self.changed();
     }
     pub(super) fn add_motion(&mut self, id: u64) {
         let Some((index, layer)) = self.story.chapters[self.chapter]

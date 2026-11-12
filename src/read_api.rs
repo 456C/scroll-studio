@@ -170,6 +170,8 @@ fn kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::LoreConnection => "lore_connection",
         ObjectKind::Chapter => "chapter",
         ObjectKind::Group => "group",
+        ObjectKind::Layer => "layer",
+        ObjectKind::TextLayer => "text_layer",
     }
 }
 
@@ -397,15 +399,7 @@ impl Story {
             Target::Object(id)
         };
         let Some(kind) = self.object_kind(target) else {
-            let layer = self
-                .chapters
-                .iter()
-                .any(|c| c.layers.iter().any(|l| l.id == id));
-            let preset = self.bubble_presets.iter().any(|p| p.id == id);
-            if layer {
-                bail!("Object {id} is a layer; read it with layers.list");
-            }
-            if preset {
+            if self.bubble_presets.iter().any(|p| p.id == id) {
                 bail!("Object {id} is a bubble preset, which the read API does not cover yet");
             }
             bail!("Object {id} does not exist");
@@ -416,6 +410,14 @@ impl Story {
         }
         let details = match kind {
             ObjectKind::Story => json!({}),
+            ObjectKind::Layer | ObjectKind::TextLayer => self
+                .chapters
+                .iter()
+                .find_map(|c| {
+                    let i = c.layers.iter().position(|l| l.id == id)?;
+                    Some(layer_json(c, i, &c.layers[i]))
+                })
+                .context("That layer no longer exists")?,
             ObjectKind::Panel => self
                 .chapters
                 .iter()

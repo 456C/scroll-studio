@@ -17,15 +17,11 @@ pub(super) struct SnapDrag {
 
 impl Studio {
     pub(super) fn add_linked_bubble(&mut self, parent: u64) {
-        let mut updated = self.story.clone();
-        match scroll_studio::bubbles::add_cluster_bubble(&mut updated, self.chapter, parent) {
-            Ok(id) => {
-                self.checkpoint();
-                self.story = updated;
-                self.selected = Some(id);
+        match self.apply_command(Command::AddLinkedBubble { parent }) {
+            Ok(applied) => {
+                self.selected = applied.created.first().copied();
                 self.selected_asset = None;
                 self.tool = Tool::Move;
-                self.changed();
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -976,10 +972,8 @@ impl Studio {
                                 "Create a preset in Bubbles before adding dialogue.".into();
                             return;
                         };
-                        self.checkpoint();
-                        let id = self.story.alloc_id();
                         let mut layer = Layer {
-                            id,
+                            id: 0,
                             name: "Dialogue".into(),
                             visible: true,
                             locked: false,
@@ -1007,11 +1001,10 @@ impl Studio {
                         layer.x = p[0];
                         layer.y = p[1];
                         self.selected_bubble_preset = Some(preset.id);
-                        self.story.chapters[self.chapter].layers.push(layer);
+                        let id = self.add_layer(None, layer);
                         self.selected = Some(id);
                         self.selected_asset = None;
                         self.tool = Tool::Move;
-                        self.changed();
                     }
                     Tool::Panel => self.add_beat(p[1]),
                     Tool::Brush => {
@@ -1465,11 +1458,9 @@ impl Studio {
     }
 
     fn begin_stroke(&mut self, p: [f32; 2]) {
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        let ch = &mut self.story.chapters[self.chapter];
-        ch.layers.push(Layer {
-            id,
+        let ch = &self.story.chapters[self.chapter];
+        let layer = Layer {
+            id: 0,
             name: "Brush stroke".into(),
             visible: true,
             locked: false,
@@ -1483,11 +1474,12 @@ impl Studio {
                 color: self.brush_color.to_array(),
                 size: self.brush_size,
             },
-        });
+        };
+        // The stroke's points are then painted in as one gesture, within this undo step.
+        let id = self.add_layer(None, layer);
         self.drag_layer = Some(id);
         self.selected = Some(id);
         self.selected_asset = None;
-        self.changed();
     }
 }
 
