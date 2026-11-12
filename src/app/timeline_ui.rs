@@ -5,16 +5,13 @@ use scroll_studio::timeline;
 #[derive(Clone, Copy)]
 struct ChapterDrag(u64);
 impl Studio {
-    fn move_timeline(&mut self, id: u64, before: Option<u64>) {
-        let mut next = self.story.clone();
-        match timeline::move_before(&mut next, id, before) {
-            Ok(true) => {
-                self.checkpoint();
-                self.story = next;
-                self.changed();
-            }
-            Ok(false) => {}
-            Err(e) => self.error = Some(e.to_string()),
+    pub(super) fn move_timeline(&mut self, id: u64, before: Option<u64>) {
+        // A move that changes nothing leaves history alone, as before.
+        if let Err(e) = self.apply_command(Command::MoveChronology {
+            chapter: id,
+            before,
+        }) {
+            self.error = Some(e.to_string());
         }
     }
     pub(super) fn timeline_workspace(&mut self, ctx: &egui::Context) {
@@ -46,9 +43,10 @@ impl Studio {
                                     })
                                     .collect();
                                 if old != next {
-                                    self.checkpoint();
-                                    self.story.timeline = next;
-                                    self.changed();
+                                    self.commit(
+                                        Some(Command::OrderChronologyByReading),
+                                        |studio| studio.story.timeline = next,
+                                    );
                                 }
                                 ui.close_menu();
                             }
@@ -421,10 +419,13 @@ impl Studio {
                 let mut next = timeline::entries(&self.story);
                 if let Some(entry) = next.iter_mut().find(|e| e.chapter_id == draft.chapter_id) {
                     if *entry != draft {
+                        let command = Command::SetChronologyEntry {
+                            chapter: draft.chapter_id,
+                            when: draft.when.clone(),
+                            summary: draft.summary.clone(),
+                        };
                         *entry = draft;
-                        self.checkpoint();
-                        self.story.timeline = next;
-                        self.changed();
+                        self.commit(Some(command), |studio| studio.story.timeline = next);
                     }
                 }
             } else if !cancel && !modal.should_close() {

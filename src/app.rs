@@ -40,13 +40,21 @@ mod story_setup_ui;
 mod timeline_ui;
 
 use eframe::egui::{self, Color32, RichText};
-use scroll_studio::{compositor, export, model::*, recovery, storage};
+use scroll_studio::{
+    commands::{self, Applied, Command, Field, Target},
+    compositor, export,
+    model::*,
+    recovery, storage,
+};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{mpsc, Arc},
     time::Instant,
 };
+
+/// How many `story.changed` notices wait for a reader before the oldest are dropped.
+const MAX_STORY_CHANGES: usize = 256;
 
 pub(super) const BG: Color32 = Color32::from_rgb(32, 33, 36);
 pub(super) const PANEL: Color32 = Color32::from_rgb(41, 43, 47);
@@ -147,6 +155,15 @@ pub struct Studio {
     redo: Vec<Story>,
     dirty: bool,
     revision: u64,
+    /// `story.changed` notices, oldest first. Nothing reads them in 0.14.0 without addons;
+    /// the addon host drains them. Bounded so an app without addons never grows it.
+    story_changes: VecDeque<commands::StoryChanged>,
+    /// The scope of the change `changed` is about to record, when a command knows it.
+    pending_scope: Option<commands::ChangeScope>,
+    /// How often `commit` fell back to the 0.13.2 path, so tests can prove a site uses
+    /// its command.
+    #[cfg(test)]
+    fallbacks: usize,
     document_epoch: u64,
     path: Option<PathBuf>,
     file_stamp: Option<storage::FileStamp>,
@@ -339,6 +356,10 @@ impl Studio {
             redo: Vec::new(),
             dirty: demo,
             revision: 0,
+            story_changes: VecDeque::new(),
+            pending_scope: None,
+            #[cfg(test)]
+            fallbacks: 0,
             document_epoch: 0,
             path: None,
             file_stamp: None,
@@ -400,24 +421,140 @@ impl Studio {
     }
 
     fn checkpoint(&mut self) {
+        let snapshot = self.story.clone();
+        self.record_history(snapshot);
+    }
+
+    /// Push `previous` as one undo step. Shared by `checkpoint` and `apply_command`.
+    fn record_history(&mut self, previous: Story) {
         self.preset_slider_edit = None;
-        if self.undo.back() != Some(&self.story) {
-            self.undo.push_back(self.story.clone());
+        // Keep image bytes for the story before this edit and its history, as 0.13.2 did by
+        // checkpointing first. Using the edited story instead would keep stale bytes when the
+        // edit reuses an ID that undo freed (an abandoned redo branch).
+        let retained = retained_asset_ids(&previous, &self.undo, &[]);
+        if self.undo.back() != Some(&previous) {
+            self.undo.push_back(previous);
             if self.undo.len() > 48 {
                 self.undo.pop_front();
             }
         }
         self.redo.clear();
-        let retained = retained_asset_ids(&self.story, &self.undo, &self.redo);
         self.assets.retain(|id, _| retained.contains(id));
         // An abandoned redo branch may free IDs that the next edit reuses.
         self.previews.retain_assets(&retained);
     }
 
+    /// Apply a named edit as one undo step. Undo still restores the whole-story snapshot,
+    /// exactly as before; a command that fails or changes nothing leaves history untouched.
+    /// The caller decides whether to report an error; sheet and board edits stay silent
+    /// as they always have.
+    fn apply_command(&mut self, command: Command) -> anyhow::Result<Applied> {
+        let previous = self.story.clone();
+        let applied = self.story.apply(command)?;
+        if self.story != previous {
+            self.record_history(previous);
+            self.pending_scope = Some(scope_of(&applied));
+            self.changed();
+        }
+        Ok(applied)
+    }
+
+    /// Apply `command` as one undo step. When there is no command for an edit, or it is
+    /// refused, `fallback` runs the 0.13.2 code path instead (snapshot, edit, changed), so
+    /// moving an edit onto commands can never block something the app used to allow.
+    fn commit(
+        &mut self,
+        command: Option<Command>,
+        fallback: impl FnOnce(&mut Self),
+    ) -> Option<Applied> {
+        if let Some(Ok(applied)) = command.map(|command| self.apply_command(command)) {
+            return Some(applied);
+        }
+        #[cfg(test)]
+        {
+            self.fallbacks += 1;
+        }
+        self.checkpoint();
+        fallback(self);
+        self.changed();
+        None
+    }
+
+    /// Add a layer to the current chapter as one undo step and return its ID. `index` 0 is
+    /// the bottom of the stack; `None` puts it on top.
+    fn add_layer(&mut self, index: Option<usize>, layer: Layer) -> u64 {
+        let command = Command::AddLayer {
+            chapter: self.story.chapters[self.chapter].id,
+            index,
+            layer: layer.clone(),
+        };
+        let mut fallback_id = None;
+        let applied = self.commit(Some(command), |studio| {
+            let id = studio.story.alloc_id();
+            let layers = &mut studio.story.chapters[studio.chapter].layers;
+            layers.insert(index.unwrap_or(layers.len()), Layer { id, ..layer });
+            fallback_id = Some(id);
+        });
+        applied
+            .and_then(|a| a.created.first().copied())
+            .or(fallback_id)
+            .expect("a layer was added")
+    }
+
+    /// Replace a layer of the current chapter (matched by ID) as one undo step.
+    fn set_layer(&mut self, layer: Layer) {
+        let id = layer.id;
+        self.commit(
+            Some(Command::SetLayer {
+                layer: layer.clone(),
+            }),
+            |studio| {
+                if let Some(slot) = studio.story.chapters[studio.chapter]
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == id)
+                {
+                    *slot = layer;
+                }
+            },
+        );
+    }
+
+    /// Apply a command inside a gesture that already took its undo step (a card drag).
+    fn apply_in_gesture(&mut self, command: Command) -> anyhow::Result<Applied> {
+        let applied = self.story.apply(command)?;
+        self.pending_scope = Some(scope_of(&applied));
+        self.changed();
+        Ok(applied)
+    }
+
     fn changed(&mut self) {
+        let covers = self.story.card_thumbnails.len();
         scroll_studio::thumbnails::prune(&mut self.story);
         self.dirty = true;
         self.revision += 1;
+        let mut scope = self
+            .pending_scope
+            .take()
+            .unwrap_or(commands::ChangeScope::Everything);
+        // Pruning removed card covers the command did not report.
+        if self.story.card_thumbnails.len() != covers {
+            scope = commands::ChangeScope::Everything;
+        }
+        if self.story_changes.len() == MAX_STORY_CHANGES {
+            // A reader that falls this far behind must re-read the whole story anyway.
+            self.story_changes.pop_front();
+        }
+        self.story_changes.push_back(commands::StoryChanged {
+            revision: self.revision,
+            scope,
+        });
+    }
+
+    /// Take the pending `story.changed` notices. Used by the addon host (stage 5).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn take_story_changes(&mut self) -> Vec<commands::StoryChanged> {
+        self.story_changes.drain(..).collect()
     }
 
     fn undo(&mut self) {
@@ -531,6 +668,12 @@ impl Studio {
 
     fn reset_view(&mut self) {
         self.interrupt_preset_slider_edit();
+        // A new, opened or recovered document: earlier notices describe another story.
+        self.story_changes.clear();
+        self.story_changes.push_back(commands::StoryChanged {
+            revision: self.revision,
+            scope: commands::ChangeScope::Everything,
+        });
         self.settings_open = false;
         if self.path.is_none() {
             self.file_stamp = None;
@@ -819,14 +962,12 @@ impl Studio {
             self.status = "Add a reference image to this sheet first.".into();
             return;
         }
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        let ch = &mut self.story.chapters[self.chapter];
+        let ch = &self.story.chapters[self.chapter];
         let width = (ch.width as f32 * 0.8).min(asset.width as f32);
         let height = width * asset.height as f32 / asset.width.max(1) as f32;
         let [x, y] = pos.unwrap_or([(ch.width as f32 - width) * 0.5, self.scroll_y + 100.0]);
-        ch.layers.push(Layer {
-            id,
+        let layer = Layer {
+            id: 0,
             name: asset.name,
             visible: true,
             locked: false,
@@ -841,11 +982,11 @@ impl Studio {
                 asset_id,
                 mask: Vec::new(),
             },
-        });
+        };
+        let id = self.add_layer(None, layer);
         self.selected = Some(id);
         self.selected_asset = None;
         self.tool = Tool::Move;
-        self.changed();
     }
 
     fn paste_image(&mut self) {
@@ -953,12 +1094,12 @@ impl Studio {
                 .iter()
                 .any(|l| l.id == id && !l.locked)
             {
-                self.checkpoint();
-                self.story.chapters[self.chapter]
-                    .layers
-                    .retain(|l| l.id != id);
+                self.commit(Some(Command::DeleteLayer { layer: id }), |studio| {
+                    studio.story.chapters[studio.chapter]
+                        .layers
+                        .retain(|l| l.id != id)
+                });
                 self.selected = None;
-                self.changed();
             }
         }
     }
@@ -1351,6 +1492,15 @@ fn assets_for_story(story: &Story, pool: &AssetBytes) -> AssetBytes {
         .collect()
 }
 
+/// The `story.changed` scope for an applied command.
+fn scope_of(applied: &Applied) -> commands::ChangeScope {
+    if applied.everything {
+        commands::ChangeScope::Everything
+    } else {
+        commands::ChangeScope::Objects(applied.touched.clone())
+    }
+}
+
 fn retained_asset_ids(story: &Story, undo: &VecDeque<Story>, redo: &[Story]) -> HashSet<u64> {
     std::iter::once(story)
         .chain(undo.iter())
@@ -1644,6 +1794,367 @@ mod tests {
         let mut branch = before;
         assert_eq!(branch.alloc_id(), id);
         assert!(!retained.contains(&id));
+    }
+
+    #[test]
+    fn commands_are_one_undo_step_and_failures_keep_redo() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let before = studio.story.clone();
+        let title = |value: &str| Command::SetField {
+            target: Target::Story,
+            field: Field::Title,
+            value: value.into(),
+        };
+        studio.apply_command(title("Rain")).unwrap();
+        assert_eq!(studio.story.title, "Rain");
+        assert_eq!(studio.undo.len(), 1);
+        studio.undo();
+        assert_eq!(studio.story, before);
+        assert_eq!(studio.redo.len(), 1);
+        // A failed command and a command that changes nothing leave history alone.
+        assert!(studio
+            .apply_command(Command::DisconnectLore {
+                connection: 999_999
+            })
+            .is_err());
+        studio.apply_command(title(&before.title)).unwrap();
+        assert_eq!(studio.redo.len(), 1);
+        studio.redo();
+        assert_eq!(studio.story.title, "Rain");
+        // A note created through the board is one step, card and all.
+        let undo = studio.undo.len();
+        studio.new_lore();
+        assert_eq!(studio.undo.len(), undo + 1);
+        assert_eq!(
+            studio.story.lore_board.cards.len(),
+            before.lore_board.cards.len() + 1
+        );
+        studio.undo();
+        assert_eq!(studio.story.lore, before.lore);
+        assert_eq!(studio.story.lore_board, before.lore_board);
+    }
+
+    #[test]
+    fn sheet_edits_a_command_refuses_still_save_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let id = scroll_studio::locations::add_location(&mut studio.story, "Pier").unwrap();
+        let index = studio
+            .story
+            .locations
+            .iter()
+            .position(|l| l.id == id)
+            .unwrap();
+        let original = studio.story.locations[index].clone();
+        // Over the command limit for location text, but 0.13.2 accepted it from the sheet.
+        let mut edited = original.clone();
+        edited.profile.notes = "x".repeat(64 * 1024 + 1);
+        let undo = studio.undo.len();
+        studio.commit_location_sheet(index, &original, edited.clone());
+        assert_eq!(studio.story.locations[index], edited);
+        assert_eq!(studio.undo.len(), undo + 1);
+        studio.undo();
+        assert_eq!(studio.story.locations[index], original);
+        // An ordinary edit goes through commands, also as one step.
+        let mut edited = original.clone();
+        edited.profile.lighting = "Dawn".into();
+        studio.commit_location_sheet(index, &original, edited.clone());
+        assert_eq!(studio.story.locations[index], edited);
+        assert_eq!(studio.undo.len(), undo + 1);
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(width, height)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn story_changed_reports_command_objects_and_everything_for_undo() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.take_story_changes();
+        studio
+            .apply_command(Command::SetField {
+                target: Target::Story,
+                field: Field::Title,
+                value: "Rain".into(),
+            })
+            .unwrap();
+        let chapter = studio.story.chapters[0].id;
+        studio
+            .apply_command(Command::SetChapterHeight {
+                chapter,
+                height: 9000,
+            })
+            .unwrap();
+        studio.undo();
+        let changes = studio.take_story_changes();
+        let scopes: Vec<_> = changes.iter().map(|c| c.scope.clone()).collect();
+        assert_eq!(
+            scopes,
+            [
+                commands::ChangeScope::Objects(vec![commands::STORY_ID]),
+                commands::ChangeScope::Objects(vec![chapter]),
+                commands::ChangeScope::Everything,
+            ]
+        );
+        assert!(changes.windows(2).all(|w| w[0].revision < w[1].revision));
+        assert_eq!(changes.last().unwrap().revision, studio.revision);
+        // Without a reader the queue stays bounded.
+        for i in 0..(MAX_STORY_CHANGES + 10) {
+            studio
+                .apply_command(Command::SetField {
+                    target: Target::Story,
+                    field: Field::Synopsis,
+                    value: i.to_string(),
+                })
+                .unwrap();
+        }
+        assert_eq!(studio.take_story_changes().len(), MAX_STORY_CHANGES);
+    }
+
+    #[test]
+    fn an_id_reused_after_undo_never_keeps_the_old_image_bytes() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let character = studio
+            .apply_command(Command::AddAsset {
+                name: "Mira".into(),
+                kind: AssetKind::Character,
+                location: None,
+            })
+            .unwrap()
+            .created[0];
+        studio.import_character_reference_bytes(character, png(4, 6), "Side".into());
+        let reference = studio.story.next_id - 1;
+        assert!(studio.assets.contains_key(&reference));
+        studio.undo();
+        // The undone import freed its ID; the next new sheet reuses it.
+        let reused = studio
+            .apply_command(Command::AddAsset {
+                name: "Station".into(),
+                kind: AssetKind::Background,
+                location: None,
+            })
+            .unwrap()
+            .created[0];
+        assert_eq!(reused, reference);
+        assert!(!studio.assets.contains_key(&reused), "stale bytes survived");
+        storage::validate_story(&studio.story, &studio.assets).unwrap();
+    }
+
+    #[test]
+    fn opening_a_document_resets_story_changed() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio
+            .apply_command(Command::SetField {
+                target: Target::Story,
+                field: Field::Title,
+                value: "Old".into(),
+            })
+            .unwrap();
+        studio.reset_view();
+        assert_eq!(
+            studio
+                .take_story_changes()
+                .into_iter()
+                .map(|c| c.scope)
+                .collect::<Vec<_>>(),
+            [commands::ChangeScope::Everything]
+        );
+    }
+
+    #[test]
+    fn layer_edits_go_through_commands_as_single_undo_steps() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.story = Story::demo();
+        studio.chapter = 0;
+        let start = studio.story.clone();
+        // A command reports the objects it touched; the 0.13.2 fallback reports Everything.
+        let through_command = |studio: &mut Studio, undo: usize| {
+            assert_eq!(studio.undo.len(), undo + 1, "one undo step");
+            let last = studio.take_story_changes().pop().expect("a notice");
+            assert!(
+                matches!(last.scope, commands::ChangeScope::Objects(_)),
+                "fell back instead of using a command"
+            );
+        };
+        studio.take_story_changes();
+
+        let undo = studio.undo.len();
+        let shape = Layer {
+            id: 0,
+            name: "Panel border".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            kind: LayerKind::Shape {
+                color: [0, 0, 0, 255],
+            },
+        };
+        let id = studio.add_layer(Some(0), shape);
+        through_command(&mut studio, undo);
+        assert_eq!(studio.story.chapters[0].layers[0].id, id);
+
+        let undo = studio.undo.len();
+        let mut hidden = studio.story.chapters[0].layers[0].clone();
+        hidden.visible = false;
+        studio.set_layer(hidden);
+        through_command(&mut studio, undo);
+        assert!(!studio.story.chapters[0].layers[0].visible);
+
+        let bubble = studio.story.chapters[0]
+            .layers
+            .iter()
+            .find(|l| matches!(l.kind, LayerKind::Text { bubble: true, .. }) && !l.locked)
+            .expect("the demo has a speech bubble")
+            .id;
+        let undo = studio.undo.len();
+        studio.add_linked_bubble(bubble);
+        through_command(&mut studio, undo);
+        let linked = studio.selected.unwrap();
+        assert_ne!(linked, bubble);
+
+        let undo = studio.undo.len();
+        studio.selected = Some(id);
+        studio.delete_selection();
+        through_command(&mut studio, undo);
+        assert!(studio.story.chapters[0].layers.iter().all(|l| l.id != id));
+
+        assert_eq!(studio.fallbacks, 0);
+        while !studio.undo.is_empty() && studio.story != start {
+            studio.undo();
+        }
+        assert_eq!(studio.story, start);
+    }
+
+    #[test]
+    fn stage_two_edits_are_single_undo_steps() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let start = studio.story.clone();
+        let step = |studio: &mut Studio, before: usize| assert_eq!(studio.undo.len(), before + 1);
+
+        // A beat is added, sorted into place and selected.
+        let undo = studio.undo.len();
+        studio.add_beat(10.0);
+        step(&mut studio, undo);
+        let beat = studio.active_panel.unwrap();
+        let panels = &studio.story.chapters[studio.chapter].panels;
+        assert!(panels.iter().any(|p| p.id == beat && p.y == 10.0));
+        assert!(panels.windows(2).all(|w| w[0].y <= w[1].y));
+
+        // A group: create, join a character through its sheet, delete.
+        let undo = studio.undo.len();
+        studio.new_group();
+        step(&mut studio, undo);
+        let group = studio.selected_group.unwrap();
+        let character = studio.story.alloc_id();
+        studio.story.assets.push(Asset {
+            id: character,
+            name: "Mira".into(),
+            kind: AssetKind::Character,
+            notes: String::new(),
+            prompt: String::new(),
+            width: 0,
+            height: 0,
+            character: CharacterProfile::default(),
+        });
+        let index = studio
+            .story
+            .groups
+            .iter()
+            .position(|g| g.id == group)
+            .unwrap();
+        let original = studio.story.groups[index].clone();
+        let mut edited = original.clone();
+        edited.character_ids.push(character);
+        edited.name = "Night shift".into();
+        let undo = studio.undo.len();
+        let command = commands::group_edit(&original, &edited);
+        assert!(studio
+            .commit(command, |_| panic!("the command applies"))
+            .is_some());
+        step(&mut studio, undo);
+        assert_eq!(studio.story.groups[index], edited);
+        let undo = studio.undo.len();
+        studio
+            .apply_command(Command::RemoveGroup { group })
+            .unwrap();
+        step(&mut studio, undo);
+        assert!(studio.story.groups.is_empty());
+        studio.undo();
+        assert_eq!(studio.story.groups[index], edited);
+
+        // A character reference import is one step; undo detaches it and keeps the bytes
+        // for redo.
+        let undo = studio.undo.len();
+        studio.import_character_reference_bytes(character, png(4, 6), "Side".into());
+        step(&mut studio, undo);
+        let reference = studio
+            .story
+            .assets
+            .iter()
+            .find(|a| a.id == character)
+            .unwrap()
+            .character
+            .references[0]
+            .asset_id;
+        assert!(studio.assets.contains_key(&reference));
+        studio.undo();
+        assert!(studio
+            .story
+            .assets
+            .iter()
+            .find(|a| a.id == character)
+            .unwrap()
+            .character
+            .references
+            .is_empty());
+        studio.redo();
+        assert!(studio.assets.contains_key(&reference));
+
+        // Chronology moves only the timeline, never the reading order.
+        let chapter = studio.story.chapters[0].id;
+        let reading: Vec<_> = studio.story.chapters.iter().map(|c| c.id).collect();
+        studio
+            .apply_command(Command::AddChapter {
+                name: "Two".into(),
+                width: 800,
+                height: 6400,
+                opening: None,
+            })
+            .unwrap();
+        let undo = studio.undo.len();
+        studio.move_timeline(chapter, None);
+        step(&mut studio, undo);
+        assert_eq!(
+            scroll_studio::timeline::entries(&studio.story)
+                .last()
+                .unwrap()
+                .chapter_id,
+            chapter
+        );
+        assert_eq!(studio.story.chapters[0].id, reading[0]);
+
+        // Undoing everything returns to the start.
+        while !studio.undo.is_empty() {
+            studio.undo();
+        }
+        assert_eq!(studio.story, start);
     }
 
     #[test]

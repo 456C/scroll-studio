@@ -491,9 +491,14 @@ impl Studio {
                                     );
                                 });
                             if synopsis != self.story.synopsis {
-                                self.checkpoint();
-                                self.story.synopsis = synopsis;
-                                self.changed();
+                                let command = Command::SetField {
+                                    target: Target::Story,
+                                    field: Field::Synopsis,
+                                    value: synopsis.clone(),
+                                };
+                                self.commit(Some(command), |studio| {
+                                    studio.story.synopsis = synopsis
+                                });
                             }
                         });
                     });
@@ -681,10 +686,30 @@ impl Studio {
     }
 
     fn replace_library_image(&mut self, index: usize, bytes: Vec<u8>, width: u32, height: u32) {
+        let command = Command::AddImageVersion {
+            asset: self.story.assets[index].id,
+            width,
+            height,
+        };
+        let mut fallback_id = None;
+        let applied = self.commit(Some(command), |studio| {
+            fallback_id = Some(studio.replace_library_image_directly(index, width, height));
+        });
+        let new_id = applied
+            .and_then(|a| a.created.first().copied())
+            .or(fallback_id)
+            .expect("an image was added");
+        // Image bytes live with the app, outside the command layer.
+        self.assets.insert(new_id, Arc::new(bytes));
+        self.selected_asset = Some(new_id);
+        self.status = "Reference added".into();
+    }
+
+    /// The 0.13.2 code, used if the command refuses. The caller records history.
+    fn replace_library_image_directly(&mut self, index: usize, width: u32, height: u32) -> u64 {
         let original = self.story.assets[index].clone();
         let location = scroll_studio::locations::location_for_asset(&self.story, original.id);
         // New asset identity preserves existing placements and undo snapshots.
-        self.checkpoint();
         let new_id = self.story.alloc_id();
         let mut replacement = original.clone();
         replacement.id = new_id;
@@ -724,10 +749,7 @@ impl Studio {
                 group.character_ids.push(new_id);
             }
         }
-        self.assets.insert(new_id, Arc::new(bytes));
-        self.selected_asset = Some(new_id);
-        self.changed();
-        self.status = "Reference added".into();
+        new_id
     }
 
     pub(super) fn inspector(&mut self, ctx: &egui::Context) {
@@ -829,9 +851,10 @@ impl Studio {
                                     }
                                 }
                                 if asset != original {
-                                    self.checkpoint();
-                                    self.story.assets[index] = asset;
-                                    self.changed();
+                                    let command = commands::asset_edit(&original, &asset);
+                                    self.commit(command, |studio| {
+                                        studio.story.assets[index] = asset
+                                    });
                                 }
                                 if section == 0
                                     && motion::button(
@@ -982,9 +1005,7 @@ impl Studio {
                                     let newly_enabled = !super::cutout_ui::settings(&original)
                                         .enabled
                                         && super::cutout_ui::settings(&layer).enabled;
-                                    self.checkpoint();
-                                    self.story.chapters[self.chapter].layers[index] = layer;
-                                    self.changed();
+                                    self.set_layer(layer);
                                     if newly_enabled {
                                         self.start_backing_match(ui.ctx(), id, false);
                                     }
@@ -996,9 +1017,14 @@ impl Studio {
                             eyebrow(ui, "CHAPTER");
                             let mut name = self.story.chapters[self.chapter].name.clone();
                             if ui.text_edit_singleline(&mut name).changed() {
-                                self.checkpoint();
-                                self.story.chapters[self.chapter].name = name;
-                                self.changed();
+                                let command = Command::SetField {
+                                    target: Target::Object(self.story.chapters[self.chapter].id),
+                                    field: Field::Name,
+                                    value: name.clone(),
+                                };
+                                self.commit(Some(command), |studio| {
+                                    studio.story.chapters[studio.chapter].name = name
+                                });
                             }
                             let ch = &self.story.chapters[self.chapter];
                             ui.label(
@@ -1016,9 +1042,13 @@ impl Studio {
                                 );
                             });
                             if height != self.story.chapters[self.chapter].height {
-                                self.checkpoint();
-                                self.story.chapters[self.chapter].height = height;
-                                self.changed();
+                                let command = Command::SetChapterHeight {
+                                    chapter: self.story.chapters[self.chapter].id,
+                                    height,
+                                };
+                                self.commit(Some(command), |studio| {
+                                    studio.story.chapters[studio.chapter].height = height
+                                });
                             }
                             if motion::button(ui, "Spacing…").clicked() {
                                 self.begin_spacing(
@@ -1132,39 +1162,72 @@ impl Studio {
                             self.changed();
                         }
                         1 => {
-                            self.checkpoint();
-                            let id = self.story.alloc_id();
-                            let mut ch = Chapter::new(id, name, width, height);
-                            ch.panels.push(Panel {
-                                id: self.story.alloc_id(),
-                                title: "The opening".into(),
-                                y: 120.0,
-                                height: 1400.0,
-                                script: String::new(),
-                                notes: String::new(),
-                                prompt: String::new(),
+                            let command = Command::AddChapter {
+                                name: name.clone(),
+                                width,
+                                height,
+                                opening: Some(commands::PanelDraft {
+                                    title: "The opening".into(),
+                                    y: 120.0,
+                                    height: 1400.0,
+                                    script: String::new(),
+                                    notes: String::new(),
+                                    prompt: String::new(),
+                                }),
+                            };
+                            self.commit(Some(command), |studio| {
+                                let id = studio.story.alloc_id();
+                                let mut ch = Chapter::new(id, name, width, height);
+                                ch.panels.push(Panel {
+                                    id: studio.story.alloc_id(),
+                                    title: "The opening".into(),
+                                    y: 120.0,
+                                    height: 1400.0,
+                                    script: String::new(),
+                                    notes: String::new(),
+                                    prompt: String::new(),
+                                });
+                                studio.story.chapters.push(ch);
                             });
-                            self.story.chapters.push(ch);
                             self.chapter = self.story.chapters.len() - 1;
                             self.selected = None;
                             self.active_panel = None;
                             self.tab = LibraryTab::Chapters;
                             self.jump_y = Some(0.0);
-                            self.changed();
                         }
                         _ => {
-                            self.checkpoint();
-                            let id = self.story.alloc_id();
-                            self.story.assets.push(Asset {
-                                id,
-                                name,
+                            let background = kind == AssetKind::Background;
+                            if background {
+                                self.sanitize_location_selection();
+                            }
+                            let command = Command::AddAsset {
+                                name: name.clone(),
                                 kind,
-                                notes: String::new(),
-                                prompt: String::new(),
-                                width: 0,
-                                height: 0,
-                                character: CharacterProfile::default(),
-                            });
+                                location: self.selected_location.filter(|_| background),
+                            };
+                            let id = match self.apply_command(command) {
+                                Ok(applied) => applied.created[0],
+                                Err(_) => {
+                                    // 0.13.2 behaviour for anything the command refuses.
+                                    self.checkpoint();
+                                    let id = self.story.alloc_id();
+                                    self.story.assets.push(Asset {
+                                        id,
+                                        name,
+                                        kind,
+                                        notes: String::new(),
+                                        prompt: String::new(),
+                                        width: 0,
+                                        height: 0,
+                                        character: CharacterProfile::default(),
+                                    });
+                                    if background {
+                                        self.assign_background_location(id, self.selected_location);
+                                    }
+                                    self.changed();
+                                    id
+                                }
+                            };
                             self.tab = if kind == AssetKind::Character {
                                 LibraryTab::Characters
                             } else {
@@ -1176,12 +1239,7 @@ impl Studio {
                             } else {
                                 self.selected_asset = Some(id);
                             }
-                            if kind == AssetKind::Background {
-                                self.sanitize_location_selection();
-                                self.assign_background_location(id, self.selected_location);
-                            }
                             self.selected = None;
-                            self.changed();
                         }
                     }
                     self.dialog = None;
@@ -1393,6 +1451,16 @@ mod tests {
                 .unwrap();
             studio.replace_library_image(0, bytes.into_inner(), 8, 4);
             let new_id = studio.selected_asset.unwrap();
+            // The edit went through the command, not the 0.13.2 fallback.
+            let mut expected = original.clone();
+            expected
+                .apply(Command::AddImageVersion {
+                    asset: id,
+                    width: 8,
+                    height: 4,
+                })
+                .unwrap();
+            assert_eq!(studio.story, expected);
             assert!(studio.story.groups[0].character_ids.contains(&new_id));
             assert_eq!(
                 studio.story.groups[0].character_ids.contains(&id),

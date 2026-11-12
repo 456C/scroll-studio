@@ -333,14 +333,12 @@ impl Studio {
                 if style.cluster_id.is_some()
                     && action(ui, "Detach bubble", !layer.locked).clicked()
                 {
-                    self.checkpoint();
-                    if let LayerKind::Text { style, .. } =
-                        &mut self.story.chapters[self.chapter].layers[index].kind
-                    {
+                    let mut detached = layer.clone();
+                    if let LayerKind::Text { style, .. } = &mut detached.kind {
                         style.cluster_id = None;
                         style.joins.clear();
                     }
-                    self.changed();
+                    self.set_layer(detached);
                 }
                 if let Some(preset) = style.preset_id {
                     if action(
@@ -368,16 +366,13 @@ impl Studio {
         )
         .clicked()
         {
-            self.checkpoint();
             let mut copy = layer.clone();
-            copy.id = self.story.alloc_id();
             copy.x += 30.0;
             copy.y += 30.0;
             copy.name.push_str(" copy");
-            self.selected = Some(copy.id);
+            let copy_id = self.add_layer(None, copy);
+            self.selected = Some(copy_id);
             self.selected_asset = None;
-            self.story.chapters[self.chapter].layers.push(copy);
-            self.changed();
         }
         let raise = action(
             ui,
@@ -393,25 +388,34 @@ impl Studio {
             )
         });
         if raise.clicked() || lower.clicked() {
-            self.checkpoint();
             let target = if raise.clicked() {
                 index + 1
             } else {
                 index - 1
             };
-            self.story.chapters[self.chapter].layers.swap(index, target);
-            self.changed();
+            // Swapping neighbours is moving one step.
+            let command = Command::MoveLayer {
+                layer: id,
+                index: target,
+            };
+            self.commit(Some(command), |studio| {
+                studio.story.chapters[studio.chapter]
+                    .layers
+                    .swap(index, target)
+            });
         }
         ui.separator();
         if action(ui, if layer.visible { "Hide" } else { "Show" }, true).clicked() {
-            self.checkpoint();
-            self.story.chapters[self.chapter].layers[index].visible = !layer.visible;
-            self.changed();
+            self.set_layer(Layer {
+                visible: !layer.visible,
+                ..layer.clone()
+            });
         }
         if action(ui, if layer.locked { "Unlock" } else { "Lock" }, true).clicked() {
-            self.checkpoint();
-            self.story.chapters[self.chapter].layers[index].locked = !layer.locked;
-            self.changed();
+            self.set_layer(Layer {
+                locked: !layer.locked,
+                ..layer.clone()
+            });
         }
         if action(ui, "Delete", !layer.locked).clicked() {
             self.selected = Some(id);

@@ -17,15 +17,11 @@ pub(super) struct SnapDrag {
 
 impl Studio {
     pub(super) fn add_linked_bubble(&mut self, parent: u64) {
-        let mut updated = self.story.clone();
-        match scroll_studio::bubbles::add_cluster_bubble(&mut updated, self.chapter, parent) {
-            Ok(id) => {
-                self.checkpoint();
-                self.story = updated;
-                self.selected = Some(id);
+        match self.apply_command(Command::AddLinkedBubble { parent }) {
+            Ok(applied) => {
+                self.selected = applied.created.first().copied();
                 self.selected_asset = None;
                 self.tool = Tool::Move;
-                self.changed();
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -976,10 +972,8 @@ impl Studio {
                                 "Create a preset in Bubbles before adding dialogue.".into();
                             return;
                         };
-                        self.checkpoint();
-                        let id = self.story.alloc_id();
                         let mut layer = Layer {
-                            id,
+                            id: 0,
                             name: "Dialogue".into(),
                             visible: true,
                             locked: false,
@@ -1007,11 +1001,10 @@ impl Studio {
                         layer.x = p[0];
                         layer.y = p[1];
                         self.selected_bubble_preset = Some(preset.id);
-                        self.story.chapters[self.chapter].layers.push(layer);
+                        let id = self.add_layer(None, layer);
                         self.selected = Some(id);
                         self.selected_asset = None;
                         self.tool = Tool::Move;
-                        self.changed();
                     }
                     Tool::Panel => self.add_beat(p[1]),
                     Tool::Brush => {
@@ -1287,6 +1280,13 @@ impl Studio {
                         }
                     }
                 }
+                // The stroke's points arrived during the gesture; report the finished
+                // stroke so readers of story.changed see all of it.
+                if let Some(id) = self.drag_layer {
+                    let chapter = self.story.chapters[self.chapter].id;
+                    self.pending_scope = Some(commands::ChangeScope::Objects(vec![chapter, id]));
+                    self.changed();
+                }
             }
             if self.tool == Tool::SmartLasso && !self.lasso.is_empty() {
                 if let Some(p) = point {
@@ -1465,11 +1465,9 @@ impl Studio {
     }
 
     fn begin_stroke(&mut self, p: [f32; 2]) {
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        let ch = &mut self.story.chapters[self.chapter];
-        ch.layers.push(Layer {
-            id,
+        let ch = &self.story.chapters[self.chapter];
+        let layer = Layer {
+            id: 0,
             name: "Brush stroke".into(),
             visible: true,
             locked: false,
@@ -1483,11 +1481,12 @@ impl Studio {
                 color: self.brush_color.to_array(),
                 size: self.brush_size,
             },
-        });
+        };
+        // The stroke's points are then painted in as one gesture, within this undo step.
+        let id = self.add_layer(None, layer);
         self.drag_layer = Some(id);
         self.selected = Some(id);
         self.selected_asset = None;
-        self.changed();
     }
 }
 
@@ -2292,6 +2291,23 @@ mod tests {
         }];
         frame(&ctx, &mut studio, vec![]);
         (ctx, studio, id)
+    }
+
+    #[test]
+    fn brush_strokes_start_through_a_command_as_one_undo_step() {
+        let (_ctx, mut studio, _) = fixture();
+        let undo = studio.undo.len();
+        studio.begin_stroke([10.0, 20.0]);
+        assert_eq!(studio.undo.len(), undo + 1);
+        assert_eq!(studio.fallbacks, 0);
+        let id = studio.drag_layer.expect("the stroke is being drawn");
+        let layer = studio.story.chapters[0].layers.last().unwrap();
+        assert_eq!(layer.id, id);
+        assert!(
+            matches!(&layer.kind, LayerKind::Stroke { points, .. } if points == &[[10.0, 20.0]])
+        );
+        studio.undo();
+        assert!(studio.story.chapters[0].layers.iter().all(|l| l.id != id));
     }
 
     fn frame(ctx: &egui::Context, studio: &mut Studio, events: Vec<egui::Event>) {
