@@ -185,7 +185,7 @@ fn fixtures() -> Vec<(String, Story)> {
 }
 
 /// One valid instance of every command that applies to `story`.
-fn commands_for(story: &Story) -> Vec<Command> {
+pub(crate) fn commands_for(story: &Story) -> Vec<Command> {
     let mut commands = Vec::new();
     for (target, field) in story.text_fields() {
         let current = story.field(target, field).unwrap();
