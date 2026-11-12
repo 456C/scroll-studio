@@ -159,6 +159,10 @@ pub struct Studio {
     story_changes: VecDeque<commands::StoryChanged>,
     /// The scope of the change `changed` is about to record, when a command knows it.
     pending_scope: Option<commands::ChangeScope>,
+    /// How often `commit` fell back to the 0.13.2 path, so tests can prove a site uses
+    /// its command.
+    #[cfg(test)]
+    fallbacks: usize,
     document_epoch: u64,
     path: Option<PathBuf>,
     file_stamp: Option<storage::FileStamp>,
@@ -348,6 +352,8 @@ impl Studio {
             revision: 0,
             story_changes: VecDeque::new(),
             pending_scope: None,
+            #[cfg(test)]
+            fallbacks: 0,
             document_epoch: 0,
             path: None,
             file_stamp: None,
@@ -453,10 +459,54 @@ impl Studio {
         if let Some(Ok(applied)) = command.map(|command| self.apply_command(command)) {
             return Some(applied);
         }
+        #[cfg(test)]
+        {
+            self.fallbacks += 1;
+        }
         self.checkpoint();
         fallback(self);
         self.changed();
         None
+    }
+
+    /// Add a layer to the current chapter as one undo step and return its ID. `index` 0 is
+    /// the bottom of the stack; `None` puts it on top.
+    fn add_layer(&mut self, index: Option<usize>, layer: Layer) -> u64 {
+        let command = Command::AddLayer {
+            chapter: self.story.chapters[self.chapter].id,
+            index,
+            layer: layer.clone(),
+        };
+        let mut fallback_id = None;
+        let applied = self.commit(Some(command), |studio| {
+            let id = studio.story.alloc_id();
+            let layers = &mut studio.story.chapters[studio.chapter].layers;
+            layers.insert(index.unwrap_or(layers.len()), Layer { id, ..layer });
+            fallback_id = Some(id);
+        });
+        applied
+            .and_then(|a| a.created.first().copied())
+            .or(fallback_id)
+            .expect("a layer was added")
+    }
+
+    /// Replace a layer of the current chapter (matched by ID) as one undo step.
+    fn set_layer(&mut self, layer: Layer) {
+        let id = layer.id;
+        self.commit(
+            Some(Command::SetLayer {
+                layer: layer.clone(),
+            }),
+            |studio| {
+                if let Some(slot) = studio.story.chapters[studio.chapter]
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == id)
+                {
+                    *slot = layer;
+                }
+            },
+        );
     }
 
     /// Apply a command inside a gesture that already took its undo step (a card drag).
@@ -901,14 +951,12 @@ impl Studio {
             self.status = "Add a reference image to this sheet first.".into();
             return;
         }
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        let ch = &mut self.story.chapters[self.chapter];
+        let ch = &self.story.chapters[self.chapter];
         let width = (ch.width as f32 * 0.8).min(asset.width as f32);
         let height = width * asset.height as f32 / asset.width.max(1) as f32;
         let [x, y] = pos.unwrap_or([(ch.width as f32 - width) * 0.5, self.scroll_y + 100.0]);
-        ch.layers.push(Layer {
-            id,
+        let layer = Layer {
+            id: 0,
             name: asset.name,
             visible: true,
             locked: false,
@@ -923,11 +971,11 @@ impl Studio {
                 asset_id,
                 mask: Vec::new(),
             },
-        });
+        };
+        let id = self.add_layer(None, layer);
         self.selected = Some(id);
         self.selected_asset = None;
         self.tool = Tool::Move;
-        self.changed();
     }
 
     fn paste_image(&mut self) {
@@ -1035,12 +1083,12 @@ impl Studio {
                 .iter()
                 .any(|l| l.id == id && !l.locked)
             {
-                self.checkpoint();
-                self.story.chapters[self.chapter]
-                    .layers
-                    .retain(|l| l.id != id);
+                self.commit(Some(Command::DeleteLayer { layer: id }), |studio| {
+                    studio.story.chapters[studio.chapter]
+                        .layers
+                        .retain(|l| l.id != id)
+                });
                 self.selected = None;
-                self.changed();
             }
         }
     }
@@ -1910,6 +1958,75 @@ mod tests {
                 .collect::<Vec<_>>(),
             [commands::ChangeScope::Everything]
         );
+    }
+
+    #[test]
+    fn layer_edits_go_through_commands_as_single_undo_steps() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.story = Story::demo();
+        studio.chapter = 0;
+        let start = studio.story.clone();
+        // A command reports the objects it touched; the 0.13.2 fallback reports Everything.
+        let through_command = |studio: &mut Studio, undo: usize| {
+            assert_eq!(studio.undo.len(), undo + 1, "one undo step");
+            let last = studio.take_story_changes().pop().expect("a notice");
+            assert!(
+                matches!(last.scope, commands::ChangeScope::Objects(_)),
+                "fell back instead of using a command"
+            );
+        };
+        studio.take_story_changes();
+
+        let undo = studio.undo.len();
+        let shape = Layer {
+            id: 0,
+            name: "Panel border".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            kind: LayerKind::Shape {
+                color: [0, 0, 0, 255],
+            },
+        };
+        let id = studio.add_layer(Some(0), shape);
+        through_command(&mut studio, undo);
+        assert_eq!(studio.story.chapters[0].layers[0].id, id);
+
+        let undo = studio.undo.len();
+        let mut hidden = studio.story.chapters[0].layers[0].clone();
+        hidden.visible = false;
+        studio.set_layer(hidden);
+        through_command(&mut studio, undo);
+        assert!(!studio.story.chapters[0].layers[0].visible);
+
+        let bubble = studio.story.chapters[0]
+            .layers
+            .iter()
+            .find(|l| matches!(l.kind, LayerKind::Text { bubble: true, .. }) && !l.locked)
+            .expect("the demo has a speech bubble")
+            .id;
+        let undo = studio.undo.len();
+        studio.add_linked_bubble(bubble);
+        through_command(&mut studio, undo);
+        let linked = studio.selected.unwrap();
+        assert_ne!(linked, bubble);
+
+        let undo = studio.undo.len();
+        studio.selected = Some(id);
+        studio.delete_selection();
+        through_command(&mut studio, undo);
+        assert!(studio.story.chapters[0].layers.iter().all(|l| l.id != id));
+
+        assert_eq!(studio.fallbacks, 0);
+        while !studio.undo.is_empty() && studio.story != start {
+            studio.undo();
+        }
+        assert_eq!(studio.story, start);
     }
 
     #[test]

@@ -475,6 +475,59 @@ fn commands_for(story: &Story) -> Vec<Command> {
             height: 480,
         });
     }
+    for chapter in &story.chapters {
+        commands.push(Command::AddLayer {
+            chapter: chapter.id,
+            index: None,
+            layer: crate::model::Layer {
+                id: 0,
+                name: "Shape".into(),
+                visible: true,
+                locked: false,
+                opacity: 0.5,
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 50.0,
+                kind: crate::model::LayerKind::Shape {
+                    color: [1, 2, 3, 255],
+                },
+            },
+        });
+        let last = chapter.layers.len().saturating_sub(1);
+        for (index, layer) in chapter.layers.iter().enumerate() {
+            let mut changed = layer.clone();
+            changed.visible = !changed.visible;
+            changed.locked = !changed.locked;
+            changed.opacity = 0.25;
+            changed.x += 7.0;
+            commands.push(Command::SetLayer { layer: changed });
+            commands.push(Command::DeleteLayer { layer: layer.id });
+            for target in [0, last] {
+                if target != index {
+                    commands.push(Command::MoveLayer {
+                        layer: layer.id,
+                        index: target,
+                    });
+                }
+            }
+            if matches!(
+                layer.kind,
+                crate::model::LayerKind::Text { bubble: true, .. }
+            ) && !layer.locked
+            {
+                commands.push(Command::AddLinkedBubble { parent: layer.id });
+            }
+        }
+        if let Some(layer) = chapter.layers.first() {
+            // Duplicating is AddLayer with a copy.
+            commands.push(Command::AddLayer {
+                chapter: chapter.id,
+                index: None,
+                layer: layer.clone(),
+            });
+        }
+    }
     commands.push(Command::AddGroup);
     let characters: Vec<_> = story
         .assets
@@ -523,12 +576,14 @@ fn commands_for(story: &Story) -> Vec<Command> {
 #[test]
 fn every_command_then_its_inverse_leaves_the_manifest_byte_identical() {
     let mut checked = 0;
+    let mut seen = HashSet::new();
     for (name, original) in fixtures() {
         let before = manifest(&original);
         let commands = commands_for(&original);
         assert!(!commands.is_empty(), "{name}: no commands generated");
         for command in commands {
             let label = format!("{name}: {}", command.name());
+            seen.insert(command.name());
             let mut story = original.clone();
             let applied = story
                 .apply(command.clone())
@@ -553,6 +608,53 @@ fn every_command_then_its_inverse_leaves_the_manifest_byte_identical() {
         }
     }
     assert!(checked > 100, "only {checked} commands were checked");
+    // Every public command is exercised, so a new one cannot skip this test.
+    for name in [
+        "set_field",
+        "replace_text",
+        "add_panel",
+        "set_gender",
+        "add_outfit",
+        "set_outfit",
+        "remove_outfit",
+        "set_active_outfit",
+        "add_palette_color",
+        "set_palette_color",
+        "remove_palette_color",
+        "set_reference",
+        "remove_reference",
+        "add_lore_note",
+        "add_lore_card",
+        "remove_lore_card",
+        "move_lore_card",
+        "set_lore_card_color",
+        "connect_lore",
+        "set_lore_connection",
+        "disconnect_lore",
+        "batch",
+        "set_chapter_height",
+        "add_chapter",
+        "set_panel_geometry",
+        "delete_panel",
+        "sort_panels",
+        "add_asset",
+        "add_image_asset",
+        "add_image_version",
+        "add_layer",
+        "set_layer",
+        "delete_layer",
+        "move_layer",
+        "add_linked_bubble",
+        "add_group",
+        "set_group_color",
+        "set_group_members",
+        "remove_group",
+        "move_chronology",
+        "set_chronology_entry",
+        "order_chronology_by_reading",
+    ] {
+        assert!(seen.contains(name), "{name} was never exercised");
+    }
 }
 
 #[test]
@@ -1552,4 +1654,192 @@ fn image_commands_are_marked_as_needing_bytes() {
     assert!(image.needs_image_bytes());
     assert!(Command::Batch(vec![Command::AddGroup, image]).needs_image_bytes());
     assert!(!Command::AddGroup.needs_image_bytes());
+}
+
+fn shape(name: &str) -> crate::model::Layer {
+    crate::model::Layer {
+        id: 0,
+        name: name.into(),
+        visible: true,
+        locked: false,
+        opacity: 1.0,
+        x: 0.0,
+        y: 0.0,
+        width: 10.0,
+        height: 10.0,
+        kind: crate::model::LayerKind::Shape { color: [0; 4] },
+    }
+}
+
+#[test]
+fn layer_commands_refuse_bad_input_without_changing_anything() {
+    let story = Story::demo();
+    let chapter = story.chapters[0].id;
+    let layers = story.chapters[0].layers.len();
+    let first = story.chapters[0].layers[0].clone();
+    let text = story.chapters[0]
+        .layers
+        .iter()
+        .find(|l| matches!(l.kind, crate::model::LayerKind::Text { .. }))
+        .unwrap()
+        .clone();
+    let sketch = story.assets.iter().find(|a| a.width == 0).map(|a| a.id);
+    let mut bad_opacity = first.clone();
+    bad_opacity.opacity = 2.0;
+    let mut missing_preset = text.clone();
+    if let crate::model::LayerKind::Text { style, .. } = &mut missing_preset.kind {
+        style.preset_id = Some(999_999);
+    }
+    let mut cases = vec![
+        Command::AddLayer {
+            chapter,
+            index: Some(layers + 1),
+            layer: shape("x"),
+        },
+        Command::AddLayer {
+            chapter: 999_999,
+            index: None,
+            layer: shape("x"),
+        },
+        Command::MoveLayer {
+            layer: first.id,
+            index: layers,
+        },
+        Command::SetLayer { layer: bad_opacity },
+        Command::SetLayer {
+            layer: missing_preset,
+        },
+        Command::DeleteLayer { layer: 999_999 },
+        Command::InsertLayer {
+            chapter,
+            index: 0,
+            layer: first.clone(),
+        },
+        Command::InsertLayer {
+            chapter,
+            index: 0,
+            layer: crate::model::Layer {
+                id: story.next_id,
+                ..shape("future")
+            },
+        },
+        // Not a speech bubble.
+        Command::AddLinkedBubble { parent: first.id },
+        Command::AddLinkedBubble { parent: 999_999 },
+    ];
+    if let Some(sketch) = sketch {
+        // An image layer needs a sheet that has an image.
+        cases.push(Command::AddLayer {
+            chapter,
+            index: None,
+            layer: crate::model::Layer {
+                kind: crate::model::LayerKind::Image {
+                    asset_id: sketch,
+                    mask: Vec::new(),
+                    clip: None,
+                    source_rect: None,
+                },
+                ..shape("image")
+            },
+        });
+    }
+    let mut locked = story.clone();
+    for layer in &mut locked.chapters[0].layers {
+        layer.locked = true;
+    }
+    for command in cases {
+        let mut s = story.clone();
+        let name = command.name();
+        let before = manifest(&s);
+        assert!(s.apply(command).is_err(), "{name} should fail");
+        assert!(manifest(&s) == before, "{name} changed the story");
+    }
+    // A locked bubble cannot gain a linked bubble, as in the app.
+    let before = manifest(&locked);
+    assert!(locked
+        .apply(Command::AddLinkedBubble { parent: text.id })
+        .is_err());
+    assert!(manifest(&locked) == before);
+}
+
+#[test]
+fn removing_an_added_layer_never_rewinds_past_newer_objects() {
+    let mut story = Story::demo();
+    let chapter = story.chapters[0].id;
+    let added = story
+        .apply(Command::AddLayer {
+            chapter,
+            index: None,
+            layer: shape("first"),
+        })
+        .unwrap();
+    let later = story.apply(Command::AddGroup).unwrap().created[0];
+    story.apply(added.inverse).unwrap();
+    assert!(story.next_id > later);
+}
+
+#[test]
+fn deleted_layers_undo_even_if_current_rules_would_refuse_them() {
+    // An older story can hold a layer today's rules reject (here: opacity above 1).
+    let mut story = Story::demo();
+    story.chapters[0].layers[0].opacity = 1.5;
+    let before = manifest(&story);
+    let id = story.chapters[0].layers[0].id;
+    let deleted = story.apply(Command::DeleteLayer { layer: id }).unwrap();
+    story.apply(deleted.inverse).unwrap();
+    assert!(manifest(&story) == before);
+    // A linked bubble added next to it also undoes, though the odd layer is untouched.
+    let bubble = story.chapters[0]
+        .layers
+        .iter()
+        .find(|l| matches!(l.kind, crate::model::LayerKind::Text { bubble: true, .. }) && !l.locked)
+        .unwrap()
+        .id;
+    let linked = story
+        .apply(Command::AddLinkedBubble { parent: bubble })
+        .unwrap();
+    story.apply(linked.inverse).unwrap();
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn story_wide_replace_reaches_dialogue_and_scales_linearly() {
+    let mut story = Story::demo();
+    let line = story.alloc_id();
+    let preset = story.bubble_presets[0].id;
+    let mut style = crate::model::TextStyle::dialogue();
+    style.preset_id = Some(preset);
+    story.chapters[0].layers.push(crate::model::Layer {
+        id: line,
+        kind: crate::model::LayerKind::Text {
+            text: "Mira, wait!".into(),
+            color: [0, 0, 0, 255],
+            size: 38.0,
+            bubble: true,
+            style,
+        },
+        ..shape("Dialogue")
+    });
+    for i in 0..20_000 {
+        let id = story.alloc_id();
+        story.chapters[0].layers.push(crate::model::Layer {
+            id,
+            ..shape(&format!("filler {i}"))
+        });
+    }
+    let started = std::time::Instant::now();
+    let applied = story
+        .apply(Command::ReplaceText {
+            find: "Mira".into(),
+            replace: "Mina".into(),
+            scope: Scope::Story,
+        })
+        .unwrap();
+    // Linear in the number of fields; the old quadratic scan took minutes here.
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(applied.touched.contains(&line));
+    assert_eq!(
+        story.field(Target::Object(line), Field::Text).unwrap(),
+        "Mina, wait!"
+    );
 }

@@ -14,7 +14,7 @@ use crate::{
     model::{
         Asset, AssetKind, BackgroundLocation, CardThumbnail, Chapter, CharacterGender,
         CharacterOutfit, CharacterProfile, CharacterReference, CharacterSwatch, ChronologyEntry,
-        LayerKind, LoreBoard, LoreEntry, Panel, Story, WorldGroup,
+        Layer, LayerKind, LoreBoard, LoreEntry, Panel, Story, WorldGroup,
     },
     thumbnails, timeline,
 };
@@ -34,6 +34,7 @@ const MAX_LORE_NOTES: usize = 4096;
 const MAX_REFERENCES: usize = 24;
 const MAX_PANELS: usize = 10_000;
 const MAX_CHAPTERS: usize = 1000;
+const MAX_LAYERS: usize = 100_000;
 const MIN_CHAPTER_SIDE: u32 = 64;
 const MAX_CHAPTER_WIDTH: u32 = 8192;
 const MAX_CHAPTER_HEIGHT: u32 = 200_000;
@@ -105,6 +106,10 @@ pub enum ObjectKind {
     LoreConnection,
     Chapter,
     Group,
+    /// A canvas layer other than text (image, shape, stroke, effect).
+    Layer,
+    /// A text or speech-bubble layer: its `text` is the lettered dialogue.
+    TextLayer,
 }
 
 impl Field {
@@ -217,6 +222,8 @@ impl Field {
             ObjectKind::LoreConnection => &[],
             ObjectKind::Chapter => &[Name],
             ObjectKind::Group => &[Name, Description],
+            ObjectKind::Layer => &[Name],
+            ObjectKind::TextLayer => &[Name, Text],
         }
     }
 }
@@ -243,7 +250,9 @@ pub struct PanelDraft {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Replace one whitelisted text field.
+    /// Replace one whitelisted text field. Changing a text layer's `text` keeps its
+    /// geometry: the bubble is not refitted (the app refits as you type). To refit, send the
+    /// fitted layer with [`Command::SetLayer`].
     SetField {
         target: Target,
         field: Field,
@@ -395,6 +404,33 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    /// Add a layer to a chapter, on top or at `index` (0 is the bottom). The layer's `id`
+    /// is ignored; a new one is assigned.
+    AddLayer {
+        chapter: u64,
+        index: Option<usize>,
+        layer: Layer,
+    },
+    /// Replace a layer's settings and content, keeping its ID and place in the stack.
+    ///
+    /// Layer commands do not check `locked`: the app's own menus decide what a locked layer
+    /// allows (it can still be shown, hidden or unlocked). The addon host applies its own
+    /// rule for locked layers.
+    SetLayer {
+        layer: Layer,
+    },
+    DeleteLayer {
+        layer: u64,
+    },
+    /// Move a layer to `index` in its chapter's stack (0 is the bottom).
+    MoveLayer {
+        layer: u64,
+        index: usize,
+    },
+    /// Add a speech bubble joined to `parent`, using the app's linked-bubble rules.
+    AddLinkedBubble {
+        parent: u64,
+    },
     AddGroup,
     SetGroupColor {
         group: u64,
@@ -462,6 +498,17 @@ pub enum Command {
         next_id: u64,
     },
     #[doc(hidden)]
+    RemoveLayer {
+        layer: u64,
+        next_id: u64,
+    },
+    #[doc(hidden)]
+    InsertLayer {
+        chapter: u64,
+        index: usize,
+        layer: Layer,
+    },
+    #[doc(hidden)]
     RemoveLastChapter {
         chapter: u64,
         next_id: u64,
@@ -492,6 +539,8 @@ pub struct Sections {
     pub lore: Option<Vec<LoreEntry>>,
     pub lore_board: Option<LoreBoard>,
     pub card_thumbnails: Option<Vec<CardThumbnail>>,
+    /// One chapter's layers, by chapter ID.
+    pub layers: Option<(u64, Vec<Layer>)>,
     pub next_id: u64,
 }
 
@@ -527,6 +576,8 @@ impl Command {
             | Command::InsertReference { .. }
             | Command::RestoreLore { .. }
             | Command::RemoveLastChapter { .. }
+            | Command::RemoveLayer { .. }
+            | Command::InsertLayer { .. }
             | Command::Restore(_) => true,
             Command::Batch(commands) => commands.iter().any(Command::is_internal),
             _ => false,
@@ -582,6 +633,13 @@ impl Command {
             Command::AddAsset { .. } => "add_asset",
             Command::AddImageAsset { .. } => "add_image_asset",
             Command::AddGroup => "add_group",
+            Command::AddLayer { .. } => "add_layer",
+            Command::SetLayer { .. } => "set_layer",
+            Command::DeleteLayer { .. } => "delete_layer",
+            Command::MoveLayer { .. } => "move_layer",
+            Command::AddLinkedBubble { .. } => "add_linked_bubble",
+            Command::RemoveLayer { .. } => "remove_layer",
+            Command::InsertLayer { .. } => "insert_layer",
             Command::AddImageVersion { .. } => "add_image_version",
             Command::SetGroupColor { .. } => "set_group_color",
             Command::SetGroupMembers { .. } => "set_group_members",
@@ -651,6 +709,7 @@ enum Slot {
     LoreConnection,
     Chapter(usize),
     Group(usize),
+    Layer(usize, usize),
 }
 
 impl Story {
@@ -709,8 +768,11 @@ impl Story {
 
     /// What kind of object an ID names, if any.
     pub fn object_kind(&self, target: Target) -> Option<ObjectKind> {
-        let slot = self.slot(target).ok()?;
-        Some(match slot {
+        Some(self.slot_kind(self.slot(target).ok()?))
+    }
+
+    fn slot_kind(&self, slot: Slot) -> ObjectKind {
+        match slot {
             Slot::Story => ObjectKind::Story,
             Slot::Panel(..) => ObjectKind::Panel,
             Slot::Asset(index) => {
@@ -726,20 +788,26 @@ impl Story {
             Slot::LoreConnection => ObjectKind::LoreConnection,
             Slot::Chapter(_) => ObjectKind::Chapter,
             Slot::Group(_) => ObjectKind::Group,
-        })
+            Slot::Layer(c, l) => match self.chapters[c].layers[l].kind {
+                LayerKind::Text { .. } => ObjectKind::TextLayer,
+                _ => ObjectKind::Layer,
+            },
+        }
     }
 
     /// Read a whitelisted field.
     pub fn field(&self, target: Target, field: Field) -> Result<&str> {
-        let kind = self
-            .object_kind(target)
-            .context("That object no longer exists")?;
+        let slot = self.slot(target).context("That object no longer exists")?;
         ensure!(
-            Field::allowed_on(kind).contains(&field),
+            Field::allowed_on(self.slot_kind(slot)).contains(&field),
             "{} cannot be edited on this object",
             field.as_str()
         );
-        let slot = self.slot(target)?;
+        self.slot_text(slot, field)
+    }
+
+    /// The text of an allowed field at a known slot, without another lookup.
+    fn slot_text(&self, slot: Slot, field: Field) -> Result<&str> {
         Ok(match (slot, field) {
             (Slot::Story, Field::Title) => &self.title,
             (Slot::Story, Field::Synopsis) => &self.synopsis,
@@ -758,6 +826,13 @@ impl Story {
             (Slot::Chapter(c), _) => &self.chapters[c].name,
             (Slot::Group(g), Field::Name) => &self.groups[g].name,
             (Slot::Group(g), _) => &self.groups[g].description,
+            (Slot::Layer(c, l), field) => {
+                let layer = &self.chapters[c].layers[l];
+                match (&layer.kind, field) {
+                    (LayerKind::Text { text, .. }, Field::Text) => text,
+                    _ => &layer.name,
+                }
+            }
             (Slot::LoreNote(i), Field::Title) => &self.lore[i].title,
             (Slot::LoreNote(i), _) => &self.lore[i].text,
             (Slot::LoreCard(i), _) => &self.lore_board.cards[i].note,
@@ -767,25 +842,76 @@ impl Story {
 
     /// Every whitelisted (target, field) pair in the story, in a stable order.
     pub fn text_fields(&self) -> Vec<(Target, Field)> {
-        let mut targets = vec![Target::Story];
-        targets.extend(
+        self.slots()
+            .into_iter()
+            .flat_map(|(target, slot)| {
+                Field::allowed_on(self.slot_kind(slot))
+                    .iter()
+                    .map(move |field| (target, *field))
+            })
+            .collect()
+    }
+
+    /// Every object that has text fields, with its slot, in one pass over the story.
+    fn slots(&self) -> Vec<(Target, Slot)> {
+        let mut slots = vec![(Target::Story, Slot::Story)];
+        for (c, chapter) in self.chapters.iter().enumerate() {
+            slots.extend(
+                chapter
+                    .panels
+                    .iter()
+                    .enumerate()
+                    .map(|(p, panel)| (Target::Object(panel.id), Slot::Panel(c, p))),
+            );
+        }
+        let object = |id| Target::Object(id);
+        slots.extend(
             self.chapters
                 .iter()
-                .flat_map(|chapter| chapter.panels.iter().map(|panel| Target::Object(panel.id))),
+                .enumerate()
+                .map(|(c, chapter)| (object(chapter.id), Slot::Chapter(c))),
         );
-        targets.extend(self.chapters.iter().map(|c| Target::Object(c.id)));
-        targets.extend(self.assets.iter().map(|asset| Target::Object(asset.id)));
-        targets.extend(self.groups.iter().map(|g| Target::Object(g.id)));
-        targets.extend(self.locations.iter().map(|l| Target::Object(l.id)));
-        targets.extend(self.lore.iter().map(|n| Target::Object(n.id)));
-        targets.extend(self.lore_board.cards.iter().map(|c| Target::Object(c.id)));
-        let mut fields = Vec::new();
-        for target in targets {
-            if let Some(kind) = self.object_kind(target) {
-                fields.extend(Field::allowed_on(kind).iter().map(|field| (target, *field)));
-            }
+        slots.extend(
+            self.assets
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (object(a.id), Slot::Asset(i))),
+        );
+        slots.extend(
+            self.groups
+                .iter()
+                .enumerate()
+                .map(|(g, x)| (object(x.id), Slot::Group(g))),
+        );
+        for (c, chapter) in self.chapters.iter().enumerate() {
+            slots.extend(
+                chapter
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(l, layer)| (object(layer.id), Slot::Layer(c, l))),
+            );
         }
-        fields
+        slots.extend(
+            self.locations
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (object(l.id), Slot::Location(i))),
+        );
+        slots.extend(
+            self.lore
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (object(n.id), Slot::LoreNote(i))),
+        );
+        slots.extend(
+            self.lore_board
+                .cards
+                .iter()
+                .enumerate()
+                .map(|(i, card)| (object(card.id), Slot::LoreCard(i))),
+        );
+        slots
     }
 
     fn slot(&self, target: Target) -> Result<Slot> {
@@ -802,6 +928,9 @@ impl Story {
         for (c, chapter) in self.chapters.iter().enumerate() {
             if let Some(p) = chapter.panels.iter().position(|panel| panel.id == id) {
                 return Ok(Slot::Panel(c, p));
+            }
+            if let Some(l) = chapter.layers.iter().position(|layer| layer.id == id) {
+                return Ok(Slot::Layer(c, l));
             }
         }
         if let Some(i) = self.assets.iter().position(|a| a.id == id) {
@@ -880,6 +1009,13 @@ impl Story {
             (Slot::Chapter(c), _) => &mut self.chapters[c].name,
             (Slot::Group(g), Field::Name) => &mut self.groups[g].name,
             (Slot::Group(g), _) => &mut self.groups[g].description,
+            (Slot::Layer(c, l), field) => {
+                let layer = &mut self.chapters[c].layers[l];
+                match (&mut layer.kind, field) {
+                    (LayerKind::Text { text, .. }, Field::Text) => text,
+                    _ => &mut layer.name,
+                }
+            }
             (Slot::LoreNote(i), Field::Title) => &mut self.lore[i].title,
             (Slot::LoreNote(i), _) => &mut self.lore[i].text,
             (Slot::LoreCard(i), _) => &mut self.lore_board.cards[i].note,
@@ -974,6 +1110,24 @@ impl Story {
         Ok(id)
     }
 
+    /// The rules storage applies to a saved layer. The command layer has no image bytes,
+    /// so an image layer must point at a sheet that has an image.
+    fn check_layer(&self, layer: &Layer) -> Result<()> {
+        self.check_layer_with(layer, &self.preset_ids())
+    }
+
+    fn preset_ids(&self) -> HashSet<u64> {
+        self.bubble_presets.iter().map(|p| p.id).collect()
+    }
+
+    fn check_layer_with(&self, layer: &Layer, presets: &HashSet<u64>) -> Result<()> {
+        crate::storage::validate_layer(self, layer, presets, |id| {
+            self.assets
+                .iter()
+                .any(|a| a.id == id && a.width > 0 && a.height > 0)
+        })
+    }
+
     /// `count` more IDs can be allocated without exhausting the ID space.
     fn ensure_ids(&self, count: u64) -> Result<()> {
         ensure!(
@@ -1052,12 +1206,19 @@ impl Story {
             Some((id, _)) => Some(self.chapter_index(*id)?),
             None => None,
         };
+        let layer_chapter = match &sections.layers {
+            Some((id, _)) => Some(self.chapter_index(*id)?),
+            None => None,
+        };
         let mut old = Sections {
             next_id: self.next_id,
             ..Default::default()
         };
         if let (Some(c), Some((id, panels))) = (chapter, sections.panels) {
             old.panels = Some((id, std::mem::replace(&mut self.chapters[c].panels, panels)));
+        }
+        if let (Some(c), Some((id, layers))) = (layer_chapter, sections.layers) {
+            old.layers = Some((id, std::mem::replace(&mut self.chapters[c].layers, layers)));
         }
         macro_rules! swap {
             ($field:ident) => {
@@ -1083,6 +1244,7 @@ impl Story {
         ensure!(self.assets.len() <= MAX_ASSETS, "Too many assets");
         for chapter in &self.chapters {
             ensure!(chapter.panels.len() <= MAX_PANELS, "Chapter is too large");
+            ensure!(chapter.layers.len() <= MAX_LAYERS, "Chapter is too large");
             for panel in &chapter.panels {
                 ensure!(
                     panel.y.is_finite() && panel.height.is_finite() && panel.height > 0.0,
@@ -1199,21 +1361,21 @@ impl Story {
                 ensure!(!find.is_empty(), "Enter the text to find");
                 check_text(&find, LONG)?;
                 check_text(&replace, LONG)?;
-                let fields: Vec<_> = match scope {
-                    Scope::Story => self.text_fields(),
-                    Scope::Target(target) => {
-                        let kind = self
-                            .object_kind(target)
-                            .context("That object no longer exists")?;
-                        Field::allowed_on(kind)
-                            .iter()
-                            .map(|f| (target, *f))
-                            .collect()
-                    }
+                // One pass over the story; only matching fields cost a lookup to edit.
+                let slots: Vec<_> = match scope {
+                    Scope::Story => self.slots(),
+                    Scope::Target(target) => vec![(
+                        target,
+                        self.slot(target).context("That object no longer exists")?,
+                    )],
                 };
                 let mut edits = Vec::new();
-                for (target, field) in fields {
-                    let current = self.field(target, field)?;
+                for (target, slot, field) in slots.into_iter().flat_map(|(target, slot)| {
+                    Field::allowed_on(self.slot_kind(slot))
+                        .iter()
+                        .map(move |field| (target, slot, *field))
+                }) {
+                    let current = self.slot_text(slot, field)?;
                     if current.contains(&find) {
                         // SetField validates each replacement; the batch rolls back on error.
                         let value = current.replace(&find, &replace);
@@ -1933,6 +2095,134 @@ impl Story {
                     ..Applied::new(inverse).touch(asset).create(id)
                 })
             }
+            Command::AddLayer {
+                chapter,
+                index,
+                mut layer,
+            } => {
+                let c = self.chapter_index(chapter)?;
+                let layers = self.chapters[c].layers.len();
+                ensure!(
+                    layers < MAX_LAYERS,
+                    "A chapter can have at most {MAX_LAYERS} layers"
+                );
+                let index = index.unwrap_or(layers);
+                ensure!(index <= layers, "Invalid layer position");
+                self.ensure_ids(1)?;
+                let next_id = self.next_id;
+                layer.id = next_id;
+                self.check_layer(&layer)?;
+                let id = self.alloc_id();
+                self.chapters[c].layers.insert(index, layer);
+                Ok(Applied::new(Command::RemoveLayer { layer: id, next_id })
+                    .touch(chapter)
+                    .create(id))
+            }
+            Command::RemoveLayer { layer, next_id } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let chapter = self.chapters[c].id;
+                let removed = self.chapters[c].layers.remove(l);
+                self.next_id = self.safe_next_id(next_id);
+                Ok(Applied::new(Command::AddLayer {
+                    chapter,
+                    index: Some(l),
+                    layer: removed,
+                })
+                .touch(chapter)
+                .touch(layer))
+            }
+            Command::SetLayer { layer } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer.id))? else {
+                    bail!("That layer no longer exists")
+                };
+                self.check_layer(&layer)?;
+                let id = layer.id;
+                let old = std::mem::replace(&mut self.chapters[c].layers[l], layer);
+                Ok(Applied::new(Command::SetLayer { layer: old }).touch(id))
+            }
+            Command::DeleteLayer { layer } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let chapter = self.chapters[c].id;
+                let removed = self.chapters[c].layers.remove(l);
+                Ok(Applied::new(Command::InsertLayer {
+                    chapter,
+                    index: l,
+                    layer: removed,
+                })
+                .touch(chapter)
+                .touch(layer))
+            }
+            Command::InsertLayer {
+                chapter,
+                index,
+                layer,
+            } => {
+                let c = self.chapter_index(chapter)?;
+                ensure!(
+                    index <= self.chapters[c].layers.len()
+                        && self.chapters[c].layers.len() < MAX_LAYERS,
+                    "Invalid layer position"
+                );
+                ensure!(
+                    layer.id > 0
+                        && layer.id < self.next_id
+                        && !self.all_ids().any(|id| id == layer.id),
+                    "That layer ID is already in use"
+                );
+                // The layer came out of this story, so it is put back as it was rather than
+                // re-validated: a layer an older version allowed must still undo.
+                let id = layer.id;
+                self.chapters[c].layers.insert(index, layer);
+                Ok(Applied::new(Command::DeleteLayer { layer: id })
+                    .touch(chapter)
+                    .touch(id))
+            }
+            Command::MoveLayer { layer, index } => {
+                let Slot::Layer(c, l) = self.slot(Target::Object(layer))? else {
+                    bail!("That layer no longer exists")
+                };
+                let layers = &mut self.chapters[c].layers;
+                ensure!(index < layers.len(), "Invalid layer position");
+                let moved = layers.remove(l);
+                layers.insert(index, moved);
+                Ok(Applied::new(Command::MoveLayer { layer, index: l })
+                    .touch(self.chapters[c].id)
+                    .touch(layer))
+            }
+            Command::AddLinkedBubble { parent } => {
+                // Same messages as the app's linked-bubble helper.
+                let Ok(Slot::Layer(c, _)) = self.slot(Target::Object(parent)) else {
+                    bail!("Select an unlocked bubble")
+                };
+                ensure!(
+                    self.chapters[c].layers.len() < MAX_LAYERS,
+                    "A chapter can have at most {MAX_LAYERS} layers"
+                );
+                self.ensure_ids(1)?;
+                // The helper validates the parent and adjusts the whole cluster; capture
+                // the chapter's layers so undo puts every bubble back exactly.
+                let inverse = self.restore(Sections {
+                    layers: Some((self.chapters[c].id, self.chapters[c].layers.clone())),
+                    ..Default::default()
+                });
+                let mut next = self.clone();
+                let id = crate::bubbles::add_cluster_bubble(&mut next, c, parent)?;
+                let child = next.chapters[c]
+                    .layers
+                    .iter()
+                    .find(|l| l.id == id)
+                    .context("The linked bubble was not added")?;
+                next.check_layer(child)?;
+                *self = next;
+                Ok(Applied::new(inverse)
+                    .touch(self.chapters[c].id)
+                    .touch(parent)
+                    .create(id))
+            }
             Command::AddGroup => {
                 let inverse = self.restore(Sections {
                     groups: Some(self.groups.clone()),
@@ -2041,10 +2331,30 @@ impl Story {
             Command::Restore(sections) => {
                 let previous_next = self.next_id;
                 let restored_next = sections.next_id;
+                let layer_chapter = sections.layers.as_ref().map(|(id, _)| *id);
                 let old = self.swap_sections(*sections)?;
                 // Decide the counter after the swap, once the restored objects are in place.
                 self.next_id = self.safe_next_id(restored_next);
-                if let Err(error) = self.check_sections() {
+                let checked = self.check_sections().and_then(|_| match layer_chapter {
+                    Some(id) => {
+                        // Only layers this restore changes are checked: unchanged ones were
+                        // already in the story, and must not block an undo.
+                        let c = self.chapter_index(id)?;
+                        let before: std::collections::HashMap<_, _> = old
+                            .layers
+                            .as_ref()
+                            .map(|(_, layers)| layers.iter().map(|l| (l.id, l)).collect())
+                            .unwrap_or_default();
+                        let presets = self.preset_ids();
+                        self.chapters[c]
+                            .layers
+                            .iter()
+                            .filter(|l| before.get(&l.id) != Some(l))
+                            .try_for_each(|l| self.check_layer_with(l, &presets))
+                    }
+                    None => Ok(()),
+                });
+                if let Err(error) = checked {
                     self.swap_sections(old.clone())
                         .expect("restoring the sections just replaced");
                     self.next_id = previous_next;

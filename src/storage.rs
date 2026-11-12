@@ -522,103 +522,115 @@ pub fn validate_story(story: &Story, assets: &AssetBytes) -> Result<()> {
         }
         for layer in &chapter.layers {
             insert_id(layer.id)?;
-            ensure!(
-                layer.name.len() <= 4096
-                    && finite(layer.x)
-                    && finite(layer.y)
-                    && finite(layer.width)
-                    && finite(layer.height)
-                    && layer.width > 0.0
-                    && layer.height > 0.0,
-                "Invalid layer dimensions"
-            );
-            ensure!(
-                layer.opacity.is_finite() && (0.0..=1.0).contains(&layer.opacity),
-                "Invalid layer opacity"
-            );
-            match &layer.kind {
-                LayerKind::Effect { effect } => {
-                    ensure!(effect.validate(), "Invalid effect parameters")
-                }
-                LayerKind::Image {
-                    asset_id,
-                    mask,
-                    clip,
-                    source_rect,
-                } => {
-                    if let Some([x, y, w, h]) = source_rect {
-                        ensure!(
-                            [x, y, w, h].iter().all(|n| n.is_finite())
-                                && *x >= 0.0
-                                && *y >= 0.0
-                                && *w > 0.0
-                                && *h > 0.0
-                                && x + w <= 1.00001
-                                && y + h <= 1.00001,
-                            "Invalid image snippet crop"
-                        );
-                    }
-
-                    if let Some(clip) = clip {
-                        let asset = story
-                            .assets
-                            .iter()
-                            .find(|asset| asset.id == *asset_id)
-                            .context("Missing selection asset")?;
-                        clip.validate(asset.width, asset.height)?;
-                        ensure!(
-                            mask.is_empty(),
-                            "An image cannot contain both legacy and patterned selections"
-                        );
-                    }
-                    ensure!(
-                        asset_ids.contains(asset_id) && assets.contains_key(asset_id),
-                        "Image layer references a missing image asset"
-                    );
-                    ensure!(
-                        (mask.is_empty() || mask.len() >= 3) && mask.len() <= 100_000,
-                        "Invalid lasso polygon"
-                    );
-                    ensure!(
-                        mask.iter()
-                            .flatten()
-                            .all(|n| n.is_finite() && (0.0..=1.0).contains(n)),
-                        "Lasso coordinates must be normalized"
-                    );
-                }
-                LayerKind::Stroke { points, size, .. } => {
-                    ensure!(
-                        points.len() <= 1_000_000 && points.iter().flatten().all(|n| finite(*n)),
-                        "Invalid brush stroke"
-                    );
-                    ensure!(
-                        size.is_finite() && (0.1..=4096.0).contains(size),
-                        "Invalid brush size"
-                    );
-                }
-                LayerKind::Text {
-                    text, size, style, ..
-                } => {
-                    ensure!(
-                        text.len() <= 1_000_000
-                            && size.is_finite()
-                            && (1.0..=4096.0).contains(size),
-                        "Invalid text layer"
-                    );
-                    ensure!(
-                        style.preset_id.is_none_or(|id| preset_ids.contains(&id)),
-                        "Text layer references a missing bubble preset"
-                    );
-                    validate_text_style(style, layer.width, layer.height)?;
-                }
-                LayerKind::Shape { .. } => {}
-            }
+            validate_layer(story, layer, &preset_ids, |id| {
+                asset_ids.contains(&id) && assets.contains_key(&id)
+            })?;
         }
     }
     ensure!(
         story.next_id > max_id && story.next_id < u64::MAX,
         "Story ID counter is invalid"
     );
+    Ok(())
+}
+
+/// The rules a saved layer must follow. `has_image` says whether an image asset (with its
+/// bytes, when known) exists; the command layer, which never holds bytes, checks the sheet.
+pub(crate) fn validate_layer(
+    story: &Story,
+    layer: &crate::model::Layer,
+    preset_ids: &HashSet<u64>,
+    has_image: impl Fn(u64) -> bool,
+) -> Result<()> {
+    ensure!(
+        layer.name.len() <= 4096
+            && finite(layer.x)
+            && finite(layer.y)
+            && finite(layer.width)
+            && finite(layer.height)
+            && layer.width > 0.0
+            && layer.height > 0.0,
+        "Invalid layer dimensions"
+    );
+    ensure!(
+        layer.opacity.is_finite() && (0.0..=1.0).contains(&layer.opacity),
+        "Invalid layer opacity"
+    );
+    match &layer.kind {
+        LayerKind::Effect { effect } => {
+            ensure!(effect.validate(), "Invalid effect parameters")
+        }
+        LayerKind::Image {
+            asset_id,
+            mask,
+            clip,
+            source_rect,
+        } => {
+            if let Some([x, y, w, h]) = source_rect {
+                ensure!(
+                    [x, y, w, h].iter().all(|n| n.is_finite())
+                        && *x >= 0.0
+                        && *y >= 0.0
+                        && *w > 0.0
+                        && *h > 0.0
+                        && x + w <= 1.00001
+                        && y + h <= 1.00001,
+                    "Invalid image snippet crop"
+                );
+            }
+
+            if let Some(clip) = clip {
+                let asset = story
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == *asset_id)
+                    .context("Missing selection asset")?;
+                clip.validate(asset.width, asset.height)?;
+                ensure!(
+                    mask.is_empty(),
+                    "An image cannot contain both legacy and patterned selections"
+                );
+            }
+            ensure!(
+                has_image(*asset_id),
+                "Image layer references a missing image asset"
+            );
+            ensure!(
+                (mask.is_empty() || mask.len() >= 3) && mask.len() <= 100_000,
+                "Invalid lasso polygon"
+            );
+            ensure!(
+                mask.iter()
+                    .flatten()
+                    .all(|n| n.is_finite() && (0.0..=1.0).contains(n)),
+                "Lasso coordinates must be normalized"
+            );
+        }
+        LayerKind::Stroke { points, size, .. } => {
+            ensure!(
+                points.len() <= 1_000_000 && points.iter().flatten().all(|n| finite(*n)),
+                "Invalid brush stroke"
+            );
+            ensure!(
+                size.is_finite() && (0.1..=4096.0).contains(size),
+                "Invalid brush size"
+            );
+        }
+        LayerKind::Text {
+            text, size, style, ..
+        } => {
+            ensure!(
+                text.len() <= 1_000_000 && size.is_finite() && (1.0..=4096.0).contains(size),
+                "Invalid text layer"
+            );
+            ensure!(
+                style.preset_id.is_none_or(|id| preset_ids.contains(&id)),
+                "Text layer references a missing bubble preset"
+            );
+            validate_text_style(style, layer.width, layer.height)?;
+        }
+        LayerKind::Shape { .. } => {}
+    }
     Ok(())
 }
 

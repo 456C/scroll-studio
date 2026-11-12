@@ -136,11 +136,11 @@ fn layers_list_exposes_lettering_but_never_pixels() {
     let line = layers.iter().find(|l| l["id"] == id).unwrap();
     assert_eq!(line["text"], "Then I guess I'm walking.");
     assert_eq!(line["bubble"], true);
-    // A layer ID is not an object.get target, and the error says where to look.
-    if let Some(layer) = chapter.layers.first() {
-        let error = story.query(&Query::ObjectGet { id: layer.id }).unwrap_err();
-        assert!(error.to_string().contains("layers.list"), "{error}");
-    }
+    // Layers are objects too: their name and lettered text are editable fields.
+    let object = ask(&story, "object.get", json!({ "id": id }));
+    assert_eq!(object["kind"], "text_layer");
+    assert_eq!(object["fields"]["text"], "Then I guess I'm walking.");
+    assert_eq!(object["details"]["chapter_id"], story.chapters[0].id);
 }
 
 #[test]
@@ -202,6 +202,7 @@ fn object_get_returns_every_whitelisted_field_for_every_kind() {
         "lore_card",
         "chapter",
         "group",
+        "layer",
     ] {
         assert!(kinds.contains(kind), "{kind} not covered");
     }

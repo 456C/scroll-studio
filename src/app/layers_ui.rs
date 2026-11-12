@@ -200,15 +200,15 @@ impl Studio {
                             },
                         );
                         if eye.clicked() {
-                            self.checkpoint();
-                            if let Some(layer) = self.story.chapters[self.chapter]
+                            if let Some(mut layer) = self.story.chapters[self.chapter]
                                 .layers
-                                .iter_mut()
+                                .iter()
                                 .find(|layer| layer.id == row.id)
+                                .cloned()
                             {
                                 layer.visible = !row.visible;
+                                self.set_layer(layer);
                             }
-                            self.changed();
                         }
                         let name_width = (ui.available_width() - 20.0).max(40.0);
                         let response = ui

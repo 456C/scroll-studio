@@ -1005,9 +1005,7 @@ impl Studio {
                                     let newly_enabled = !super::cutout_ui::settings(&original)
                                         .enabled
                                         && super::cutout_ui::settings(&layer).enabled;
-                                    self.checkpoint();
-                                    self.story.chapters[self.chapter].layers[index] = layer;
-                                    self.changed();
+                                    self.set_layer(layer);
                                     if newly_enabled {
                                         self.start_backing_match(ui.ctx(), id, false);
                                     }
