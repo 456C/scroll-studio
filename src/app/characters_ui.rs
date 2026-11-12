@@ -132,13 +132,8 @@ impl Studio {
     /// Record one sheet edit as named commands. Anything a command cannot describe or
     /// accept keeps 0.13.2 behaviour: a snapshot and a direct assignment.
     pub(super) fn commit_character_sheet(&mut self, index: usize, original: &Asset, edited: Asset) {
-        let applied =
-            commands::character_edit(original, &edited).map(|command| self.apply_command(command));
-        if !matches!(applied, Some(Ok(_))) {
-            self.checkpoint();
-            self.story.assets[index] = edited;
-            self.changed();
-        }
+        let command = commands::character_edit(original, &edited);
+        self.commit(command, |studio| studio.story.assets[index] = edited);
     }
 
     pub(super) fn select_character(&mut self, id: u64) {

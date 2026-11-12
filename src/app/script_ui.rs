@@ -159,21 +159,44 @@ impl Studio {
         if !y.is_finite() || self.story.chapters[self.chapter].panels.len() >= 10_000 {
             return;
         }
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        let ch = &mut self.story.chapters[self.chapter];
-        ch.panels.push(Panel {
-            id,
+        let ch = &self.story.chapters[self.chapter];
+        let chapter = ch.id;
+        let y = y.clamp(0.0, ch.height as f32 - 1.0);
+        let draft = commands::PanelDraft {
             title: format!("Beat {:02}", ch.panels.len() + 1),
-            y: y.clamp(0.0, ch.height as f32 - 1.0),
-            height: 1400.0_f32.min(ch.height as f32 - y.clamp(0.0, ch.height as f32 - 1.0)),
+            y,
+            height: 1400.0_f32.min(ch.height as f32 - y),
             script: String::new(),
             notes: String::new(),
             prompt: String::new(),
+        };
+        let command = Command::Batch(vec![
+            Command::AddPanel {
+                chapter,
+                after: None,
+                panel: draft.clone(),
+            },
+            Command::SortPanels { chapter },
+        ]);
+        let mut fallback_id = None;
+        let applied = self.commit(Some(command), |studio| {
+            let id = studio.story.alloc_id();
+            let ch = &mut studio.story.chapters[studio.chapter];
+            ch.panels.push(Panel {
+                id,
+                title: draft.title,
+                y: draft.y,
+                height: draft.height,
+                script: String::new(),
+                notes: String::new(),
+                prompt: String::new(),
+            });
+            ch.panels.sort_by(|a, b| a.y.total_cmp(&b.y));
+            fallback_id = Some(id);
         });
-        ch.panels.sort_by(|a, b| a.y.total_cmp(&b.y));
-        self.active_panel = Some(id);
-        self.changed();
+        self.active_panel = applied
+            .and_then(|a| a.created.first().copied())
+            .or(fallback_id);
     }
 
     pub(super) fn script_timeline(&mut self, ui: &mut egui::Ui, canvas: Rect) {
@@ -511,20 +534,24 @@ impl Studio {
                 self.active_panel = Some(id);
                 ui.ctx().request_repaint();
             }
-            if panel != original || remove {
-                self.checkpoint();
-                if remove {
-                    self.story.chapters[self.chapter]
+            if remove {
+                let id = panel.id;
+                self.commit(Some(Command::DeletePanel { panel: id }), |studio| {
+                    studio.story.chapters[studio.chapter]
                         .panels
-                        .retain(|p| p.id != panel.id);
-                } else if let Some(p) = self.story.chapters[self.chapter]
-                    .panels
-                    .iter_mut()
-                    .find(|p| p.id == panel.id)
-                {
-                    *p = panel;
-                }
-                self.changed();
+                        .retain(|p| p.id != id)
+                });
+            } else if panel != original {
+                let command = commands::panel_edit(&original, &panel);
+                self.commit(command, |studio| {
+                    if let Some(p) = studio.story.chapters[studio.chapter]
+                        .panels
+                        .iter_mut()
+                        .find(|p| p.id == panel.id)
+                    {
+                        *p = panel;
+                    }
+                });
             }
         }
         self.next_beat_control(ui, canvas);
@@ -634,25 +661,52 @@ impl Studio {
         {
             return;
         }
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        let chapter = &mut self.story.chapters[self.chapter];
-        chapter.height = next.canvas_height;
-        chapter.panels.push(Panel {
-            id,
-            title: String::new(),
-            y: next.y,
-            height: next.height,
-            script: String::new(),
-            notes: String::new(),
-            prompt: String::new(),
+        let chapter = self.story.chapters[self.chapter].id;
+        let mut parts = Vec::new();
+        if self.story.chapters[self.chapter].height != next.canvas_height {
+            parts.push(Command::SetChapterHeight {
+                chapter,
+                height: next.canvas_height,
+            });
+        }
+        parts.push(Command::AddPanel {
+            chapter,
+            after: None,
+            panel: commands::PanelDraft {
+                title: String::new(),
+                y: next.y,
+                height: next.height,
+                script: String::new(),
+                notes: String::new(),
+                prompt: String::new(),
+            },
         });
-        chapter.panels.sort_by(|a, b| a.y.total_cmp(&b.y));
+        parts.push(Command::SortPanels { chapter });
+        let mut fallback_id = None;
+        let applied = self.commit(Some(Command::Batch(parts)), |studio| {
+            let id = studio.story.alloc_id();
+            let chapter = &mut studio.story.chapters[studio.chapter];
+            chapter.height = next.canvas_height;
+            chapter.panels.push(Panel {
+                id,
+                title: String::new(),
+                y: next.y,
+                height: next.height,
+                script: String::new(),
+                notes: String::new(),
+                prompt: String::new(),
+            });
+            chapter.panels.sort_by(|a, b| a.y.total_cmp(&b.y));
+            fallback_id = Some(id);
+        });
+        let id = applied
+            .and_then(|a| a.created.first().copied())
+            .or(fallback_id)
+            .expect("a panel was added");
         self.active_panel = Some(id);
         self.script_focus = Some(id);
         self.jump_y = Some(next.y);
         self.tool = Tool::Move;
-        self.changed();
         self.status = "Beat added".into();
     }
 }

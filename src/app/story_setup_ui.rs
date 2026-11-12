@@ -254,9 +254,12 @@ impl Studio {
             });
         self.style_prompt_open = open;
         if prompt != original {
-            self.checkpoint();
-            self.story.visual_style = prompt;
-            self.changed();
+            let command = Command::SetField {
+                target: Target::Story,
+                field: Field::VisualStyle,
+                value: prompt.clone(),
+            };
+            self.commit(Some(command), |studio| studio.story.visual_style = prompt);
         }
     }
 }

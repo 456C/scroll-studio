@@ -93,7 +93,7 @@ fn world() -> Story {
         name: "Night shift".into(),
         description: "Everyone still awake".into(),
         color: [120, 140, 200],
-        reference_ids: Vec::new(),
+        reference_ids: vec![reference],
         character_ids: vec![mira],
         location_ids: vec![station],
     });
@@ -102,7 +102,7 @@ fn world() -> Story {
         id: note,
         title: "The letter".into(),
         text: "Nobody knows who wrote it.".into(),
-        links: vec![mira, station],
+        links: vec![mira, station, group],
     });
     let note_card = lore::pin(&mut story, note, [0.0, 0.0]).unwrap();
     let mira_card = lore::pin(&mut story, mira, [300.0, 40.0]).unwrap();
@@ -116,6 +116,15 @@ fn world() -> Story {
         .unwrap()
         .label = "Received".into();
     lore::connect(&mut story, note_card, station_card).unwrap();
+    // RemoveGroup must take the group's card, lore links and card cover with it.
+    let group_card = lore::pin(&mut story, group, [500.0, 500.0]).unwrap();
+    lore::connect(&mut story, group_card, mira_card).unwrap();
+    assert!(crate::thumbnails::set(&mut story, group, reference));
+    story.timeline = vec![crate::model::ChronologyEntry {
+        chapter_id: story.chapters[0].id,
+        when: "Before dawn".into(),
+        summary: "The last train".into(),
+    }];
     let _ = jun;
     // A card cover chosen from an additional reference must survive RemoveReference undo.
     assert!(crate::thumbnails::set(&mut story, mira, reference));
@@ -174,7 +183,12 @@ fn commands_for(story: &Story) -> Vec<Command> {
             value,
         });
         // Clearing is a distinct case: undo must restore the old text exactly.
-        if !(field == Field::Name && story.object_kind(target) == Some(ObjectKind::Location)) {
+        let required = field == Field::Name
+            && matches!(
+                story.object_kind(target),
+                Some(ObjectKind::Location | ObjectKind::Group)
+            );
+        if !required {
             commands.push(Command::SetField {
                 target,
                 field,
@@ -350,6 +364,118 @@ fn commands_for(story: &Story) -> Vec<Command> {
             connection: edge.id,
         });
     }
+    for chapter in &story.chapters {
+        for height in [64, 800, chapter.height + 500] {
+            commands.push(Command::SetChapterHeight {
+                chapter: chapter.id,
+                height: height.min(200_000),
+            });
+        }
+        commands.push(Command::SortPanels {
+            chapter: chapter.id,
+        });
+        for panel in &chapter.panels {
+            commands.push(Command::SetPanelGeometry {
+                panel: panel.id,
+                y: panel.y + 10.0,
+                height: panel.height + 25.0,
+            });
+            commands.push(Command::DeletePanel { panel: panel.id });
+        }
+        commands.push(Command::MoveChronology {
+            chapter: chapter.id,
+            before: None,
+        });
+        if let Some(first) = story.chapters.first() {
+            commands.push(Command::MoveChronology {
+                chapter: chapter.id,
+                before: Some(first.id),
+            });
+        }
+        commands.push(Command::SetChronologyEntry {
+            chapter: chapter.id,
+            when: "Year 3, spring".into(),
+            summary: "The letter arrives".into(),
+        });
+    }
+    commands.push(Command::OrderChronologyByReading);
+    for opening in [
+        None,
+        Some(PanelDraft {
+            title: "The opening".into(),
+            y: 120.0,
+            height: 1400.0,
+            script: String::new(),
+            notes: String::new(),
+            prompt: String::new(),
+        }),
+    ] {
+        commands.push(Command::AddChapter {
+            name: "Chapter 99".into(),
+            width: 800,
+            height: 6400,
+            opening,
+        });
+    }
+    for kind in [AssetKind::Character, AssetKind::Background] {
+        commands.push(Command::AddAsset {
+            name: "New sheet".into(),
+            kind,
+            location: None,
+        });
+    }
+    for location in &story.locations {
+        commands.push(Command::AddAsset {
+            name: "Filed background".into(),
+            kind: AssetKind::Background,
+            location: Some(location.id),
+        });
+    }
+    let mut attachments = vec![Attach::Library];
+    attachments.extend(
+        story
+            .assets
+            .iter()
+            .filter(|a| {
+                a.kind == AssetKind::Character && a.character.references.len() < MAX_REFERENCES
+            })
+            .map(|a| Attach::CharacterReference(a.id)),
+    );
+    attachments.extend(story.groups.iter().map(|g| Attach::GroupReference(g.id)));
+    for attach in attachments {
+        commands.push(Command::AddImageAsset {
+            name: "Imported".into(),
+            width: 320,
+            height: 480,
+            attach,
+        });
+    }
+    commands.push(Command::AddGroup);
+    let characters: Vec<_> = story
+        .assets
+        .iter()
+        .filter(|a| a.kind == AssetKind::Character)
+        .map(|a| a.id)
+        .collect();
+    let images: Vec<_> = story
+        .assets
+        .iter()
+        .filter(|a| a.width > 0 && a.height > 0)
+        .map(|a| a.id)
+        .collect();
+    for group in &story.groups {
+        commands.push(Command::SetGroupColor {
+            group: group.id,
+            color: [1, 2, 3],
+        });
+        commands.push(Command::SetGroupMembers {
+            group: group.id,
+            characters: characters.iter().rev().copied().collect(),
+            locations: Vec::new(),
+            references: images.clone(),
+        });
+        commands.push(Command::RemoveGroup { group: group.id });
+    }
     // A batch mixing creation, edits and removal must undo as one step.
     let mut batch = commands.iter().take(6).cloned().collect::<Vec<_>>();
     batch.extend(
@@ -416,7 +542,14 @@ fn edits_from_commands_still_pass_storage_validation() {
             .collect();
         for command in commands_for(&original) {
             let mut story = original.clone();
-            story.apply(command.clone()).unwrap();
+            let applied = story.apply(command.clone()).unwrap();
+            // Images a command creates arrive with bytes from the app.
+            let mut assets = assets.clone();
+            for id in applied.created {
+                if let Some(a) = story.assets.iter().find(|a| a.id == id && a.width > 0) {
+                    assets.insert(id, png_bytes(a.width, a.height).into());
+                }
+            }
             crate::storage::validate_story(&story, &assets).unwrap_or_else(|e| {
                 panic!("{name}: {} made an invalid story: {e:#}", command.name())
             });
@@ -969,5 +1102,130 @@ fn internal_restores_keep_storage_limits() {
             next_id: story.next_id,
         })
         .is_err());
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn removing_a_group_unlinks_it_everywhere_and_undo_restores_everything() {
+    let mut story = world();
+    let before = manifest(&story);
+    let group = story.groups[0].id;
+    let applied = story.apply(Command::RemoveGroup { group }).unwrap();
+    assert!(story.lore.iter().all(|n| !n.links.contains(&group)));
+    assert!(story.lore_board.cards.iter().all(|c| c.target != group));
+    assert!(story.card_thumbnails.iter().all(|t| t.target != group));
+    lore::validate_board(&story).unwrap();
+    crate::thumbnails::validate(&story).unwrap();
+    story.apply(applied.inverse).unwrap();
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn library_panel_and_group_sheet_edits_reproduce_the_edited_copy() {
+    let story = world();
+    let background = story
+        .assets
+        .iter()
+        .find(|a| a.kind == AssetKind::Background)
+        .unwrap()
+        .clone();
+    let mut edited = background.clone();
+    edited.name = "Platform 9".into();
+    edited.prompt.push_str(" at dusk");
+    let mut changed = story.clone();
+    changed
+        .apply(asset_edit(&background, &edited).unwrap())
+        .unwrap();
+    assert_eq!(
+        changed.assets.iter().find(|a| a.id == edited.id),
+        Some(&edited)
+    );
+    let mut resized = background.clone();
+    resized.width += 1;
+    assert!(asset_edit(&background, &resized).is_none());
+
+    let panel = story.chapters[0].panels[0].clone();
+    let mut moved = panel.clone();
+    moved.script = "CLOSE-UP".into();
+    moved.y += 40.0;
+    moved.height -= 10.0;
+    let mut changed = story.clone();
+    changed.apply(panel_edit(&panel, &moved).unwrap()).unwrap();
+    assert_eq!(changed.chapters[0].panels[0], moved);
+
+    let group = story.groups[0].clone();
+    let mut regrouped = group.clone();
+    regrouped.description = "Awake".into();
+    regrouped.color = [0, 0, 0];
+    regrouped.character_ids.clear();
+    regrouped.location_ids.clear();
+    let mut changed = story.clone();
+    changed
+        .apply(group_edit(&group, &regrouped).unwrap())
+        .unwrap();
+    assert_eq!(changed.groups[0], regrouped);
+    // Invalid member lists are refused and change nothing.
+    let mut broken = group.clone();
+    broken.character_ids.push(999_999);
+    let mut unchanged = story.clone();
+    assert!(unchanged
+        .apply(group_edit(&group, &broken).unwrap())
+        .is_err());
+    assert!(manifest(&unchanged) == manifest(&story));
+}
+
+#[test]
+fn imported_images_attach_and_undo_detaches_them() {
+    let mut story = world();
+    let before = manifest(&story);
+    let mira = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira Vale")
+        .unwrap()
+        .id;
+    let applied = story
+        .apply(Command::AddImageAsset {
+            name: "Back view".into(),
+            width: 100,
+            height: 200,
+            attach: Attach::CharacterReference(mira),
+        })
+        .unwrap();
+    let image = applied.created[0];
+    let character = story.assets.iter().find(|a| a.id == mira).unwrap();
+    assert_eq!(
+        character.character.references.last().unwrap().asset_id,
+        image
+    );
+    assert_eq!(
+        character.character.references.last().unwrap().label,
+        "Back view"
+    );
+    story.apply(applied.inverse).unwrap();
+    assert!(manifest(&story) == before);
+    // Oversized images are refused before anything is created.
+    assert!(story
+        .apply(Command::AddImageAsset {
+            name: "Huge".into(),
+            width: 20_000,
+            height: 20_000,
+            attach: Attach::Library,
+        })
+        .is_err());
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn restores_that_break_cross_section_rules_change_nothing() {
+    let mut story = world();
+    let before = manifest(&story);
+    // Dropping every asset would leave layers, references and groups pointing nowhere.
+    let restore = Command::Restore(Box::new(Sections {
+        assets: Some(Vec::new()),
+        next_id: story.next_id,
+        ..Default::default()
+    }));
+    assert!(story.apply(restore).is_err());
     assert!(manifest(&story) == before);
 }

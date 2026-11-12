@@ -52,6 +52,9 @@ use std::{
     time::Instant,
 };
 
+/// How many `story.changed` notices wait for a reader before the oldest are dropped.
+const MAX_STORY_CHANGES: usize = 256;
+
 pub(super) const BG: Color32 = Color32::from_rgb(32, 33, 36);
 pub(super) const PANEL: Color32 = Color32::from_rgb(41, 43, 47);
 pub(super) const CARD: Color32 = Color32::from_rgb(52, 55, 60);
@@ -151,6 +154,11 @@ pub struct Studio {
     redo: Vec<Story>,
     dirty: bool,
     revision: u64,
+    /// `story.changed` notices, oldest first. Nothing reads them in 0.14.0 without addons;
+    /// the addon host drains them. Bounded so an app without addons never grows it.
+    story_changes: VecDeque<commands::StoryChanged>,
+    /// The scope of the change `changed` is about to record, when a command knows it.
+    pending_scope: Option<commands::ChangeScope>,
     document_epoch: u64,
     path: Option<PathBuf>,
     file_stamp: Option<storage::FileStamp>,
@@ -338,6 +346,8 @@ impl Studio {
             redo: Vec::new(),
             dirty: demo,
             revision: 0,
+            story_changes: VecDeque::new(),
+            pending_scope: None,
             document_epoch: 0,
             path: None,
             file_stamp: None,
@@ -423,14 +433,33 @@ impl Studio {
         let applied = self.story.apply(command)?;
         if self.story != previous {
             self.record_history(previous);
+            self.pending_scope = Some(commands::ChangeScope::Objects(applied.touched.clone()));
             self.changed();
         }
         Ok(applied)
     }
 
+    /// Apply `command` as one undo step. When there is no command for an edit, or it is
+    /// refused, `fallback` runs the 0.13.2 code path instead (snapshot, edit, changed), so
+    /// moving an edit onto commands can never block something the app used to allow.
+    fn commit(
+        &mut self,
+        command: Option<Command>,
+        fallback: impl FnOnce(&mut Self),
+    ) -> Option<Applied> {
+        if let Some(Ok(applied)) = command.map(|command| self.apply_command(command)) {
+            return Some(applied);
+        }
+        self.checkpoint();
+        fallback(self);
+        self.changed();
+        None
+    }
+
     /// Apply a command inside a gesture that already took its undo step (a card drag).
     fn apply_in_gesture(&mut self, command: Command) -> anyhow::Result<Applied> {
         let applied = self.story.apply(command)?;
+        self.pending_scope = Some(commands::ChangeScope::Objects(applied.touched.clone()));
         self.changed();
         Ok(applied)
     }
@@ -439,6 +468,24 @@ impl Studio {
         scroll_studio::thumbnails::prune(&mut self.story);
         self.dirty = true;
         self.revision += 1;
+        let scope = self
+            .pending_scope
+            .take()
+            .unwrap_or(commands::ChangeScope::Everything);
+        if self.story_changes.len() == MAX_STORY_CHANGES {
+            // A reader that falls this far behind must re-read the whole story anyway.
+            self.story_changes.pop_front();
+        }
+        self.story_changes.push_back(commands::StoryChanged {
+            revision: self.revision,
+            scope,
+        });
+    }
+
+    /// Take the pending `story.changed` notices. Used by the addon host (stage 5).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn take_story_changes(&mut self) -> Vec<commands::StoryChanged> {
+        self.story_changes.drain(..).collect()
     }
 
     fn undo(&mut self) {
@@ -1732,6 +1779,178 @@ mod tests {
         studio.commit_location_sheet(index, &original, edited.clone());
         assert_eq!(studio.story.locations[index], edited);
         assert_eq!(studio.undo.len(), undo + 1);
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(width, height)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn story_changed_reports_command_objects_and_everything_for_undo() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.take_story_changes();
+        studio
+            .apply_command(Command::SetField {
+                target: Target::Story,
+                field: Field::Title,
+                value: "Rain".into(),
+            })
+            .unwrap();
+        let chapter = studio.story.chapters[0].id;
+        studio
+            .apply_command(Command::SetChapterHeight {
+                chapter,
+                height: 9000,
+            })
+            .unwrap();
+        studio.undo();
+        let changes = studio.take_story_changes();
+        let scopes: Vec<_> = changes.iter().map(|c| c.scope.clone()).collect();
+        assert_eq!(
+            scopes,
+            [
+                commands::ChangeScope::Objects(vec![commands::STORY_ID]),
+                commands::ChangeScope::Objects(vec![chapter]),
+                commands::ChangeScope::Everything,
+            ]
+        );
+        assert!(changes.windows(2).all(|w| w[0].revision < w[1].revision));
+        assert_eq!(changes.last().unwrap().revision, studio.revision);
+        // Without a reader the queue stays bounded.
+        for i in 0..(MAX_STORY_CHANGES + 10) {
+            studio
+                .apply_command(Command::SetField {
+                    target: Target::Story,
+                    field: Field::Synopsis,
+                    value: i.to_string(),
+                })
+                .unwrap();
+        }
+        assert_eq!(studio.take_story_changes().len(), MAX_STORY_CHANGES);
+    }
+
+    #[test]
+    fn stage_two_edits_are_single_undo_steps() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let start = studio.story.clone();
+        let step = |studio: &mut Studio, before: usize| assert_eq!(studio.undo.len(), before + 1);
+
+        // A beat is added, sorted into place and selected.
+        let undo = studio.undo.len();
+        studio.add_beat(10.0);
+        step(&mut studio, undo);
+        let beat = studio.active_panel.unwrap();
+        let panels = &studio.story.chapters[studio.chapter].panels;
+        assert!(panels.iter().any(|p| p.id == beat && p.y == 10.0));
+        assert!(panels.windows(2).all(|w| w[0].y <= w[1].y));
+
+        // A group: create, join a character through its sheet, delete.
+        let undo = studio.undo.len();
+        studio.new_group();
+        step(&mut studio, undo);
+        let group = studio.selected_group.unwrap();
+        let character = studio.story.alloc_id();
+        studio.story.assets.push(Asset {
+            id: character,
+            name: "Mira".into(),
+            kind: AssetKind::Character,
+            notes: String::new(),
+            prompt: String::new(),
+            width: 0,
+            height: 0,
+            character: CharacterProfile::default(),
+        });
+        let index = studio
+            .story
+            .groups
+            .iter()
+            .position(|g| g.id == group)
+            .unwrap();
+        let original = studio.story.groups[index].clone();
+        let mut edited = original.clone();
+        edited.character_ids.push(character);
+        edited.name = "Night shift".into();
+        let undo = studio.undo.len();
+        let command = commands::group_edit(&original, &edited);
+        assert!(studio
+            .commit(command, |_| panic!("the command applies"))
+            .is_some());
+        step(&mut studio, undo);
+        assert_eq!(studio.story.groups[index], edited);
+        let undo = studio.undo.len();
+        studio
+            .apply_command(Command::RemoveGroup { group })
+            .unwrap();
+        step(&mut studio, undo);
+        assert!(studio.story.groups.is_empty());
+        studio.undo();
+        assert_eq!(studio.story.groups[index], edited);
+
+        // A character reference import is one step; undo detaches it and keeps the bytes
+        // for redo.
+        let undo = studio.undo.len();
+        studio.import_character_reference_bytes(character, png(4, 6), "Side".into());
+        step(&mut studio, undo);
+        let reference = studio
+            .story
+            .assets
+            .iter()
+            .find(|a| a.id == character)
+            .unwrap()
+            .character
+            .references[0]
+            .asset_id;
+        assert!(studio.assets.contains_key(&reference));
+        studio.undo();
+        assert!(studio
+            .story
+            .assets
+            .iter()
+            .find(|a| a.id == character)
+            .unwrap()
+            .character
+            .references
+            .is_empty());
+        studio.redo();
+        assert!(studio.assets.contains_key(&reference));
+
+        // Chronology moves only the timeline, never the reading order.
+        let chapter = studio.story.chapters[0].id;
+        let reading: Vec<_> = studio.story.chapters.iter().map(|c| c.id).collect();
+        studio
+            .apply_command(Command::AddChapter {
+                name: "Two".into(),
+                width: 800,
+                height: 6400,
+                opening: None,
+            })
+            .unwrap();
+        let undo = studio.undo.len();
+        studio.move_timeline(chapter, None);
+        step(&mut studio, undo);
+        assert_eq!(
+            scroll_studio::timeline::entries(&studio.story)
+                .last()
+                .unwrap()
+                .chapter_id,
+            chapter
+        );
+        assert_eq!(studio.story.chapters[0].id, reading[0]);
+
+        // Undoing everything returns to the start.
+        while !studio.undo.is_empty() {
+            studio.undo();
+        }
+        assert_eq!(studio.story, start);
     }
 
     #[test]

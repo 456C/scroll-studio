@@ -4,15 +4,11 @@ use scroll_studio::groups::{self, Subject};
 
 impl Studio {
     pub(super) fn new_group(&mut self) {
-        let mut next = self.story.clone();
-        match groups::add(&mut next) {
-            Ok(id) => {
-                self.checkpoint();
-                self.story = next;
-                self.selected_group = Some(id);
+        match self.apply_command(Command::AddGroup) {
+            Ok(applied) => {
+                self.selected_group = applied.created.first().copied();
                 self.tab = LibraryTab::Groups;
                 self.search.clear();
-                self.changed();
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -74,13 +70,27 @@ impl Studio {
             }
         });
         if !changes.is_empty() {
-            self.checkpoint();
-            for (id, enabled) in changes {
-                if let Some(group) = self.story.groups.iter_mut().find(|g| g.id == id) {
-                    groups::set_affiliation(group, subject, enabled);
+            // Each toggled group gets its new member lists; all toggles are one undo step.
+            let mut edited = self.story.groups.clone();
+            for (id, enabled) in &changes {
+                if let Some(group) = edited.iter_mut().find(|g| g.id == *id) {
+                    groups::set_affiliation(group, subject, *enabled);
                 }
             }
-            self.changed();
+            let parts = self
+                .story
+                .groups
+                .iter()
+                .zip(&edited)
+                .filter_map(|(before, after)| commands::group_edit(before, after))
+                .collect();
+            self.commit(Some(Command::Batch(parts)), |studio| {
+                for (id, enabled) in changes {
+                    if let Some(group) = studio.story.groups.iter_mut().find(|g| g.id == id) {
+                        groups::set_affiliation(group, subject, enabled);
+                    }
+                }
+            });
         }
     }
     pub(super) fn import_group_reference(&mut self, id: u64, path: &std::path::Path) {
@@ -121,21 +131,34 @@ impl Studio {
         })();
         match result {
             Ok((index, width, height)) => {
-                self.checkpoint();
-                let asset_id = self.story.alloc_id();
-                self.story.assets.push(Asset {
-                    id: asset_id,
-                    name,
-                    kind: AssetKind::Image,
+                let command = Command::AddImageAsset {
+                    name: name.clone(),
                     width,
                     height,
-                    notes: String::new(),
-                    prompt: String::new(),
-                    character: Default::default(),
+                    attach: commands::Attach::GroupReference(id),
+                };
+                let mut fallback_id = None;
+                let applied = self.commit(Some(command), |studio| {
+                    let asset_id = studio.story.alloc_id();
+                    studio.story.assets.push(Asset {
+                        id: asset_id,
+                        name,
+                        kind: AssetKind::Image,
+                        width,
+                        height,
+                        notes: String::new(),
+                        prompt: String::new(),
+                        character: Default::default(),
+                    });
+                    studio.story.groups[index].reference_ids.push(asset_id);
+                    fallback_id = Some(asset_id);
                 });
+                let asset_id = applied
+                    .and_then(|a| a.created.first().copied())
+                    .or(fallback_id)
+                    .expect("a reference was added");
+                // Image bytes live with the app, outside the command layer.
                 self.assets.insert(asset_id, Arc::new(bytes));
-                self.story.groups[index].reference_ids.push(asset_id);
-                self.changed();
                 self.status = "Group reference added".into();
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -212,18 +235,18 @@ impl Studio {
                     }
                 }
                 if remove {
-                    self.checkpoint();
-                    self.story.groups.remove(index);
-                    self.unlink_lore_target(group.id);
+                    let id = group.id;
+                    self.commit(Some(Command::RemoveGroup { group: id }), |studio| {
+                        studio.story.groups.remove(index);
+                        studio.unlink_lore_target(id);
+                    });
                     self.selected_group = None;
-                    self.changed();
                 } else if group != self.story.groups[index] {
                     if group.name.trim().is_empty() {
-                        group.name = original.name;
+                        group.name = original.name.clone();
                     }
-                    self.checkpoint();
-                    self.story.groups[index] = group;
-                    self.changed();
+                    let command = commands::group_edit(&original, &group);
+                    self.commit(command, |studio| studio.story.groups[index] = group);
                 }
             });
     }
