@@ -502,6 +502,18 @@ pub(crate) fn commands_for(story: &Story) -> Vec<Command> {
             changed.opacity = 0.25;
             changed.x += 7.0;
             commands.push(Command::SetLayer { layer: changed });
+            commands.push(Command::UpdateLayer {
+                layer: layer.id,
+                patch: LayerPatch {
+                    name: Some("Renamed".into()),
+                    visible: Some(!layer.visible),
+                    x: Some(layer.x + 3.0),
+                    height: Some(layer.height + 1.0),
+                    text: matches!(layer.kind, crate::model::LayerKind::Text { .. })
+                        .then(|| "Hello?".into()),
+                    ..Default::default()
+                },
+            });
             commands.push(Command::DeleteLayer { layer: layer.id });
             for target in [0, last] {
                 if target != index {
@@ -642,6 +654,7 @@ fn every_command_then_its_inverse_leaves_the_manifest_byte_identical() {
         "add_image_version",
         "add_layer",
         "set_layer",
+        "update_layer",
         "delete_layer",
         "move_layer",
         "add_linked_bubble",

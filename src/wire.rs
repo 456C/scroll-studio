@@ -23,7 +23,7 @@ use serde_json::{json, Map, Value};
 pub const EDIT_PREFIX: &str = "edit.";
 
 /// Every edit method, in a stable order. Internal commands are not listed.
-pub const EDIT_METHODS: [&str; 42] = [
+pub const EDIT_METHODS: [&str; 43] = [
     "edit.set_field",
     "edit.replace_text",
     "edit.add_panel",
@@ -55,6 +55,7 @@ pub const EDIT_METHODS: [&str; 42] = [
     "edit.add_image_version",
     "edit.add_layer",
     "edit.set_layer",
+    "edit.update_layer",
     "edit.delete_layer",
     "edit.move_layer",
     "edit.add_linked_bubble",
@@ -69,11 +70,12 @@ pub const EDIT_METHODS: [&str; 42] = [
 ];
 
 /// Every read method, in a stable order.
-pub const READ_METHODS: [&str; 12] = [
+pub const READ_METHODS: [&str; 13] = [
     "story.summary",
     "chapters.list",
     "panels.list",
     "layers.list",
+    "layer.export",
     "characters.list",
     "assets.list",
     "locations.list",
@@ -113,13 +115,20 @@ pub fn parse_command(name: &str, params: &Value, policy: Policy) -> Result<Comma
         EDIT_METHODS.contains(&format!("{EDIT_PREFIX}{name}").as_str()),
         "Unknown edit `{EDIT_PREFIX}{name}`"
     );
+    if name == "batch" {
+        check_batch(params)?;
+    }
     let request = normalize(json!({ "method": name, "params": params }));
-    let command: Command = serde_json::from_value(request)
+    let command: Command = serde_json::from_value(request.clone())
         .with_context(|| format!("Invalid parameters for `{EDIT_PREFIX}{name}`"))?;
     // Re-encoding gives every parameter the command understood; anything else was a typo
     // or a parameter this version does not know.
     let (_, understood) = command_request(&command)?;
-    reject_unknown(params, &understood, &format!("{EDIT_PREFIX}{name}"))?;
+    reject_unknown(
+        &request["params"],
+        &understood,
+        &format!("{EDIT_PREFIX}{name}"),
+    )?;
     ensure!(
         !command.is_internal(),
         "`{EDIT_PREFIX}{name}` is not available here"
@@ -141,6 +150,32 @@ pub fn command_request(command: &Command) -> Result<(String, Value)> {
         .to_owned();
     let params = value.get("params").cloned().unwrap_or(Value::Null);
     Ok((format!("{EDIT_PREFIX}{method}"), params))
+}
+
+/// The most entries one `edit.batch` may hold.
+pub const MAX_BATCH: usize = 1000;
+
+/// A batch is a flat list of commands: no batches inside batches, which would allow
+/// unbounded nesting (and recursion) from outside.
+fn check_batch(params: &Value) -> Result<()> {
+    let entries = params
+        .as_array()
+        .context("`edit.batch` takes a list of {method, params} entries")?;
+    ensure!(
+        entries.len() <= MAX_BATCH,
+        "`edit.batch` holds at most {MAX_BATCH} commands"
+    );
+    for (i, entry) in entries.iter().enumerate() {
+        let method = entry
+            .get("method")
+            .and_then(Value::as_str)
+            .with_context(|| format!("`edit.batch[{i}]` needs a `method`"))?;
+        ensure!(
+            method != "batch",
+            "`edit.batch[{i}]` is a batch; batches cannot be nested"
+        );
+    }
+    Ok(())
 }
 
 /// Commands that take no parameters; clients often send `{}` for those.
@@ -166,16 +201,23 @@ fn normalize(mut request: Value) -> Value {
 
 /// Every key in `given` must also appear in `understood` (recursively through objects and
 /// through batches, whose parameters are lists of `{method, params}`).
+/// A `null` the command did not re-encode stands for "absent" and is accepted.
 fn reject_unknown(given: &Value, understood: &Value, path: &str) -> Result<()> {
     match (given, understood) {
         (Value::Object(given), Value::Object(understood)) => {
             for (key, value) in given {
-                let Some(known) = understood.get(key) else {
-                    bail!("Unknown parameter `{key}` in `{path}`");
-                };
-                reject_unknown(value, known, &format!("{path}.{key}"))?;
+                match understood.get(key) {
+                    Some(known) => reject_unknown(value, known, &format!("{path}.{key}"))?,
+                    None if value.is_null() => {}
+                    None => bail!("Unknown parameter `{key}` in `{path}`"),
+                }
             }
             Ok(())
+        }
+        // An object where the command has a plain value (e.g. `{"story": null}` for
+        // `"story"`) is a different shape, not an alias.
+        (Value::Object(_), known) if !known.is_null() => {
+            bail!("Unexpected object for `{path}`")
         }
         (Value::Array(given), Value::Array(understood)) => {
             for (i, (value, known)) in given.iter().zip(understood).enumerate() {
@@ -196,7 +238,10 @@ pub fn batch_entry(command: &Command) -> Result<Value> {
         "method".into(),
         method.trim_start_matches(EDIT_PREFIX).to_owned().into(),
     );
-    entry.insert("params".into(), params);
+    // Commands without parameters encode no `params`.
+    if !params.is_null() {
+        entry.insert("params".into(), params);
+    }
     Ok(Value::Object(entry))
 }
 
