@@ -533,6 +533,17 @@ impl Command {
         }
     }
 
+    /// Commands that create image sheets. The story is only saveable once the app has
+    /// stored the image bytes for the created ID, so a host must pair these with bytes
+    /// (or refuse them) when they arrive from outside the app.
+    pub fn needs_image_bytes(&self) -> bool {
+        match self {
+            Command::AddImageAsset { .. } | Command::AddImageVersion { .. } => true,
+            Command::Batch(commands) => commands.iter().any(Command::needs_image_bytes),
+            _ => false,
+        }
+    }
+
     /// A short, stable name for logs and status messages.
     pub fn name(&self) -> &'static str {
         match self {

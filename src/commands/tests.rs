@@ -1414,3 +1414,142 @@ fn adding_an_image_to_a_sheet_without_one_rewires_it_and_undo_restores_everythin
     assert!(story.assets.iter().any(|a| a.id == mira));
     assert!(story.groups[0].character_ids.contains(&applied.created[0]));
 }
+
+#[test]
+fn image_versions_refuse_bad_input_without_changing_anything() {
+    let story = world();
+    let mira = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira Vale")
+        .unwrap()
+        .id;
+    let mut full = story.clone();
+    while full.assets.len() < MAX_ASSETS {
+        let id = full.alloc_id();
+        full.assets
+            .push(new_asset(id, "filler".into(), AssetKind::Character, 0, 0));
+    }
+    let mut exhausted = story.clone();
+    exhausted.next_id = u64::MAX - 1;
+    let cases = [
+        (story.clone(), 999_999, 10, 10),
+        (story.clone(), mira, 0, 10),
+        (story.clone(), mira, 20_000, 10),
+        (story.clone(), mira, 16_000, 16_000),
+        // A version is a new sheet, so the asset limit applies.
+        (full, mira, 10, 10),
+        (exhausted, mira, 10, 10),
+    ];
+    for (mut story, asset, width, height) in cases {
+        let before = manifest(&story);
+        let command = Command::AddImageVersion {
+            asset,
+            width,
+            height,
+        };
+        assert!(story.apply(command).is_err(), "{asset} {width}×{height}");
+        assert!(manifest(&story) == before);
+    }
+}
+
+#[test]
+fn image_versions_of_filed_backgrounds_stay_filed() {
+    let mut story = world();
+    let station = story.locations[0].id;
+    // One background already has a picture, one is still a sketch.
+    let pictured = story
+        .apply(Command::AddAsset {
+            name: "Platform".into(),
+            kind: AssetKind::Background,
+            location: Some(station),
+        })
+        .unwrap()
+        .created[0];
+    story
+        .assets
+        .iter_mut()
+        .find(|a| a.id == pictured)
+        .unwrap()
+        .width = 64;
+    story
+        .assets
+        .iter_mut()
+        .find(|a| a.id == pictured)
+        .unwrap()
+        .height = 64;
+    let sketch = story
+        .apply(Command::AddAsset {
+            name: "Stairs".into(),
+            kind: AssetKind::Background,
+            location: Some(station),
+        })
+        .unwrap()
+        .created[0];
+    let before = manifest(&story);
+    let filed = |story: &Story, id| story.locations[0].asset_ids.contains(&id);
+
+    let version = story
+        .apply(Command::AddImageVersion {
+            asset: pictured,
+            width: 32,
+            height: 32,
+        })
+        .unwrap();
+    assert!(filed(&story, pictured) && filed(&story, version.created[0]));
+    story.apply(version.inverse).unwrap();
+
+    let replaced = story
+        .apply(Command::AddImageVersion {
+            asset: sketch,
+            width: 32,
+            height: 32,
+        })
+        .unwrap();
+    assert!(!filed(&story, sketch) && filed(&story, replaced.created[0]));
+    story.apply(replaced.inverse).unwrap();
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn replacing_a_sheet_drops_covers_that_no_longer_apply_and_undo_restores_them() {
+    let mut story = world();
+    // Mira Vale's cover is her additional reference. As a sketch, the cover stops applying
+    // once the sheet is replaced under a new ID.
+    let mira = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira Vale")
+        .unwrap()
+        .id;
+    {
+        let sheet = story.assets.iter_mut().find(|a| a.id == mira).unwrap();
+        sheet.width = 0;
+        sheet.height = 0;
+    }
+    assert!(story.card_thumbnails.iter().any(|t| t.target == mira));
+    let before = manifest(&story);
+    let applied = story
+        .apply(Command::AddImageVersion {
+            asset: mira,
+            width: 50,
+            height: 50,
+        })
+        .unwrap();
+    assert!(story.card_thumbnails.iter().all(|t| t.target != mira));
+    crate::thumbnails::validate(&story).unwrap();
+    story.apply(applied.inverse).unwrap();
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn image_commands_are_marked_as_needing_bytes() {
+    let image = Command::AddImageVersion {
+        asset: 1,
+        width: 1,
+        height: 1,
+    };
+    assert!(image.needs_image_bytes());
+    assert!(Command::Batch(vec![Command::AddGroup, image]).needs_image_bytes());
+    assert!(!Command::AddGroup.needs_image_bytes());
+}
