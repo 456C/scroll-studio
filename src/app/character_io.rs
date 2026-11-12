@@ -58,29 +58,42 @@ impl Studio {
         })();
         match result {
             Ok((index, width, height)) => {
-                self.checkpoint();
-                let id = self.story.alloc_id();
-                self.story.assets.push(Asset {
-                    id,
+                let command = Command::AddImageAsset {
                     name: name.clone(),
-                    kind: AssetKind::Image,
-                    notes: String::new(),
-                    prompt: String::new(),
                     width,
                     height,
-                    character: CharacterProfile::default(),
-                });
-                self.story.assets[index]
-                    .character
-                    .references
-                    .push(CharacterReference {
-                        asset_id: id,
-                        label: name,
+                    attach: commands::Attach::CharacterReference(character_id),
+                };
+                let mut fallback_id = None;
+                let applied = self.commit(Some(command), |studio| {
+                    let id = studio.story.alloc_id();
+                    studio.story.assets.push(Asset {
+                        id,
+                        name: name.clone(),
+                        kind: AssetKind::Image,
                         notes: String::new(),
+                        prompt: String::new(),
+                        width,
+                        height,
+                        character: CharacterProfile::default(),
                     });
+                    studio.story.assets[index]
+                        .character
+                        .references
+                        .push(CharacterReference {
+                            asset_id: id,
+                            label: name,
+                            notes: String::new(),
+                        });
+                    fallback_id = Some(id);
+                });
+                let id = applied
+                    .and_then(|a| a.created.first().copied())
+                    .or(fallback_id)
+                    .expect("a reference was added");
+                // Image bytes live with the app, outside the command layer.
                 self.assets.insert(id, Arc::new(bytes));
                 self.selected_asset = Some(character_id);
-                self.changed();
                 self.status = "Reference added".into();
             }
             Err(e) => self.error = Some(format!("Could not add character reference: {e:#}")),

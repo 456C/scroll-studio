@@ -18,13 +18,8 @@ impl Studio {
         original: &BackgroundLocation,
         edited: BackgroundLocation,
     ) {
-        let applied =
-            commands::location_edit(original, &edited).map(|command| self.apply_command(command));
-        if !matches!(applied, Some(Ok(_))) {
-            self.checkpoint();
-            self.story.locations[index] = edited;
-            self.changed();
-        }
+        let command = commands::location_edit(original, &edited);
+        self.commit(command, |studio| studio.story.locations[index] = edited);
     }
 
     pub(super) fn location_workspace(&mut self, ctx: &egui::Context) {

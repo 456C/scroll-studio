@@ -10,11 +10,13 @@
 //! files.
 
 use crate::{
-    locations, lore,
+    groups, locations, lore,
     model::{
-        CharacterGender, CharacterOutfit, CharacterReference, CharacterSwatch, LoreBoard,
-        LoreEntry, Panel, Story,
+        Asset, AssetKind, BackgroundLocation, CardThumbnail, Chapter, CharacterGender,
+        CharacterOutfit, CharacterProfile, CharacterReference, CharacterSwatch, ChronologyEntry,
+        LayerKind, LoreBoard, LoreEntry, Panel, Story, WorldGroup,
     },
+    thumbnails, timeline,
 };
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashSet;
@@ -25,11 +27,22 @@ const SHORT: usize = 4096;
 const LONG: usize = 1_000_000;
 const LORE_TEXT: usize = 100_000;
 const LOCATION_TEXT: usize = 64 * 1024;
+const GROUP_TEXT: usize = 20_000;
 const MAX_OUTFITS: usize = 32;
 const MAX_SWATCHES: usize = 16;
 const MAX_LORE_NOTES: usize = 4096;
 const MAX_REFERENCES: usize = 24;
 const MAX_PANELS: usize = 10_000;
+const MAX_CHAPTERS: usize = 1000;
+const MIN_CHAPTER_SIDE: u32 = 64;
+const MAX_CHAPTER_WIDTH: u32 = 8192;
+const MAX_CHAPTER_HEIGHT: u32 = 200_000;
+// storage::validate_story allows fewer than 4097 archive entries: one manifest plus assets.
+const MAX_ASSETS: usize = 4096;
+const MAX_IMAGE_SIDE: u32 = 16_384;
+const MAX_IMAGE_PIXELS: u64 = 32_000_000;
+const TIMELINE_WHEN: usize = 1024;
+const TIMELINE_SUMMARY: usize = 20_000;
 const COORDINATE_LIMIT: f32 = 1_000_000.0;
 
 /// What a field edit targets. The story itself has no numeric ID.
@@ -90,6 +103,8 @@ pub enum ObjectKind {
     LoreNote,
     LoreCard,
     LoreConnection,
+    Chapter,
+    Group,
 }
 
 impl Field {
@@ -200,6 +215,8 @@ impl Field {
             ObjectKind::LoreNote => &[Title, Text],
             ObjectKind::LoreCard => &[BoardNote],
             ObjectKind::LoreConnection => &[],
+            ObjectKind::Chapter => &[Name],
+            ObjectKind::Group => &[Name, Description],
         }
     }
 }
@@ -330,6 +347,73 @@ pub enum Command {
     DisconnectLore {
         connection: u64,
     },
+    /// Change a chapter's canvas height. Panels and layers keep their positions.
+    SetChapterHeight {
+        chapter: u64,
+        height: u32,
+    },
+    /// Append a chapter, optionally with an opening panel.
+    AddChapter {
+        name: String,
+        width: u32,
+        height: u32,
+        opening: Option<PanelDraft>,
+    },
+    SetPanelGeometry {
+        panel: u64,
+        y: f32,
+        height: f32,
+    },
+    DeletePanel {
+        panel: u64,
+    },
+    /// Order a chapter's panels top to bottom (stable for equal positions).
+    SortPanels {
+        chapter: u64,
+    },
+    /// Create an asset sheet without an image (characters, backgrounds, images). A new
+    /// background can be filed under a location at the same time.
+    AddAsset {
+        name: String,
+        kind: AssetKind,
+        location: Option<u64>,
+    },
+    /// Create the sheet for an imported image and attach it. The image bytes stay with the
+    /// app; commands only describe the story.
+    AddImageAsset {
+        name: String,
+        width: u32,
+        height: u32,
+        attach: Attach,
+    },
+    AddGroup,
+    SetGroupColor {
+        group: u64,
+        color: [u8; 3],
+    },
+    /// Replace a group's member and reference lists.
+    SetGroupMembers {
+        group: u64,
+        characters: Vec<u64>,
+        locations: Vec<u64>,
+        references: Vec<u64>,
+    },
+    /// Delete a group, its lore links and its board card.
+    RemoveGroup {
+        group: u64,
+    },
+    /// Move a chapter in the chronology (not the reading order), before `before` or last.
+    MoveChronology {
+        chapter: u64,
+        before: Option<u64>,
+    },
+    SetChronologyEntry {
+        chapter: u64,
+        when: String,
+        summary: String,
+    },
+    /// Arrange the chronology to match the reading order.
+    OrderChronologyByReading,
     /// Applied and undone as one step. If any part fails, nothing changes.
     Batch(Vec<Command>),
 
@@ -368,6 +452,59 @@ pub enum Command {
         board: LoreBoard,
         next_id: u64,
     },
+    #[doc(hidden)]
+    RemoveLastChapter {
+        chapter: u64,
+        next_id: u64,
+    },
+    /// Put back whole sections of the story captured before a structural edit.
+    #[doc(hidden)]
+    Restore(Box<Sections>),
+}
+
+/// Where [`Command::AddImageAsset`] attaches the new image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attach {
+    /// A standalone image in the library.
+    Library,
+    CharacterReference(u64),
+    GroupReference(u64),
+}
+
+/// Story sections captured for [`Command::Restore`]. `None` leaves a section alone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sections {
+    /// One chapter's panels, by chapter ID.
+    pub panels: Option<(u64, Vec<Panel>)>,
+    pub assets: Option<Vec<Asset>>,
+    pub locations: Option<Vec<BackgroundLocation>>,
+    pub groups: Option<Vec<WorldGroup>>,
+    pub timeline: Option<Vec<ChronologyEntry>>,
+    pub lore: Option<Vec<LoreEntry>>,
+    pub lore_board: Option<LoreBoard>,
+    pub card_thumbnails: Option<Vec<CardThumbnail>>,
+    pub next_id: u64,
+}
+
+/// The story itself, in [`Applied::touched`] and [`StoryChanged`]. Object IDs start at 1.
+pub const STORY_ID: u64 = 0;
+
+/// What a [`StoryChanged`] notice covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangeScope {
+    /// These objects changed ([`STORY_ID`] for the story's own fields).
+    Objects(Vec<u64>),
+    /// Anything may have changed: undo, redo, opening a file, or an edit made outside
+    /// the command layer.
+    Everything,
+}
+
+/// A notice that the story changed, for addons that keep their own view of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoryChanged {
+    /// Increases with every change, in step with the app's revision counter.
+    pub revision: u64,
+    pub scope: ChangeScope,
 }
 
 impl Command {
@@ -379,7 +516,9 @@ impl Command {
             | Command::InsertOutfit { .. }
             | Command::InsertPaletteColor { .. }
             | Command::InsertReference { .. }
-            | Command::RestoreLore { .. } => true,
+            | Command::RestoreLore { .. }
+            | Command::RemoveLastChapter { .. }
+            | Command::Restore(_) => true,
             Command::Batch(commands) => commands.iter().any(Command::is_internal),
             _ => false,
         }
@@ -415,6 +554,22 @@ impl Command {
             Command::InsertPaletteColor { .. } => "insert_palette_color",
             Command::InsertReference { .. } => "insert_reference",
             Command::RestoreLore { .. } => "restore_lore",
+            Command::SetChapterHeight { .. } => "set_chapter_height",
+            Command::AddChapter { .. } => "add_chapter",
+            Command::SetPanelGeometry { .. } => "set_panel_geometry",
+            Command::DeletePanel { .. } => "delete_panel",
+            Command::SortPanels { .. } => "sort_panels",
+            Command::AddAsset { .. } => "add_asset",
+            Command::AddImageAsset { .. } => "add_image_asset",
+            Command::AddGroup => "add_group",
+            Command::SetGroupColor { .. } => "set_group_color",
+            Command::SetGroupMembers { .. } => "set_group_members",
+            Command::RemoveGroup { .. } => "remove_group",
+            Command::MoveChronology { .. } => "move_chronology",
+            Command::SetChronologyEntry { .. } => "set_chronology_entry",
+            Command::OrderChronologyByReading => "order_chronology_by_reading",
+            Command::RemoveLastChapter { .. } => "remove_last_chapter",
+            Command::Restore(_) => "restore",
         }
     }
 }
@@ -424,10 +579,13 @@ impl Command {
 pub struct Applied {
     /// Applying this restores the story to its state before the command.
     pub inverse: Command,
-    /// IDs of objects whose content changed (the story itself is not listed).
+    /// IDs of objects whose content changed; [`STORY_ID`] for story-level data such as
+    /// its own fields or the chronology.
     pub touched: Vec<u64>,
     /// IDs created by the command, in creation order.
     pub created: Vec<u64>,
+    /// Whole sections were replaced (a restore), so `touched` is not a complete list.
+    pub everything: bool,
 }
 
 impl Applied {
@@ -436,7 +594,18 @@ impl Applied {
             inverse,
             touched: Vec::new(),
             created: Vec::new(),
+            everything: false,
         }
+    }
+    /// A command that changed nothing; `existing` names the object it found instead.
+    fn unchanged(existing: u64) -> Self {
+        Self {
+            touched: vec![existing],
+            ..Self::new(Command::Batch(Vec::new()))
+        }
+    }
+    fn touch_all(self, ids: impl IntoIterator<Item = u64>) -> Self {
+        ids.into_iter().fold(self, Applied::touch)
     }
     fn touch(mut self, id: u64) -> Self {
         if !self.touched.contains(&id) {
@@ -459,6 +628,8 @@ enum Slot {
     LoreNote(usize),
     LoreCard(usize),
     LoreConnection,
+    Chapter(usize),
+    Group(usize),
 }
 
 impl Story {
@@ -467,6 +638,10 @@ impl Story {
         match command {
             // One command is already atomic; sheet typing sends one per keystroke, so skip
             // the backup copy.
+            // Nothing to do, and nothing to back up.
+            Command::Batch(commands) if commands.is_empty() => {
+                Ok(Applied::new(Command::Batch(Vec::new())))
+            }
             Command::Batch(mut commands) if commands.len() == 1 => {
                 let applied = self.apply(commands.pop().expect("one command"))?;
                 Ok(Applied {
@@ -480,6 +655,7 @@ impl Story {
                 let mut inverses = Vec::with_capacity(commands.len());
                 let mut touched = Vec::new();
                 let mut created = Vec::new();
+                let mut everything = false;
                 for command in commands {
                     match self.apply(command) {
                         Ok(applied) => {
@@ -489,6 +665,7 @@ impl Story {
                                 }
                             }
                             created.extend(applied.created);
+                            everything |= applied.everything;
                             inverses.push(applied.inverse);
                         }
                         Err(error) => {
@@ -502,6 +679,7 @@ impl Story {
                     inverse: Command::Batch(inverses),
                     touched,
                     created,
+                    everything,
                 })
             }
             command => self.apply_one(command),
@@ -525,6 +703,8 @@ impl Story {
             Slot::LoreNote(_) => ObjectKind::LoreNote,
             Slot::LoreCard(_) => ObjectKind::LoreCard,
             Slot::LoreConnection => ObjectKind::LoreConnection,
+            Slot::Chapter(_) => ObjectKind::Chapter,
+            Slot::Group(_) => ObjectKind::Group,
         })
     }
 
@@ -554,6 +734,9 @@ impl Story {
             }
             (Slot::Asset(i), field) => asset_text(&self.assets[i], field),
             (Slot::Location(i), field) => location_text(&self.locations[i], field),
+            (Slot::Chapter(c), _) => &self.chapters[c].name,
+            (Slot::Group(g), Field::Name) => &self.groups[g].name,
+            (Slot::Group(g), _) => &self.groups[g].description,
             (Slot::LoreNote(i), Field::Title) => &self.lore[i].title,
             (Slot::LoreNote(i), _) => &self.lore[i].text,
             (Slot::LoreCard(i), _) => &self.lore_board.cards[i].note,
@@ -569,7 +752,9 @@ impl Story {
                 .iter()
                 .flat_map(|chapter| chapter.panels.iter().map(|panel| Target::Object(panel.id))),
         );
+        targets.extend(self.chapters.iter().map(|c| Target::Object(c.id)));
         targets.extend(self.assets.iter().map(|asset| Target::Object(asset.id)));
+        targets.extend(self.groups.iter().map(|g| Target::Object(g.id)));
         targets.extend(self.locations.iter().map(|l| Target::Object(l.id)));
         targets.extend(self.lore.iter().map(|n| Target::Object(n.id)));
         targets.extend(self.lore_board.cards.iter().map(|c| Target::Object(c.id)));
@@ -587,6 +772,12 @@ impl Story {
             Target::Story => return Ok(Slot::Story),
             Target::Object(id) => id,
         };
+        if let Some(c) = self.chapters.iter().position(|chapter| chapter.id == id) {
+            return Ok(Slot::Chapter(c));
+        }
+        if let Some(g) = self.groups.iter().position(|group| group.id == id) {
+            return Ok(Slot::Group(g));
+        }
         for (c, chapter) in self.chapters.iter().enumerate() {
             if let Some(p) = chapter.panels.iter().position(|panel| panel.id == id) {
                 return Ok(Slot::Panel(c, p));
@@ -665,6 +856,9 @@ impl Story {
                     _ => &mut p.notes,
                 }
             }
+            (Slot::Chapter(c), _) => &mut self.chapters[c].name,
+            (Slot::Group(g), Field::Name) => &mut self.groups[g].name,
+            (Slot::Group(g), _) => &mut self.groups[g].description,
             (Slot::LoreNote(i), Field::Title) => &mut self.lore[i].title,
             (Slot::LoreNote(i), _) => &mut self.lore[i].text,
             (Slot::LoreCard(i), _) => &mut self.lore_board.cards[i].note,
@@ -699,6 +893,154 @@ impl Story {
             .iter()
             .position(|e| e.id == id)
             .context("That connection no longer exists")
+    }
+
+    /// `count` more IDs can be allocated without exhausting the ID space.
+    fn ensure_ids(&self, count: u64) -> Result<()> {
+        ensure!(
+            self.next_id
+                .checked_add(count)
+                .is_some_and(|n| n < u64::MAX),
+            "Story ID space exhausted"
+        );
+        Ok(())
+    }
+
+    /// Lore objects that change when `target` (a note or group) disappears: notes that
+    /// link to it, its card and that card's connections.
+    fn lore_cascade(&self, target: u64) -> Vec<u64> {
+        let mut ids: Vec<_> = self
+            .lore
+            .iter()
+            .filter(|n| n.links.contains(&target))
+            .map(|n| n.id)
+            .collect();
+        for card in self.lore_board.cards.iter().filter(|c| c.target == target) {
+            ids.extend(self.card_cascade(card.id));
+        }
+        ids
+    }
+
+    /// A card and the connections that are removed with it.
+    fn card_cascade(&self, card: u64) -> Vec<u64> {
+        std::iter::once(card)
+            .chain(
+                self.lore_board
+                    .connections
+                    .iter()
+                    .filter(|e| e.from == card || e.to == card)
+                    .map(|e| e.id),
+            )
+            .collect()
+    }
+
+    fn chapter_index(&self, id: u64) -> Result<usize> {
+        self.chapters
+            .iter()
+            .position(|c| c.id == id)
+            .context("That chapter no longer exists")
+    }
+
+    fn group_index(&self, id: u64) -> Result<usize> {
+        self.groups
+            .iter()
+            .position(|g| g.id == id)
+            .context("That group no longer exists")
+    }
+
+    /// A restore command capturing `sections` and the current ID counter.
+    fn restore(&self, sections: Sections) -> Command {
+        Command::Restore(Box::new(Sections {
+            next_id: self.next_id,
+            ..sections
+        }))
+    }
+
+    fn restore_panels(&self, chapter: usize) -> Command {
+        self.restore(Sections {
+            panels: Some((
+                self.chapters[chapter].id,
+                self.chapters[chapter].panels.clone(),
+            )),
+            ..Default::default()
+        })
+    }
+
+    /// Replace the sections present in `sections` and return what they replaced. The ID
+    /// counter is left to the caller. Fails before changing anything if a chapter is gone.
+    fn swap_sections(&mut self, sections: Sections) -> Result<Sections> {
+        let chapter = match &sections.panels {
+            Some((id, _)) => Some(self.chapter_index(*id)?),
+            None => None,
+        };
+        let mut old = Sections {
+            next_id: self.next_id,
+            ..Default::default()
+        };
+        if let (Some(c), Some((id, panels))) = (chapter, sections.panels) {
+            old.panels = Some((id, std::mem::replace(&mut self.chapters[c].panels, panels)));
+        }
+        macro_rules! swap {
+            ($field:ident) => {
+                if let Some(value) = sections.$field {
+                    old.$field = Some(std::mem::replace(&mut self.$field, value));
+                }
+            };
+        }
+        swap!(assets);
+        swap!(locations);
+        swap!(groups);
+        swap!(timeline);
+        swap!(lore);
+        swap!(lore_board);
+        swap!(card_thumbnails);
+        Ok(old)
+    }
+
+    /// The structural rules a restore must keep: unique IDs below the counter, the
+    /// validators storage runs for each section, and references between sections.
+    fn check_sections(&self) -> Result<()> {
+        check_restored_lore(self)?;
+        ensure!(self.assets.len() <= MAX_ASSETS, "Too many assets");
+        for chapter in &self.chapters {
+            ensure!(chapter.panels.len() <= MAX_PANELS, "Chapter is too large");
+            for panel in &chapter.panels {
+                ensure!(
+                    panel.y.is_finite() && panel.height.is_finite() && panel.height > 0.0,
+                    "Invalid panel geometry"
+                );
+            }
+        }
+        let assets: HashSet<_> = self.assets.iter().map(|a| a.id).collect();
+        let images: HashSet<_> = self
+            .assets
+            .iter()
+            .filter(|a| a.kind == AssetKind::Image)
+            .map(|a| a.id)
+            .collect();
+        for layer in self.chapters.iter().flat_map(|c| &c.layers) {
+            if let LayerKind::Image { asset_id, .. } = &layer.kind {
+                ensure!(
+                    assets.contains(asset_id),
+                    "A layer uses an image that is missing"
+                );
+            }
+        }
+        for asset in &self.assets {
+            ensure!(
+                asset.character.references.len() <= MAX_REFERENCES
+                    && asset
+                        .character
+                        .references
+                        .iter()
+                        .all(|r| images.contains(&r.asset_id)),
+                "A character reference is missing"
+            );
+        }
+        locations::validate_locations(self)?;
+        groups::validate(self)?;
+        timeline::validate(self)?;
+        thumbnails::validate(self)
     }
 
     /// Every object ID in the story, matching the ID kinds `storage::validate_story`
@@ -750,6 +1092,9 @@ impl Story {
                     .object_kind(target)
                     .context("That object no longer exists")?;
                 check_text(&value, field_limit(kind, field))?;
+                if field == Field::Name && kind == ObjectKind::Group {
+                    ensure!(!value.trim().is_empty(), "Enter a group name");
+                }
                 if field == Field::Name && kind == ObjectKind::Location {
                     // Validate, but store the text as given: trimming here would make the
                     // inverse of an edit to an older, untrimmed name inexact.
@@ -763,7 +1108,7 @@ impl Story {
                     value: old,
                 });
                 Ok(match target {
-                    Target::Story => applied,
+                    Target::Story => applied.touch(STORY_ID),
                     Target::Object(id) => applied.touch(id),
                 })
             }
@@ -812,23 +1157,12 @@ impl Story {
                     .iter()
                     .position(|ch| ch.id == chapter)
                     .context("That chapter no longer exists")?;
-                check_text(&panel.title, SHORT)?;
-                for text in [&panel.script, &panel.notes, &panel.prompt] {
-                    check_text(text, LONG)?;
-                }
                 ensure!(
                     self.chapters[c].panels.len() < MAX_PANELS,
                     "A chapter can have at most {MAX_PANELS} panels"
                 );
-                let height = self.chapters[c].height as f32;
-                ensure!(
-                    panel.y.is_finite()
-                        && panel.height.is_finite()
-                        && panel.y >= 0.0
-                        && panel.height >= 1.0
-                        && panel.y + panel.height <= height,
-                    "The panel must fit inside the chapter"
-                );
+                check_panel_draft(&panel, self.chapters[c].height)?;
+                self.ensure_ids(1)?;
                 let index = match after {
                     None => self.chapters[c].panels.len(),
                     Some(after) => {
@@ -842,18 +1176,7 @@ impl Story {
                 };
                 let next_id = self.next_id;
                 let id = self.alloc_id();
-                self.chapters[c].panels.insert(
-                    index,
-                    Panel {
-                        id,
-                        title: panel.title,
-                        y: panel.y,
-                        height: panel.height,
-                        script: panel.script,
-                        notes: panel.notes,
-                        prompt: panel.prompt,
-                    },
-                );
+                self.chapters[c].panels.insert(index, panel.into_panel(id));
                 Ok(Applied::new(Command::RemovePanel {
                     chapter,
                     panel: id,
@@ -885,14 +1208,7 @@ impl Story {
                 Ok(Applied::new(Command::AddPanel {
                     chapter,
                     after,
-                    panel: PanelDraft {
-                        title: removed.title,
-                        y: removed.y,
-                        height: removed.height,
-                        script: removed.script,
-                        notes: removed.notes,
-                        prompt: removed.prompt,
-                    },
+                    panel: PanelDraft::from(removed),
                 })
                 .touch(chapter))
             }
@@ -1187,6 +1503,7 @@ impl Story {
                         && self.lore_board.cards.len() < lore::MAX_CARDS,
                     "The lore board is full"
                 );
+                self.ensure_ids(2)?;
                 let inverse = self.lore_snapshot();
                 let id = self.alloc_id();
                 self.lore.push(LoreEntry {
@@ -1206,17 +1523,13 @@ impl Story {
                 );
                 if let Some(card) = self.lore_board.cards.iter().find(|c| c.target == target) {
                     // Already pinned: nothing changes, and the existing card is reported.
-                    let id = card.id;
-                    return Ok(Applied {
-                        inverse: Command::Batch(Vec::new()),
-                        touched: vec![id],
-                        created: Vec::new(),
-                    });
+                    return Ok(Applied::unchanged(card.id));
                 }
                 ensure!(
                     self.lore_board.cards.len() < lore::MAX_CARDS,
                     "The lore board is full"
                 );
+                self.ensure_ids(1)?;
                 let inverse = self.lore_snapshot();
                 let card = lore::pin(self, target, position).context("Could not pin that card")?;
                 Ok(Applied::new(inverse).create(card))
@@ -1224,15 +1537,19 @@ impl Story {
             Command::RemoveLoreCard { card, delete_note } => {
                 let index = self.card_index(card)?;
                 let target = self.lore_board.cards[index].target;
+                let delete_note = delete_note && self.lore.iter().any(|n| n.id == target);
+                let affected = if delete_note {
+                    self.lore_cascade(target)
+                } else {
+                    self.card_cascade(card)
+                };
                 let inverse = self.lore_snapshot();
                 lore::unpin(self, card);
-                let mut applied = Applied::new(inverse).touch(card);
-                if delete_note && self.lore.iter().any(|n| n.id == target) {
+                if delete_note {
                     self.lore.retain(|n| n.id != target);
                     lore::unlink_target(self, target);
-                    applied = applied.touch(target);
                 }
-                Ok(applied)
+                Ok(Applied::new(inverse).touch(card).touch_all(affected))
             }
             Command::MoveLoreCard { card, position } => {
                 let position = board_position(position)?;
@@ -1260,17 +1577,13 @@ impl Story {
                     .iter()
                     .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
                 {
-                    let id = edge.id;
-                    return Ok(Applied {
-                        inverse: Command::Batch(Vec::new()),
-                        touched: vec![id],
-                        created: Vec::new(),
-                    });
+                    return Ok(Applied::unchanged(edge.id));
                 }
                 ensure!(
                     self.lore_board.connections.len() < lore::MAX_CONNECTIONS,
                     "The lore board has too many connections"
                 );
+                self.ensure_ids(1)?;
                 let inverse = self.lore_snapshot();
                 let id = lore::connect(self, from, to).context("Could not connect those cards")?;
                 let index = self.connection_index(id)?;
@@ -1298,6 +1611,356 @@ impl Story {
                 self.lore_board.connections.retain(|e| e.id != connection);
                 Ok(Applied::new(inverse).touch(connection))
             }
+            Command::SetChapterHeight { chapter, height } => {
+                let c = self.chapter_index(chapter)?;
+                ensure!(
+                    (MIN_CHAPTER_SIDE..=MAX_CHAPTER_HEIGHT).contains(&height),
+                    "Chapter height must be between {MIN_CHAPTER_SIDE} and {MAX_CHAPTER_HEIGHT} px"
+                );
+                let old = std::mem::replace(&mut self.chapters[c].height, height);
+                Ok(Applied::new(Command::SetChapterHeight {
+                    chapter,
+                    height: old,
+                })
+                .touch(chapter))
+            }
+            Command::AddChapter {
+                name,
+                width,
+                height,
+                opening,
+            } => {
+                check_text(&name, SHORT)?;
+                ensure!(
+                    (MIN_CHAPTER_SIDE..=MAX_CHAPTER_WIDTH).contains(&width)
+                        && (MIN_CHAPTER_SIDE..=MAX_CHAPTER_HEIGHT).contains(&height),
+                    "Chapter canvas dimensions are outside supported limits"
+                );
+                ensure!(
+                    self.chapters.len() < MAX_CHAPTERS,
+                    "This story has reached its chapter limit"
+                );
+                if let Some(panel) = &opening {
+                    check_panel_draft(panel, height)?;
+                }
+                self.ensure_ids(2)?;
+                let next_id = self.next_id;
+                let id = self.alloc_id();
+                let mut chapter = Chapter::new(id, name, width, height);
+                let mut applied = Applied::new(Command::RemoveLastChapter {
+                    chapter: id,
+                    next_id,
+                });
+                applied = applied.create(id);
+                if let Some(panel) = opening {
+                    let panel_id = self.alloc_id();
+                    chapter.panels.push(panel.into_panel(panel_id));
+                    applied = applied.create(panel_id);
+                }
+                self.chapters.push(chapter);
+                Ok(applied)
+            }
+            Command::RemoveLastChapter { chapter, next_id } => {
+                let last = self
+                    .chapters
+                    .last()
+                    .context("There is no chapter to remove")?;
+                ensure!(
+                    last.id == chapter && last.layers.is_empty() && last.panels.len() <= 1,
+                    "Only a newly added chapter can be removed this way"
+                );
+                ensure!(
+                    !self.timeline.iter().any(|e| e.chapter_id == chapter),
+                    "That chapter has timeline notes"
+                );
+                // Its inverse re-adds the chapter, so the opening panel must still fit.
+                if let Some(panel) = last.panels.first() {
+                    check_panel_draft(&PanelDraft::from(panel.clone()), last.height)?;
+                }
+                let removed = self.chapters.pop().expect("checked above");
+                self.next_id = self.safe_next_id(next_id);
+                let opening = removed.panels.into_iter().next().map(PanelDraft::from);
+                Ok(Applied::new(Command::AddChapter {
+                    name: removed.name,
+                    width: removed.width,
+                    height: removed.height,
+                    opening,
+                })
+                .touch(chapter))
+            }
+            Command::SetPanelGeometry { panel, y, height } => {
+                ensure!(
+                    y.is_finite() && height.is_finite() && height > 0.0,
+                    "A panel needs a finite position and a positive height"
+                );
+                let Slot::Panel(c, p) = self.slot(Target::Object(panel))? else {
+                    bail!("That panel no longer exists")
+                };
+                let target = &mut self.chapters[c].panels[p];
+                let old = (
+                    std::mem::replace(&mut target.y, y),
+                    std::mem::replace(&mut target.height, height),
+                );
+                Ok(Applied::new(Command::SetPanelGeometry {
+                    panel,
+                    y: old.0,
+                    height: old.1,
+                })
+                .touch(panel))
+            }
+            Command::DeletePanel { panel } => {
+                let Slot::Panel(c, p) = self.slot(Target::Object(panel))? else {
+                    bail!("That panel no longer exists")
+                };
+                let chapter = self.chapters[c].id;
+                let inverse = self.restore_panels(c);
+                self.chapters[c].panels.remove(p);
+                Ok(Applied::new(inverse).touch(chapter).touch(panel))
+            }
+            Command::SortPanels { chapter } => {
+                let c = self.chapter_index(chapter)?;
+                let inverse = self.restore_panels(c);
+                self.chapters[c].panels.sort_by(|a, b| a.y.total_cmp(&b.y));
+                Ok(Applied::new(inverse).touch(chapter))
+            }
+            Command::AddAsset {
+                name,
+                kind,
+                location,
+            } => {
+                check_text(&name, SHORT)?;
+                ensure!(
+                    self.assets.len() < MAX_ASSETS,
+                    "This story has reached its asset limit"
+                );
+                // An image sheet needs its pixels; use AddImageAsset.
+                ensure!(kind != AssetKind::Image, "An image needs its picture");
+                if let Some(location) = location {
+                    ensure!(
+                        kind == AssetKind::Background,
+                        "Only backgrounds belong to locations"
+                    );
+                    ensure!(
+                        self.locations.iter().any(|l| l.id == location),
+                        "That location no longer exists"
+                    );
+                }
+                let inverse = self.restore(Sections {
+                    assets: Some(self.assets.clone()),
+                    locations: location.map(|_| self.locations.clone()),
+                    ..Default::default()
+                });
+                self.ensure_ids(1)?;
+                let next_id = self.next_id;
+                let id = self.alloc_id();
+                self.assets.push(new_asset(id, name, kind, 0, 0));
+                let mut applied = Applied::new(inverse).create(id);
+                if let Some(location) = location {
+                    if let Err(error) = locations::move_asset(self, id, Some(location)) {
+                        self.assets.pop();
+                        self.next_id = next_id;
+                        return Err(error);
+                    }
+                    applied = applied.touch(location);
+                }
+                Ok(applied)
+            }
+            Command::AddImageAsset {
+                name,
+                width,
+                height,
+                attach,
+            } => {
+                check_text(&name, SHORT)?;
+                ensure!(
+                    self.assets.len() < MAX_ASSETS,
+                    "This story has reached its asset limit"
+                );
+                ensure!(
+                    width > 0
+                        && height > 0
+                        && width <= MAX_IMAGE_SIDE
+                        && height <= MAX_IMAGE_SIDE
+                        && u64::from(width) * u64::from(height) <= MAX_IMAGE_PIXELS,
+                    "That image is too large"
+                );
+                let group = match attach {
+                    Attach::Library => None,
+                    Attach::CharacterReference(character) => {
+                        let i = self.character_index(character)?;
+                        ensure!(
+                            self.assets[i].character.references.len() < MAX_REFERENCES,
+                            "Each character can hold {MAX_REFERENCES} additional references"
+                        );
+                        None
+                    }
+                    Attach::GroupReference(group) => {
+                        let g = self.group_index(group)?;
+                        ensure!(
+                            self.groups[g].reference_ids.len() < groups::MAX_REFERENCES,
+                            "Each group supports {} references",
+                            groups::MAX_REFERENCES
+                        );
+                        Some(g)
+                    }
+                };
+                self.ensure_ids(1)?;
+                let inverse = self.restore(Sections {
+                    assets: Some(self.assets.clone()),
+                    groups: group.map(|_| self.groups.clone()),
+                    ..Default::default()
+                });
+                let id = self.alloc_id();
+                self.assets
+                    .push(new_asset(id, name.clone(), AssetKind::Image, width, height));
+                let mut applied = Applied::new(inverse).create(id);
+                match attach {
+                    Attach::Library => {}
+                    Attach::CharacterReference(character) => {
+                        let i = self.character_index(character)?;
+                        self.assets[i]
+                            .character
+                            .references
+                            .push(CharacterReference {
+                                asset_id: id,
+                                label: name,
+                                notes: String::new(),
+                            });
+                        applied = applied.touch(character);
+                    }
+                    Attach::GroupReference(group_id) => {
+                        let g = group.expect("checked above");
+                        self.groups[g].reference_ids.push(id);
+                        applied = applied.touch(group_id);
+                    }
+                }
+                Ok(applied)
+            }
+            Command::AddGroup => {
+                let inverse = self.restore(Sections {
+                    groups: Some(self.groups.clone()),
+                    ..Default::default()
+                });
+                let id = groups::add(self)?;
+                Ok(Applied::new(inverse).create(id))
+            }
+            Command::SetGroupColor { group, color } => {
+                let g = self.group_index(group)?;
+                let old = std::mem::replace(&mut self.groups[g].color, color);
+                Ok(Applied::new(Command::SetGroupColor { group, color: old }).touch(group))
+            }
+            Command::SetGroupMembers {
+                group,
+                characters,
+                locations,
+                references,
+            } => {
+                let g = self.group_index(group)?;
+                let entry = &mut self.groups[g];
+                let old = (
+                    std::mem::replace(&mut entry.character_ids, characters),
+                    std::mem::replace(&mut entry.location_ids, locations),
+                    std::mem::replace(&mut entry.reference_ids, references),
+                );
+                if let Err(error) = groups::validate(self) {
+                    let entry = &mut self.groups[g];
+                    entry.character_ids = old.0;
+                    entry.location_ids = old.1;
+                    entry.reference_ids = old.2;
+                    return Err(error);
+                }
+                Ok(Applied::new(Command::SetGroupMembers {
+                    group,
+                    characters: old.0,
+                    locations: old.1,
+                    references: old.2,
+                })
+                .touch(group))
+            }
+            Command::RemoveGroup { group } => {
+                let g = self.group_index(group)?;
+                let inverse = self.restore(Sections {
+                    groups: Some(self.groups.clone()),
+                    lore: Some(self.lore.clone()),
+                    lore_board: Some(self.lore_board.clone()),
+                    card_thumbnails: Some(self.card_thumbnails.clone()),
+                    ..Default::default()
+                });
+                let affected = self.lore_cascade(group);
+                self.groups.remove(g);
+                lore::unlink_target(self, group);
+                self.card_thumbnails.retain(|t| t.target != group);
+                Ok(Applied::new(inverse).touch(group).touch_all(affected))
+            }
+            Command::MoveChronology { chapter, before } => {
+                let inverse = self.restore(Sections {
+                    timeline: Some(self.timeline.clone()),
+                    ..Default::default()
+                });
+                timeline::move_before(self, chapter, before)?;
+                Ok(Applied::new(inverse).touch(STORY_ID).touch(chapter))
+            }
+            Command::SetChronologyEntry {
+                chapter,
+                when,
+                summary,
+            } => {
+                ensure!(
+                    when.len() <= TIMELINE_WHEN && summary.len() <= TIMELINE_SUMMARY,
+                    "Timeline notes are too long"
+                );
+                let mut next = timeline::entries(self);
+                let entry = next
+                    .iter_mut()
+                    .find(|e| e.chapter_id == chapter)
+                    .context("That chapter no longer exists")?;
+                let inverse = self.restore(Sections {
+                    timeline: Some(self.timeline.clone()),
+                    ..Default::default()
+                });
+                if entry.when != when || entry.summary != summary {
+                    entry.when = when;
+                    entry.summary = summary;
+                    self.timeline = next;
+                }
+                Ok(Applied::new(inverse).touch(STORY_ID).touch(chapter))
+            }
+            Command::OrderChronologyByReading => {
+                let old = timeline::entries(self);
+                let next: Vec<_> = self
+                    .chapters
+                    .iter()
+                    .filter_map(|c| old.iter().find(|e| e.chapter_id == c.id).cloned())
+                    .collect();
+                let inverse = self.restore(Sections {
+                    timeline: Some(self.timeline.clone()),
+                    ..Default::default()
+                });
+                if old != next {
+                    self.timeline = next;
+                }
+                Ok(Applied::new(inverse).touch(STORY_ID))
+            }
+            Command::Restore(sections) => {
+                let previous_next = self.next_id;
+                let restored_next = sections.next_id;
+                let old = self.swap_sections(*sections)?;
+                // Decide the counter after the swap, once the restored objects are in place.
+                self.next_id = self.safe_next_id(restored_next);
+                if let Err(error) = self.check_sections() {
+                    self.swap_sections(old.clone())
+                        .expect("restoring the sections just replaced");
+                    self.next_id = previous_next;
+                    return Err(error);
+                }
+                Ok(Applied {
+                    everything: true,
+                    ..Applied::new(Command::Restore(Box::new(Sections {
+                        next_id: previous_next,
+                        ..old
+                    })))
+                })
+            }
             Command::RestoreLore {
                 lore: entries,
                 board,
@@ -1315,7 +1978,10 @@ impl Story {
                     self.next_id = old_next;
                     return Err(error);
                 }
-                Ok(Applied::new(inverse))
+                Ok(Applied {
+                    everything: true,
+                    ..Applied::new(inverse)
+                })
             }
         }
     }
@@ -1332,6 +1998,7 @@ pub fn field_limit(kind: ObjectKind, field: Field) -> usize {
         (_, Field::Title | Field::Name) => SHORT,
         (ObjectKind::Location, _) => LOCATION_TEXT,
         (ObjectKind::LoreNote | ObjectKind::LoreCard, _) => LORE_TEXT,
+        (ObjectKind::Group, _) => GROUP_TEXT,
         _ => LONG,
     }
 }
@@ -1574,6 +2241,107 @@ fn asset_text(asset: &crate::model::Asset, field: Field) -> &str {
     }
 }
 
+/// Commands for one library sheet edit: a character sheet, or the name, notes and prompt
+/// of a background or image.
+pub fn asset_edit(before: &Asset, after: &Asset) -> Option<Command> {
+    if before.kind == AssetKind::Character {
+        return character_edit(before, after);
+    }
+    let same_frame = before.id == after.id
+        && before.kind == after.kind
+        && before.width == after.width
+        && before.height == after.height
+        && before.character == after.character;
+    if !same_frame {
+        return None;
+    }
+    let commands = Field::allowed_on(ObjectKind::Asset)
+        .iter()
+        .filter(|field| asset_text(before, **field) != asset_text(after, **field))
+        .map(|field| Command::SetField {
+            target: Target::Object(before.id),
+            field: *field,
+            value: asset_text(after, *field).to_owned(),
+        })
+        .collect();
+    Some(Command::Batch(commands))
+}
+
+/// Commands for one script-panel edit: text fields and position.
+pub fn panel_edit(before: &Panel, after: &Panel) -> Option<Command> {
+    if before.id != after.id {
+        return None;
+    }
+    let text = |panel: &Panel, field: Field| -> String {
+        match field {
+            Field::Title => panel.title.clone(),
+            Field::Script => panel.script.clone(),
+            Field::Notes => panel.notes.clone(),
+            _ => panel.prompt.clone(),
+        }
+    };
+    let mut commands: Vec<_> = Field::allowed_on(ObjectKind::Panel)
+        .iter()
+        .filter(|field| text(before, **field) != text(after, **field))
+        .map(|field| Command::SetField {
+            target: Target::Object(before.id),
+            field: *field,
+            value: text(after, *field),
+        })
+        .collect();
+    // Compare bits so a NaN or signed-zero change is never silently dropped.
+    if before.y.to_bits() != after.y.to_bits() || before.height.to_bits() != after.height.to_bits()
+    {
+        commands.push(Command::SetPanelGeometry {
+            panel: before.id,
+            y: after.y,
+            height: after.height,
+        });
+    }
+    Some(Command::Batch(commands))
+}
+
+/// Commands for one group sheet edit: name, description, colour and lists.
+pub fn group_edit(before: &WorldGroup, after: &WorldGroup) -> Option<Command> {
+    if before.id != after.id {
+        return None;
+    }
+    let target = Target::Object(before.id);
+    let mut commands = Vec::new();
+    if before.name != after.name {
+        commands.push(Command::SetField {
+            target,
+            field: Field::Name,
+            value: after.name.clone(),
+        });
+    }
+    if before.description != after.description {
+        commands.push(Command::SetField {
+            target,
+            field: Field::Description,
+            value: after.description.clone(),
+        });
+    }
+    if before.color != after.color {
+        commands.push(Command::SetGroupColor {
+            group: before.id,
+            color: after.color,
+        });
+    }
+    if before.character_ids != after.character_ids
+        || before.location_ids != after.location_ids
+        || before.reference_ids != after.reference_ids
+    {
+        commands.push(Command::SetGroupMembers {
+            group: before.id,
+            characters: after.character_ids.clone(),
+            locations: after.location_ids.clone(),
+            references: after.reference_ids.clone(),
+        });
+    }
+    Some(Command::Batch(commands))
+}
+
 /// A location's whitelisted text, by field. Callers check the field is allowed first.
 fn location_text(location: &crate::model::BackgroundLocation, field: Field) -> &str {
     let p = &location.profile;
@@ -1608,6 +2376,62 @@ pub fn location_edit(
         })
         .collect();
     Some(Command::Batch(commands))
+}
+
+impl PanelDraft {
+    fn into_panel(self, id: u64) -> Panel {
+        Panel {
+            id,
+            title: self.title,
+            y: self.y,
+            height: self.height,
+            script: self.script,
+            notes: self.notes,
+            prompt: self.prompt,
+        }
+    }
+}
+
+impl From<Panel> for PanelDraft {
+    fn from(panel: Panel) -> Self {
+        Self {
+            title: panel.title,
+            y: panel.y,
+            height: panel.height,
+            script: panel.script,
+            notes: panel.notes,
+            prompt: panel.prompt,
+        }
+    }
+}
+
+fn check_panel_draft(panel: &PanelDraft, chapter_height: u32) -> Result<()> {
+    check_text(&panel.title, SHORT)?;
+    for text in [&panel.script, &panel.notes, &panel.prompt] {
+        check_text(text, LONG)?;
+    }
+    ensure!(
+        panel.y.is_finite()
+            && panel.height.is_finite()
+            && panel.y >= 0.0
+            && panel.height >= 1.0
+            && panel.y + panel.height <= chapter_height as f32,
+        "The panel must fit inside the chapter"
+    );
+    Ok(())
+}
+
+fn new_asset(id: u64, name: String, kind: AssetKind, width: u32, height: u32) -> Asset {
+    Asset {
+        id,
+        name,
+        kind,
+        notes: String::new(),
+        prompt: String::new(),
+        width,
+        height,
+        character: CharacterProfile::default(),
+    }
 }
 
 #[cfg(test)]
