@@ -24,7 +24,7 @@ fn asset(story: &mut Story, name: &str, kind: AssetKind) -> u64 {
 }
 
 /// A world that uses every object a stage 1 command can touch.
-fn world() -> Story {
+pub(crate) fn world() -> Story {
     let mut story = Story::demo();
     let reference = asset(&mut story, "Mira turnaround", AssetKind::Image);
     let mira = asset(&mut story, "Mira Vale", AssetKind::Character);
@@ -126,6 +126,24 @@ fn world() -> Story {
         summary: "The last train".into(),
     }];
     let _ = jun;
+    // A sheet without an image yet: "+ Image" replaces it in place and rewires it.
+    let ari = story.alloc_id();
+    story.assets.push(Asset {
+        width: 0,
+        height: 0,
+        ..story.assets.iter().find(|a| a.id == mira).unwrap().clone()
+    });
+    {
+        let sketch = story.assets.last_mut().unwrap();
+        sketch.id = ari;
+        sketch.name = "Ari (sketch)".into();
+        sketch.character.references.clear();
+        sketch.character.gender = None;
+    }
+    story.groups[0].character_ids.push(ari);
+    story.lore[0].links.push(ari);
+    let ari_card = lore::pin(&mut story, ari, [-400.0, -100.0]).unwrap();
+    lore::connect(&mut story, ari_card, note_card).unwrap();
     // A card cover chosen from an additional reference must survive RemoveReference undo.
     assert!(crate::thumbnails::set(&mut story, mira, reference));
     // Older stories can hold untrimmed names; edits and undo must keep them exactly.
@@ -448,6 +466,13 @@ fn commands_for(story: &Story) -> Vec<Command> {
             width: 320,
             height: 480,
             attach,
+        });
+    }
+    for asset in &story.assets {
+        commands.push(Command::AddImageVersion {
+            asset: asset.id,
+            width: 320,
+            height: 480,
         });
     }
     commands.push(Command::AddGroup);
@@ -1341,4 +1366,51 @@ fn allocating_commands_refuse_an_exhausted_id_space() {
         assert!(story.apply(command).is_err(), "{name} should refuse");
         assert!(manifest(&story) == before);
     }
+}
+
+#[test]
+fn adding_an_image_to_a_sheet_without_one_rewires_it_and_undo_restores_everything() {
+    let mut story = world();
+    let before = manifest(&story);
+    let ari = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Ari (sketch)")
+        .unwrap()
+        .id;
+    let applied = story
+        .apply(Command::AddImageVersion {
+            asset: ari,
+            width: 300,
+            height: 400,
+        })
+        .unwrap();
+    let new = applied.created[0];
+    assert!(story.assets.iter().all(|a| a.id != ari));
+    let sheet = story.assets.iter().find(|a| a.id == new).unwrap();
+    assert_eq!((sheet.name.as_str(), sheet.width), ("Ari (sketch)", 300));
+    assert!(story.lore_board.cards.iter().any(|c| c.target == new));
+    assert!(story.lore[0].links.contains(&new) && !story.lore[0].links.contains(&ari));
+    assert!(story.groups[0].character_ids.contains(&new));
+    story.apply(applied.inverse).unwrap();
+    assert!(manifest(&story) == before);
+
+    // A sheet that has an image keeps it and gains a separate version.
+    let mira = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira Vale")
+        .unwrap()
+        .id;
+    let count = story.assets.len();
+    let applied = story
+        .apply(Command::AddImageVersion {
+            asset: mira,
+            width: 10,
+            height: 10,
+        })
+        .unwrap();
+    assert_eq!(story.assets.len(), count + 1);
+    assert!(story.assets.iter().any(|a| a.id == mira));
+    assert!(story.groups[0].character_ids.contains(&applied.created[0]));
 }

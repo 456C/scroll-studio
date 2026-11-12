@@ -386,6 +386,15 @@ pub enum Command {
         height: u32,
         attach: Attach,
     },
+    /// Give a library sheet a new image. A sheet without an image is replaced under a new
+    /// ID: board cards, lore links and group membership follow it, and it leaves its
+    /// location. A sheet that has an image keeps it and gains the new one as a separate
+    /// version, joining the same groups. A background stays filed where it was.
+    AddImageVersion {
+        asset: u64,
+        width: u32,
+        height: u32,
+    },
     AddGroup,
     SetGroupColor {
         group: u64,
@@ -562,6 +571,7 @@ impl Command {
             Command::AddAsset { .. } => "add_asset",
             Command::AddImageAsset { .. } => "add_image_asset",
             Command::AddGroup => "add_group",
+            Command::AddImageVersion { .. } => "add_image_version",
             Command::SetGroupColor { .. } => "set_group_color",
             Command::SetGroupMembers { .. } => "set_group_members",
             Command::RemoveGroup { .. } => "remove_group",
@@ -893,6 +903,64 @@ impl Story {
             .iter()
             .position(|e| e.id == id)
             .context("That connection no longer exists")
+    }
+
+    /// The 0.13.2 "+ Image" / "+ Version" rules, applied to this story. Returns the new ID.
+    fn add_image_version(&mut self, asset: u64, width: u32, height: u32) -> Result<u64> {
+        let index = self
+            .assets
+            .iter()
+            .position(|a| a.id == asset)
+            .context("That sheet no longer exists")?;
+        let original = self.assets[index].clone();
+        let in_place = original.width == 0;
+        if !in_place {
+            ensure!(
+                self.assets.len() < MAX_ASSETS,
+                "This story has reached its asset limit"
+            );
+        }
+        self.ensure_ids(1)?;
+        let location = locations::location_for_asset(self, original.id);
+        let id = self.alloc_id();
+        let replacement = Asset {
+            id,
+            width,
+            height,
+            ..original.clone()
+        };
+        if in_place {
+            self.assets[index] = replacement;
+            for card in &mut self.lore_board.cards {
+                if card.target == original.id {
+                    card.target = id;
+                }
+            }
+            for link in self.lore.iter_mut().flat_map(|entry| &mut entry.links) {
+                if *link == original.id {
+                    *link = id;
+                }
+            }
+            for folder in &mut self.locations {
+                folder.asset_ids.retain(|a| *a != original.id);
+            }
+        } else {
+            self.assets.push(replacement);
+        }
+        if original.kind == AssetKind::Background {
+            locations::move_asset(self, id, location)?;
+        }
+        for group in &mut self.groups {
+            if group.character_ids.contains(&original.id) {
+                if in_place {
+                    group.character_ids.retain(|a| *a != original.id);
+                }
+                group.character_ids.push(id);
+            }
+        }
+        // Covers chosen for the replaced sheet no longer apply (the app prunes the same way).
+        thumbnails::prune(self);
+        Ok(id)
     }
 
     /// `count` more IDs can be allocated without exhausting the ID space.
@@ -1776,14 +1844,7 @@ impl Story {
                     self.assets.len() < MAX_ASSETS,
                     "This story has reached its asset limit"
                 );
-                ensure!(
-                    width > 0
-                        && height > 0
-                        && width <= MAX_IMAGE_SIDE
-                        && height <= MAX_IMAGE_SIDE
-                        && u64::from(width) * u64::from(height) <= MAX_IMAGE_PIXELS,
-                    "That image is too large"
-                );
+                check_image_size(width, height)?;
                 let group = match attach {
                     Attach::Library => None,
                     Attach::CharacterReference(character) => {
@@ -1835,6 +1896,31 @@ impl Story {
                     }
                 }
                 Ok(applied)
+            }
+            Command::AddImageVersion {
+                asset,
+                width,
+                height,
+            } => {
+                check_image_size(width, height)?;
+                // Many sections change; build the result on a copy so a failure leaves
+                // the story untouched.
+                let mut next = self.clone();
+                let id = next.add_image_version(asset, width, height)?;
+                let inverse = self.restore(Sections {
+                    assets: Some(self.assets.clone()),
+                    locations: Some(self.locations.clone()),
+                    groups: Some(self.groups.clone()),
+                    lore: Some(self.lore.clone()),
+                    lore_board: Some(self.lore_board.clone()),
+                    card_thumbnails: Some(self.card_thumbnails.clone()),
+                    ..Default::default()
+                });
+                *self = next;
+                Ok(Applied {
+                    everything: true,
+                    ..Applied::new(inverse).touch(asset).create(id)
+                })
             }
             Command::AddGroup => {
                 let inverse = self.restore(Sections {
@@ -2421,6 +2507,18 @@ fn check_panel_draft(panel: &PanelDraft, chapter_height: u32) -> Result<()> {
     Ok(())
 }
 
+fn check_image_size(width: u32, height: u32) -> Result<()> {
+    ensure!(
+        width > 0
+            && height > 0
+            && width <= MAX_IMAGE_SIDE
+            && height <= MAX_IMAGE_SIDE
+            && u64::from(width) * u64::from(height) <= MAX_IMAGE_PIXELS,
+        "That image is too large"
+    );
+    Ok(())
+}
+
 fn new_asset(id: u64, name: String, kind: AssetKind, width: u32, height: u32) -> Asset {
     Asset {
         id,
@@ -2435,4 +2533,4 @@ fn new_asset(id: u64, name: String, kind: AssetKind, width: u32, height: u32) ->
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

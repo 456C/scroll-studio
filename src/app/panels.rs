@@ -686,10 +686,30 @@ impl Studio {
     }
 
     fn replace_library_image(&mut self, index: usize, bytes: Vec<u8>, width: u32, height: u32) {
+        let command = Command::AddImageVersion {
+            asset: self.story.assets[index].id,
+            width,
+            height,
+        };
+        let mut fallback_id = None;
+        let applied = self.commit(Some(command), |studio| {
+            fallback_id = Some(studio.replace_library_image_directly(index, width, height));
+        });
+        let new_id = applied
+            .and_then(|a| a.created.first().copied())
+            .or(fallback_id)
+            .expect("an image was added");
+        // Image bytes live with the app, outside the command layer.
+        self.assets.insert(new_id, Arc::new(bytes));
+        self.selected_asset = Some(new_id);
+        self.status = "Reference added".into();
+    }
+
+    /// The 0.13.2 code, used if the command refuses. The caller records history.
+    fn replace_library_image_directly(&mut self, index: usize, width: u32, height: u32) -> u64 {
         let original = self.story.assets[index].clone();
         let location = scroll_studio::locations::location_for_asset(&self.story, original.id);
         // New asset identity preserves existing placements and undo snapshots.
-        self.checkpoint();
         let new_id = self.story.alloc_id();
         let mut replacement = original.clone();
         replacement.id = new_id;
@@ -729,10 +749,7 @@ impl Studio {
                 group.character_ids.push(new_id);
             }
         }
-        self.assets.insert(new_id, Arc::new(bytes));
-        self.selected_asset = Some(new_id);
-        self.changed();
-        self.status = "Reference added".into();
+        new_id
     }
 
     pub(super) fn inspector(&mut self, ctx: &egui::Context) {
@@ -1436,6 +1453,16 @@ mod tests {
                 .unwrap();
             studio.replace_library_image(0, bytes.into_inner(), 8, 4);
             let new_id = studio.selected_asset.unwrap();
+            // The edit went through the command, not the 0.13.2 fallback.
+            let mut expected = original.clone();
+            expected
+                .apply(Command::AddImageVersion {
+                    asset: id,
+                    width: 8,
+                    height: 4,
+                })
+                .unwrap();
+            assert_eq!(studio.story, expected);
             assert!(studio.story.groups[0].character_ids.contains(&new_id));
             assert_eq!(
                 studio.story.groups[0].character_ids.contains(&id),
