@@ -129,6 +129,18 @@ const GALLERY_CARD_HEIGHT: f32 = 292.0;
 const GALLERY_GAP: f32 = 16.0;
 
 impl Studio {
+    /// Record one sheet edit as named commands. Anything a command cannot describe or
+    /// accept keeps 0.13.2 behaviour: a snapshot and a direct assignment.
+    pub(super) fn commit_character_sheet(&mut self, index: usize, original: &Asset, edited: Asset) {
+        let applied =
+            commands::character_edit(original, &edited).map(|command| self.apply_command(command));
+        if !matches!(applied, Some(Ok(_))) {
+            self.checkpoint();
+            self.story.assets[index] = edited;
+            self.changed();
+        }
+    }
+
     pub(super) fn select_character(&mut self, id: u64) {
         if self.character_selected_id() != Some(id) {
             self.character_scene.clear();
@@ -709,9 +721,7 @@ impl Studio {
                 });
                 ctx.data_mut(|data| data.insert_temp(state_id, view));
                 if character != original {
-                    self.checkpoint();
-                    self.story.assets[index] = character.clone();
-                    self.changed();
+                    self.commit_character_sheet(index, &original, character.clone());
                 }
                 if copy_prompt {
                     ctx.copy_text(characters::compose_prompt(

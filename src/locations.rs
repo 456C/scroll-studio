@@ -31,7 +31,7 @@ pub fn compose_prompt(story: &Story, location: &BackgroundLocation, angle: &str)
     parts.join("\n\n")
 }
 
-fn checked_name(name: &str) -> Result<&str> {
+pub(crate) fn checked_name(name: &str) -> Result<&str> {
     let name = name.trim();
     ensure!(!name.is_empty(), "Enter a location name");
     ensure!(
