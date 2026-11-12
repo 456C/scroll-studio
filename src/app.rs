@@ -26,6 +26,7 @@ mod motion;
 mod paint_ui;
 mod panels;
 mod previews;
+mod publish_ui;
 mod reader_ui;
 mod recovery_ui;
 mod reference_ui;
@@ -199,6 +200,11 @@ pub struct Studio {
     export_options: export::ExportOptions,
     export_dialog: bool,
     export_report: Option<export::ExportReport>,
+    publish_open: bool,
+    publish: scroll_studio::publish::PublishSession,
+    publish_draft: publish_ui::PublishDraft,
+    publish_built: Option<publish_ui::BuiltFrom>,
+    publish_sign_in: Option<std::sync::mpsc::Receiver<publish_ui::SignInResult>>,
     settings_open: bool,
     preferences: settings::Preferences,
     preference_path: Option<PathBuf>,
@@ -390,6 +396,11 @@ impl Studio {
             export_options: export::ExportOptions::default(),
             export_dialog: false,
             export_report: None,
+            publish_open: false,
+            publish: scroll_studio::publish::PublishSession::new(),
+            publish_draft: publish_ui::PublishDraft::default(),
+            publish_built: None,
+            publish_sign_in: None,
             settings_open: false,
             preferences: settings::Preferences::default(),
             preference_path: None,
@@ -1376,6 +1387,7 @@ impl eframe::App for Studio {
         self.spacing_ui(ctx);
         self.finish_context_frame(ctx);
         self.finish_preset_slider_frame(ctx);
+        self.publish_ui(ctx);
         let dropped = if self.setup.is_none()
             && self.dialog.is_none()
             && self.location_editor.is_none()

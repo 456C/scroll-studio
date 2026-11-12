@@ -17,6 +17,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 rfd = "0.15"
 arboard = "3"
 ab_glyph = "0.2"
+sha2 = "0.10"
+getrandom = "0.3"
 
 [profile.release]
 opt-level = "s"

@@ -13,6 +13,8 @@ pub mod locations;
 pub mod lore;
 pub mod model;
 pub mod painting;
+pub mod publish;
+pub mod publish_wire;
 pub mod read_api;
 pub mod recovery;
 pub mod snapping;
