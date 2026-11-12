@@ -10,6 +10,23 @@ struct LocationView {
 }
 
 impl Studio {
+    /// Record one location sheet edit as named commands, falling back to 0.13.2 behaviour
+    /// for anything a command cannot describe or accept.
+    pub(super) fn commit_location_sheet(
+        &mut self,
+        index: usize,
+        original: &BackgroundLocation,
+        edited: BackgroundLocation,
+    ) {
+        let applied =
+            commands::location_edit(original, &edited).map(|command| self.apply_command(command));
+        if !matches!(applied, Some(Ok(_))) {
+            self.checkpoint();
+            self.story.locations[index] = edited;
+            self.changed();
+        }
+    }
+
     pub(super) fn location_workspace(&mut self, ctx: &egui::Context) {
         self.canvas_rect = egui::Rect::NOTHING;
         self.sanitize_location_selection();
@@ -168,14 +185,7 @@ impl Studio {
                         }
                     });
                 if location != original {
-                    let applied = commands::location_edit(&original, &location)
-                        .map(|command| self.apply_command(command));
-                    // Anything a command cannot describe or accept keeps 0.13.2 behaviour.
-                    if !matches!(applied, Some(Ok(_))) {
-                        self.checkpoint();
-                        self.story.locations[index] = location;
-                        self.changed();
-                    }
+                    self.commit_location_sheet(index, &original, location);
                 }
                 ctx.data_mut(|d| d.insert_temp(key, view));
             });

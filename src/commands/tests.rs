@@ -117,6 +117,16 @@ fn world() -> Story {
         .label = "Received".into();
     lore::connect(&mut story, note_card, station_card).unwrap();
     let _ = jun;
+    // A card cover chosen from an additional reference must survive RemoveReference undo.
+    assert!(crate::thumbnails::set(&mut story, mira, reference));
+    // Older stories can hold untrimmed names; edits and undo must keep them exactly.
+    let docks = story.alloc_id();
+    story.locations.push(BackgroundLocation {
+        id: docks,
+        name: " Docks ".into(),
+        asset_ids: Vec::new(),
+        profile: LocationProfile::default(),
+    });
     story
 }
 
@@ -772,4 +782,192 @@ fn location_sheet_edits_become_field_commands() {
     let mut changed = story.clone();
     changed.apply(command).unwrap();
     assert_eq!(changed.locations[0], edited);
+}
+
+#[test]
+fn removing_a_reference_drops_its_card_cover_and_undo_restores_it() {
+    let mut story = world();
+    let before = manifest(&story);
+    let mira = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira Vale")
+        .unwrap()
+        .id;
+    let reference = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira turnaround")
+        .unwrap()
+        .id;
+    assert_eq!(crate::thumbnails::selected(&story, mira), Some(reference));
+    let applied = story
+        .apply(Command::RemoveReference {
+            character: mira,
+            asset: reference,
+        })
+        .unwrap();
+    assert!(story.card_thumbnails.iter().all(|t| t.target != mira));
+    crate::thumbnails::validate(&story).unwrap();
+    story.apply(applied.inverse).unwrap();
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn location_names_are_validated_but_stored_as_given() {
+    let mut story = world();
+    let docks = story
+        .locations
+        .iter()
+        .find(|l| l.name == " Docks ")
+        .unwrap()
+        .id;
+    let before = manifest(&story);
+    let applied = story
+        .apply(Command::SetField {
+            target: Target::Object(docks),
+            field: Field::Name,
+            value: "Pier".into(),
+        })
+        .unwrap();
+    story.apply(applied.inverse).unwrap();
+    assert!(
+        manifest(&story) == before,
+        "the untrimmed name came back changed"
+    );
+    assert!(story
+        .apply(Command::SetField {
+            target: Target::Object(docks),
+            field: Field::Name,
+            value: " ".into(),
+        })
+        .is_err());
+}
+
+#[test]
+fn panels_stop_at_the_storage_limit() {
+    let mut story = Story::demo();
+    let chapter = story.chapters[0].id;
+    while story.chapters[0].panels.len() < MAX_PANELS {
+        let id = story.alloc_id();
+        story.chapters[0].panels.push(Panel {
+            id,
+            title: String::new(),
+            y: 0.0,
+            height: 1.0,
+            script: String::new(),
+            notes: String::new(),
+            prompt: String::new(),
+        });
+    }
+    let before = manifest(&story);
+    assert!(story
+        .apply(Command::AddPanel {
+            chapter,
+            after: None,
+            panel: PanelDraft {
+                title: String::new(),
+                y: 0.0,
+                height: 1.0,
+                script: String::new(),
+                notes: String::new(),
+                prompt: String::new(),
+            },
+        })
+        .is_err());
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn an_inverse_applied_after_newer_objects_never_reuses_their_ids() {
+    let mut story = world();
+    let note = story
+        .apply(Command::AddLoreNote {
+            title: "First".into(),
+            position: [0.0, 0.0],
+        })
+        .unwrap();
+    // Something unrelated is created after the note, then the note is undone.
+    let later = asset(&mut story, "Later", AssetKind::Background);
+    story.apply(note.inverse).unwrap();
+    assert!(
+        story.next_id > later,
+        "the ID counter was rewound below a live object"
+    );
+    let again = story
+        .apply(Command::AddLoreNote {
+            title: "Second".into(),
+            position: [0.0, 0.0],
+        })
+        .unwrap();
+    for id in again.created {
+        assert!(id > later, "{id} reuses an ID that is still in use");
+    }
+    let assets: crate::model::AssetBytes = story
+        .assets
+        .iter()
+        .filter(|a| a.width > 0 && a.height > 0)
+        .map(|a| (a.id, png_bytes(a.width, a.height).into()))
+        .collect();
+    crate::storage::validate_story(&story, &assets).unwrap();
+}
+
+#[test]
+fn internal_restores_keep_storage_limits() {
+    let story = world();
+    let mira = story
+        .assets
+        .iter()
+        .find(|a| a.name == "Mira Vale")
+        .unwrap()
+        .clone();
+    let mut full = story.clone();
+    let profile = &mut full
+        .assets
+        .iter_mut()
+        .find(|a| a.id == mira.id)
+        .unwrap()
+        .character;
+    profile.outfits = vec![CharacterOutfit::default(); MAX_OUTFITS];
+    profile.palette = vec![
+        CharacterSwatch {
+            name: String::new(),
+            color: [0; 4],
+        };
+        MAX_SWATCHES
+    ];
+    let before = manifest(&full);
+    for command in [
+        Command::InsertOutfit {
+            character: mira.id,
+            index: 0,
+            outfit: CharacterOutfit::default(),
+            active_outfit: None,
+        },
+        Command::InsertPaletteColor {
+            character: mira.id,
+            index: 0,
+            swatch: CharacterSwatch {
+                name: String::new(),
+                color: [0; 4],
+            },
+        },
+    ] {
+        let name = command.name();
+        assert!(full.apply(command).is_err(), "{name} exceeded its limit");
+        assert!(manifest(&full) == before);
+    }
+    // A restore with a link to something that does not exist is refused.
+    let mut story = story;
+    let mut lore = story.lore.clone();
+    lore[0].links.push(999_999);
+    let before = manifest(&story);
+    assert!(story
+        .apply(Command::RestoreLore {
+            lore,
+            board: story.lore_board.clone(),
+            next_id: story.next_id,
+        })
+        .is_err());
+    assert!(manifest(&story) == before);
 }

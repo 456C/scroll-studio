@@ -914,6 +914,47 @@ mod tests {
         ctx.data(|d| d.get_temp(egui::Id::new(("lore_card", id))).unwrap())
     }
     #[test]
+    fn connecting_already_connected_cards_selects_the_existing_connection() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.new_lore();
+        let first = studio.lore_view.selected.unwrap();
+        studio.new_lore();
+        let second = studio.lore_view.selected.unwrap();
+        studio.lore_view.link_from = Some(first);
+        studio.connect_lore_card(second);
+        let edge = studio
+            .lore_view
+            .connection
+            .expect("a new connection is selected");
+        let (undo, story) = (studio.undo.len(), studio.story.clone());
+        // Reverse direction: the same pair, so nothing changes and no undo step is added.
+        studio.lore_view.link_from = Some(second);
+        studio.connect_lore_card(first);
+        assert_eq!(studio.lore_view.connection, Some(edge));
+        assert_eq!(studio.undo.len(), undo);
+        assert_eq!(studio.story, story);
+    }
+    #[test]
+    fn deleting_a_note_card_is_one_undo_step_that_restores_note_card_and_links() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.new_lore();
+        let first = studio.lore_view.selected.unwrap();
+        studio.new_lore();
+        let second = studio.lore_view.selected.unwrap();
+        studio.lore_view.link_from = Some(first);
+        studio.connect_lore_card(second);
+        let before = studio.story.clone();
+        let undo = studio.undo.len();
+        studio.remove_lore_card(first, true);
+        assert_eq!(studio.undo.len(), undo + 1);
+        assert_eq!(studio.story.lore.len(), before.lore.len() - 1);
+        assert!(studio.story.lore_board.connections.is_empty());
+        studio.undo();
+        assert_eq!(studio.story, before);
+    }
+    #[test]
     fn cards_move_with_one_undo_and_ports_connect_without_moving_destinations() {
         let ctx = egui::Context::default();
         let mut studio = Studio::from_context(&ctx);

@@ -13,7 +13,7 @@ use crate::{
     locations, lore,
     model::{
         CharacterGender, CharacterOutfit, CharacterReference, CharacterSwatch, LoreBoard,
-        LoreConnection, LoreEntry, Panel, Story,
+        LoreEntry, Panel, Story,
     },
 };
 use anyhow::{bail, ensure, Context, Result};
@@ -28,6 +28,8 @@ const LOCATION_TEXT: usize = 64 * 1024;
 const MAX_OUTFITS: usize = 32;
 const MAX_SWATCHES: usize = 16;
 const MAX_LORE_NOTES: usize = 4096;
+const MAX_REFERENCES: usize = 24;
+const MAX_PANELS: usize = 10_000;
 const COORDINATE_LIMIT: f32 = 1_000_000.0;
 
 /// What a field edit targets. The story itself has no numeric ID.
@@ -357,6 +359,8 @@ pub enum Command {
         character: u64,
         index: usize,
         reference: CharacterReference,
+        /// Where a card cover chosen from this reference sat in `card_thumbnails`.
+        thumbnail: Option<usize>,
     },
     #[doc(hidden)]
     RestoreLore {
@@ -461,6 +465,15 @@ impl Story {
     /// Check `command`, apply it, and return its inverse. On error the story is unchanged.
     pub fn apply(&mut self, command: Command) -> Result<Applied> {
         match command {
+            // One command is already atomic; sheet typing sends one per keystroke, so skip
+            // the backup copy.
+            Command::Batch(mut commands) if commands.len() == 1 => {
+                let applied = self.apply(commands.pop().expect("one command"))?;
+                Ok(Applied {
+                    inverse: Command::Batch(vec![applied.inverse]),
+                    ..applied
+                })
+            }
             Command::Batch(commands) => {
                 // A failure part-way through restores the original story exactly.
                 let backup = self.clone();
@@ -539,44 +552,8 @@ impl Story {
                     _ => &panel.prompt,
                 }
             }
-            (Slot::Asset(i), field) => {
-                let asset = &self.assets[i];
-                let p = &asset.character;
-                match field {
-                    Field::Name => &asset.name,
-                    Field::Notes => &asset.notes,
-                    Field::Prompt => &asset.prompt,
-                    Field::Tagline => &p.tagline,
-                    Field::Role => &p.role,
-                    Field::Age => &p.age,
-                    Field::Pronouns => &p.pronouns,
-                    Field::Personality => &p.personality,
-                    Field::Backstory => &p.backstory,
-                    Field::Relationships => &p.relationships,
-                    Field::Face => &p.face,
-                    Field::Hair => &p.hair,
-                    Field::Eyes => &p.eyes,
-                    Field::Skin => &p.skin,
-                    Field::Build => &p.build,
-                    Field::DistinguishingFeatures => &p.distinguishing_features,
-                    Field::Consistency => &p.consistency,
-                    _ => &p.avoid,
-                }
-            }
-            (Slot::Location(i), field) => {
-                let location = &self.locations[i];
-                let p = &location.profile;
-                match field {
-                    Field::Name => &location.name,
-                    Field::Description => &p.description,
-                    Field::Atmosphere => &p.atmosphere,
-                    Field::Lighting => &p.lighting,
-                    Field::Consistency => &p.consistency,
-                    Field::Avoid => &p.avoid,
-                    Field::Prompt => &p.prompt,
-                    _ => &p.notes,
-                }
-            }
+            (Slot::Asset(i), field) => asset_text(&self.assets[i], field),
+            (Slot::Location(i), field) => location_text(&self.locations[i], field),
             (Slot::LoreNote(i), Field::Title) => &self.lore[i].title,
             (Slot::LoreNote(i), _) => &self.lore[i].text,
             (Slot::LoreCard(i), _) => &self.lore_board.cards[i].note,
@@ -724,6 +701,35 @@ impl Story {
             .context("That connection no longer exists")
     }
 
+    /// Every object ID in the story, matching the ID kinds `storage::validate_story`
+    /// requires to be unique.
+    fn all_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        let chapters = self.chapters.iter().flat_map(|c| {
+            std::iter::once(c.id)
+                .chain(c.panels.iter().map(|p| p.id))
+                .chain(c.layers.iter().map(|l| l.id))
+        });
+        chapters
+            .chain(self.assets.iter().map(|a| a.id))
+            .chain(self.locations.iter().map(|l| l.id))
+            .chain(self.groups.iter().map(|g| g.id))
+            .chain(self.lore.iter().map(|n| n.id))
+            .chain(self.lore_board.cards.iter().map(|c| c.id))
+            .chain(self.lore_board.connections.iter().map(|e| e.id))
+            .chain(self.bubble_presets.iter().map(|p| p.id))
+    }
+
+    /// The ID counter an inverse may restore. Moving it forward is always safe. Rewinding
+    /// lets a redo reuse the same IDs, but only while nothing newer exists; otherwise the
+    /// current counter is kept.
+    fn safe_next_id(&self, restored: u64) -> u64 {
+        if restored >= self.next_id || self.all_ids().all(|id| id < restored) {
+            restored
+        } else {
+            self.next_id
+        }
+    }
+
     fn lore_snapshot(&self) -> Command {
         Command::RestoreLore {
             lore: self.lore.clone(),
@@ -744,13 +750,11 @@ impl Story {
                     .object_kind(target)
                     .context("That object no longer exists")?;
                 check_text(&value, field_limit(kind, field))?;
-                let value = if field == Field::Name
-                    && self.object_kind(target) == Some(ObjectKind::Location)
-                {
-                    locations::checked_name(&value)?.to_owned()
-                } else {
-                    value
-                };
+                if field == Field::Name && kind == ObjectKind::Location {
+                    // Validate, but store the text as given: trimming here would make the
+                    // inverse of an edit to an older, untrimmed name inexact.
+                    locations::checked_name(&value)?;
+                }
                 let slot = self.field_mut(target, field)?;
                 let old = std::mem::replace(slot, value);
                 let applied = Applied::new(Command::SetField {
@@ -787,17 +791,8 @@ impl Story {
                 for (target, field) in fields {
                     let current = self.field(target, field)?;
                     if current.contains(&find) {
+                        // SetField validates each replacement; the batch rolls back on error.
                         let value = current.replace(&find, &replace);
-                        // A location name must stay a valid name after the replacement.
-                        if field == Field::Name
-                            && self.object_kind(target) == Some(ObjectKind::Location)
-                        {
-                            locations::checked_name(&value)?;
-                        }
-                        let kind = self
-                            .object_kind(target)
-                            .context("That object no longer exists")?;
-                        check_text(&value, field_limit(kind, field))?;
                         edits.push(Command::SetField {
                             target,
                             field,
@@ -821,6 +816,10 @@ impl Story {
                 for text in [&panel.script, &panel.notes, &panel.prompt] {
                     check_text(text, LONG)?;
                 }
+                ensure!(
+                    self.chapters[c].panels.len() < MAX_PANELS,
+                    "A chapter can have at most {MAX_PANELS} panels"
+                );
                 let height = self.chapters[c].height as f32;
                 ensure!(
                     panel.y.is_finite()
@@ -878,13 +877,10 @@ impl Story {
                     .iter()
                     .position(|p| p.id == panel)
                     .context("That panel no longer exists")?;
-                // Restoring the counter makes a redo assign the same panel ID again.
-                ensure!(
-                    panel >= next_id && next_id <= self.next_id,
-                    "Invalid ID restore"
-                );
                 let removed = self.chapters[c].panels.remove(index);
-                self.next_id = next_id;
+                // Restoring the counter makes a redo assign the same panel ID again, but
+                // only when no newer object would then have its ID handed out twice.
+                self.next_id = self.safe_next_id(next_id);
                 let after = index.checked_sub(1).map(|i| self.chapters[c].panels[i].id);
                 Ok(Applied::new(Command::AddPanel {
                     chapter,
@@ -982,8 +978,13 @@ impl Story {
                 active_outfit,
             } => {
                 let i = self.character_index(character)?;
+                check_outfit(&outfit)?;
                 let profile = &mut self.assets[i].character;
                 ensure!(index <= profile.outfits.len(), "Invalid outfit position");
+                ensure!(
+                    profile.outfits.len() < MAX_OUTFITS,
+                    "A character can have at most {MAX_OUTFITS} outfits"
+                );
                 ensure!(
                     active_outfit.is_none_or(|a| a <= profile.outfits.len()),
                     "Invalid active outfit"
@@ -1073,8 +1074,13 @@ impl Story {
                 swatch,
             } => {
                 let i = self.character_index(character)?;
+                check_text(&swatch.name, SHORT)?;
                 let palette = &mut self.assets[i].character.palette;
                 ensure!(index <= palette.len(), "Invalid color position");
+                ensure!(
+                    palette.len() < MAX_SWATCHES,
+                    "A palette can have at most {MAX_SWATCHES} colors"
+                );
                 palette.insert(index, swatch);
                 Ok(Applied::new(Command::RemovePaletteColor { character, index }).touch(character))
             }
@@ -1111,10 +1117,20 @@ impl Story {
                     .position(|r| r.asset_id == asset)
                     .context("That reference no longer exists")?;
                 let reference = references.remove(index);
+                // A card cover chosen from this reference stops being valid; keep it so
+                // undo can restore it exactly.
+                let thumbnail = self
+                    .card_thumbnails
+                    .iter()
+                    .position(|t| t.target == character && t.asset_id == asset);
+                if let Some(position) = thumbnail {
+                    self.card_thumbnails.remove(position);
+                }
                 Ok(Applied::new(Command::InsertReference {
                     character,
                     index,
                     reference,
+                    thumbnail,
                 })
                 .touch(character))
             }
@@ -1122,8 +1138,17 @@ impl Story {
                 character,
                 index,
                 reference,
+                thumbnail,
             } => {
                 let i = self.character_index(character)?;
+                check_text(&reference.label, SHORT)?;
+                check_text(&reference.notes, LONG)?;
+                ensure!(
+                    thumbnail.is_none_or(|t| t <= self.card_thumbnails.len())
+                        && !(thumbnail.is_some()
+                            && self.card_thumbnails.iter().any(|t| t.target == character)),
+                    "Invalid card cover restore"
+                );
                 ensure!(
                     self.assets
                         .iter()
@@ -1137,8 +1162,21 @@ impl Story {
                     !references.iter().any(|r| r.asset_id == reference.asset_id),
                     "That reference is already attached"
                 );
+                ensure!(
+                    references.len() < MAX_REFERENCES,
+                    "A character can have at most {MAX_REFERENCES} references"
+                );
                 let asset = reference.asset_id;
                 references.insert(index, reference);
+                if let Some(position) = thumbnail {
+                    self.card_thumbnails.insert(
+                        position,
+                        crate::model::CardThumbnail {
+                            target: character,
+                            asset_id: asset,
+                        },
+                    );
+                }
                 Ok(Applied::new(Command::RemoveReference { character, asset }).touch(character))
             }
             Command::AddLoreNote { title, position } => {
@@ -1247,15 +1285,10 @@ impl Story {
                 check_text(&label, SHORT)?;
                 let index = self.connection_index(connection)?;
                 let edge = &mut self.lore_board.connections[index];
-                let old = LoreConnection {
-                    label: std::mem::replace(&mut edge.label, label),
-                    color: std::mem::replace(&mut edge.color, color),
-                    ..edge.clone()
-                };
                 Ok(Applied::new(Command::SetLoreConnection {
                     connection,
-                    label: old.label,
-                    color: old.color,
+                    label: std::mem::replace(&mut edge.label, label),
+                    color: std::mem::replace(&mut edge.color, color),
                 })
                 .touch(connection))
             }
@@ -1270,14 +1303,18 @@ impl Story {
                 board,
                 next_id,
             } => {
-                // Only lore changes; every other ID in the story must still be unique.
-                let mut restored = self.clone();
-                restored.lore = entries;
-                restored.lore_board = board;
-                restored.next_id = next_id;
-                check_restored_lore(&restored)?;
+                // Swap the lore in, validate, and swap back if it is not valid.
                 let inverse = self.lore_snapshot();
-                *self = restored;
+                let old_lore = std::mem::replace(&mut self.lore, entries);
+                let old_board = std::mem::replace(&mut self.lore_board, board);
+                let old_next = self.next_id;
+                self.next_id = self.safe_next_id(next_id);
+                if let Err(error) = check_restored_lore(self) {
+                    self.lore = old_lore;
+                    self.lore_board = old_board;
+                    self.next_id = old_next;
+                    return Err(error);
+                }
                 Ok(Applied::new(inverse))
             }
         }
@@ -1313,18 +1350,43 @@ fn board_position(position: [f32; 2]) -> Result<[f32; 2]> {
     Ok(position.map(|v| v.clamp(-COORDINATE_LIMIT, COORDINATE_LIMIT)))
 }
 
+/// The rules `storage::validate_story` applies to lore, checked before a restore.
 fn check_restored_lore(story: &Story) -> Result<()> {
+    ensure!(story.lore.len() <= MAX_LORE_NOTES, "Too many lore entries");
+    ensure!(story.next_id < u64::MAX, "Invalid ID counter");
     let mut ids = HashSet::new();
-    let lore_ids = story
+    for id in story.all_ids() {
+        ensure!(
+            id > 0 && id < story.next_id && ids.insert(id),
+            "Lore IDs are not valid"
+        );
+    }
+    let link_targets: HashSet<_> = story
         .lore
         .iter()
-        .map(|n| n.id)
-        .chain(story.lore_board.cards.iter().map(|c| c.id))
-        .chain(story.lore_board.connections.iter().map(|e| e.id));
-    for id in lore_ids {
+        .map(|e| e.id)
+        .chain(story.groups.iter().map(|g| g.id))
+        .chain(story.locations.iter().map(|l| l.id))
+        .chain(
+            story
+                .assets
+                .iter()
+                .filter(|a| a.kind == crate::model::AssetKind::Character)
+                .map(|a| a.id),
+        )
+        .collect();
+    for entry in &story.lore {
         ensure!(
-            id < story.next_id && ids.insert(id),
-            "Lore IDs are not valid"
+            entry.title.len() <= SHORT && entry.text.len() <= LORE_TEXT,
+            "Lore entry is too long"
+        );
+        let mut unique = HashSet::new();
+        ensure!(
+            entry
+                .links
+                .iter()
+                .all(|id| *id != entry.id && link_targets.contains(id) && unique.insert(*id)),
+            "Invalid lore link"
         );
     }
     lore::validate_board(story)
@@ -1486,6 +1548,7 @@ pub fn character_edit(
     Some(Command::Batch(commands))
 }
 
+/// An asset's whitelisted text, by field. Callers check the field is allowed first.
 fn asset_text(asset: &crate::model::Asset, field: Field) -> &str {
     let p = &asset.character;
     match field {
@@ -1511,6 +1574,22 @@ fn asset_text(asset: &crate::model::Asset, field: Field) -> &str {
     }
 }
 
+/// A location's whitelisted text, by field. Callers check the field is allowed first.
+fn location_text(location: &crate::model::BackgroundLocation, field: Field) -> &str {
+    let p = &location.profile;
+    match field {
+        Field::Name => &location.name,
+        Field::Description => &p.description,
+        Field::Atmosphere => &p.atmosphere,
+        Field::Lighting => &p.lighting,
+        Field::Consistency => &p.consistency,
+        Field::Avoid => &p.avoid,
+        Field::Prompt => &p.prompt,
+        Field::Notes => &p.notes,
+        _ => "",
+    }
+}
+
 /// Commands that turn `before` into `after` for one location sheet edit.
 pub fn location_edit(
     before: &crate::model::BackgroundLocation,
@@ -1519,26 +1598,13 @@ pub fn location_edit(
     if before.id != after.id || before.asset_ids != after.asset_ids {
         return None;
     }
-    let text = |l: &crate::model::BackgroundLocation, field: Field| -> String {
-        let p = &l.profile;
-        match field {
-            Field::Name => l.name.clone(),
-            Field::Description => p.description.clone(),
-            Field::Atmosphere => p.atmosphere.clone(),
-            Field::Lighting => p.lighting.clone(),
-            Field::Consistency => p.consistency.clone(),
-            Field::Avoid => p.avoid.clone(),
-            Field::Prompt => p.prompt.clone(),
-            _ => p.notes.clone(),
-        }
-    };
     let commands = Field::allowed_on(ObjectKind::Location)
         .iter()
-        .filter(|field| text(before, **field) != text(after, **field))
+        .filter(|field| location_text(before, **field) != location_text(after, **field))
         .map(|field| Command::SetField {
             target: Target::Object(before.id),
             field: *field,
-            value: text(after, *field),
+            value: location_text(after, *field).to_owned(),
         })
         .collect();
     Some(Command::Batch(commands))

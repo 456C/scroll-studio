@@ -1706,6 +1706,35 @@ mod tests {
     }
 
     #[test]
+    fn sheet_edits_a_command_refuses_still_save_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let id = scroll_studio::locations::add_location(&mut studio.story, "Pier").unwrap();
+        let index = studio
+            .story
+            .locations
+            .iter()
+            .position(|l| l.id == id)
+            .unwrap();
+        let original = studio.story.locations[index].clone();
+        // Over the command limit for location text, but 0.13.2 accepted it from the sheet.
+        let mut edited = original.clone();
+        edited.profile.notes = "x".repeat(64 * 1024 + 1);
+        let undo = studio.undo.len();
+        studio.commit_location_sheet(index, &original, edited.clone());
+        assert_eq!(studio.story.locations[index], edited);
+        assert_eq!(studio.undo.len(), undo + 1);
+        studio.undo();
+        assert_eq!(studio.story.locations[index], original);
+        // An ordinary edit goes through commands, also as one step.
+        let mut edited = original.clone();
+        edited.profile.lighting = "Dawn".into();
+        studio.commit_location_sheet(index, &original, edited.clone());
+        assert_eq!(studio.story.locations[index], edited);
+        assert_eq!(studio.undo.len(), undo + 1);
+    }
+
+    #[test]
     fn history_retention_keeps_images_needed_by_older_undo_states() {
         let (before, imported, pool, id) = imported_story();
         let undo = VecDeque::from([imported]);
