@@ -1,0 +1,25 @@
+{
+  "name": "media-rejects",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "media-begin-000000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "media-exchange-000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "webp", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "media-webp-0000000001", "credentialFrom": "exchange", "body": {"content": {"kind": "comic", "slices": [{"ordinal": 1, "mediaType": "image/webp", "width": 1, "height": 1, "byteLength": "{{media:png.byteLength}}", "sha256": "{{media:png.sha256}}", "bytesBase64": "{{media:png.bytesBase64}}"}]}}, "expect": {"ok": false, "errorCode": "invalid_request", "detail": "schema"}},
+    {"id": "gif", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "media-gif-00000000001", "credentialFrom": "exchange", "body": {"content": {"kind": "comic", "slices": [{"ordinal": 1, "mediaType": "image/gif", "width": 1, "height": 1, "byteLength": "{{media:png.byteLength}}", "sha256": "{{media:png.sha256}}", "bytesBase64": "{{media:png.bytesBase64}}"}]}}, "expect": {"ok": false, "errorCode": "invalid_request", "detail": "schema"}},
+    {"id": "jpeg-bytes", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "media-jpeg-bytes-0001", "credentialFrom": "exchange", "body": {"content": {"kind": "comic", "slices": [{"ordinal": 1, "mediaType": "image/jpeg", "width": 1, "height": 1, "byteLength": "{{media:png.byteLength}}", "sha256": "{{media:png.sha256}}", "bytesBase64": "{{media:png.bytesBase64}}"}]}}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "magic"}},
+    {"id": "dimensions", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "media-dimensions-0001", "credentialFrom": "exchange", "body": {"content": {"kind": "comic", "slices": [{"ordinal": 1, "mediaType": "image/png", "width": 2, "height": 2, "byteLength": "{{media:png.byteLength}}", "sha256": "{{media:png.sha256}}", "bytesBase64": "{{media:png.bytesBase64}}"}]}}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "dimensions"}},
+    {"id": "hash", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "media-hash-0000000001", "credentialFrom": "exchange", "body": {"expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "hash"}},
+    {"id": "order", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "media-order-000000001", "credentialFrom": "exchange", "body": {"content": {"kind": "comic", "slices": [{"ordinal": 2, "mediaType": "image/jpeg", "width": 1, "height": 1, "byteLength": "{{media:jpeg.byteLength}}", "sha256": "{{media:jpeg.sha256}}", "bytesBase64": "{{media:jpeg.bytesBase64}}"}, {"ordinal": 1, "mediaType": "image/png", "width": 1, "height": 1, "byteLength": "{{media:png.byteLength}}", "sha256": "{{media:png.sha256}}", "bytesBase64": "{{media:png.bytesBase64}}"}]}}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "order"}},
+    {"id": "utf16", "use": "upload-prose", "command": "episode.upload", "idempotencyKey": "media-utf16-000000001", "credentialFrom": "exchange", "body": {"content": {"kind": "prose", "mediaType": "text/plain; charset=utf-16", "text": "Hello"}}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "type"}},
+    {"id": "bom", "use": "upload-prose", "command": "episode.upload", "idempotencyKey": "media-bom-00000000001", "credentialFrom": "exchange", "body": {"content": {"kind": "prose", "mediaType": "text/plain; charset=utf-8", "text": "\ufeffHello"}}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "bom"}},
+    {"id": "control", "use": "upload-prose", "command": "episode.upload", "idempotencyKey": "media-control-0000001", "credentialFrom": "exchange", "body": {"content": {"kind": "prose", "mediaType": "text/plain; charset=utf-8", "text": "hello\u0001"}}, "expect": {"ok": false, "errorCode": "media_rejected", "detail": "controls"}},
+    {"id": "discover", "command": "account.discover", "idempotencyKey": "media-discover-000001", "credentialFrom": "exchange", "body": {}, "expect": {"ok": true, "equals": {"result.account.series.0.episodes.0.publication": null, "result.account.series.0.episodes.1.publication": null}}}
+  ]
+}

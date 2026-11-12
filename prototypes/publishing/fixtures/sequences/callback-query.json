@@ -1,0 +1,16 @@
+{
+  "name": "callback-query",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "token", "clientCheck": "callback", "queryKeys": ["code", "state", "access_token"], "expect": {"clientError": "callback_forbidden"}},
+    {"id": "bearer", "clientCheck": "callback", "queryKeys": ["code", "bearer"], "expect": {"clientError": "callback_forbidden"}},
+    {"id": "ok", "clientCheck": "callback", "queryKeys": ["code", "state"], "expect": {"clientError": null, "ok": true}}
+  ]
+}

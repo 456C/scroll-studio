@@ -1,0 +1,37 @@
+{
+  "transportProfile": "local-http-isolated-fixture",
+  "nonProductionLabel": "TEST-ONLY",
+  "accounts": [
+    {
+      "accountId": "acct_test_owner_a",
+      "handle": "test-owner-a",
+      "testOnly": true,
+      "nonProductionLabel": "TEST-ONLY"
+    },
+    {
+      "accountId": "acct_test_owner_b",
+      "handle": "test-owner-b",
+      "testOnly": true,
+      "nonProductionLabel": "TEST-ONLY"
+    }
+  ],
+  "series": [
+    {
+      "seriesId": "ser_test_lane",
+      "ownerAccountId": "acct_test_owner_a",
+      "title": "Fixture Lane",
+      "episodes": [
+        {"episodeId": "ep_test_lane_01", "ordinal": 1, "title": "North door"},
+        {"episodeId": "ep_test_lane_02", "ordinal": 2, "title": "South stair"}
+      ]
+    },
+    {
+      "seriesId": "ser_test_other",
+      "ownerAccountId": "acct_test_owner_b",
+      "title": "Other Lane",
+      "episodes": [
+        {"episodeId": "ep_test_other_01", "ordinal": 1, "title": "Their door"}
+      ]
+    }
+  ]
+}

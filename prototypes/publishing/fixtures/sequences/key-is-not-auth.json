@@ -1,0 +1,19 @@
+{
+  "name": "key-is-not-auth",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "barekey-begin-0000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "barekey-exchange-0001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "barekey-upload-000001", "credentialFrom": "exchange", "expect": {"ok": true}},
+    {"id": "confirm", "command": "publication.confirm", "idempotencyKey": "barekey-confirm-00001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true}},
+    {"id": "confirm-bare", "command": "publication.confirm", "idempotencyKey": "barekey-confirm-00001", "credentialFrom": null, "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": false, "errorCode": "unauthorized", "absent": ["result"]}},
+    {"id": "read", "command": "publication.read", "idempotencyKey": "barekey-read-00000001", "credentialFrom": "exchange", "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"}, "expect": {"ok": true, "equals": {"result.authoritative": true, "result.status": "published"}}}
+  ]
+}

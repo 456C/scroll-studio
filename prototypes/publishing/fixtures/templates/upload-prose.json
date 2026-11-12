@@ -1,0 +1,22 @@
+{
+  "seriesId": "ser_test_lane",
+  "episodeId": "ep_test_lane_02",
+  "selection": {
+    "mode": "selected-episode-only",
+    "localStoryRef": "local-story-lane",
+    "localEpisodeRef": "local-episode-south"
+  },
+  "publicMetadata": {
+    "seriesTitle": "Fixture Lane",
+    "episodeTitle": "South stair",
+    "synopsis": "Synthetic south episode.",
+    "language": "en"
+  },
+  "completion": "seal",
+  "expectedSha256": "{{contentSha}}",
+  "content": {
+    "kind": "prose",
+    "mediaType": "text/plain; charset=utf-8",
+    "text": "A synthetic prose episode.\n雪 <script>alert(1)</script>"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "cancel-upload",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "defer-begin-00000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "defer-exchange-00001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "deferred", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "defer-upload-0000001", "credentialFrom": "exchange", "body": {"completion": "defer"}, "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "in-progress", "result.acknowledgement.authoritative": false}}},
+    {"id": "cancel", "command": "operation.cancel", "idempotencyKey": "defer-cancel-00000001", "credentialFrom": "exchange", "body": {"targetIdempotencyKey": "defer-upload-0000001"}, "expect": {"ok": true, "equals": {"result.targetStatus": "cancelled"}}},
+    {"id": "finish-dead", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "defer-upload-0000001", "credentialFrom": "exchange", "expect": {"ok": false, "errorCode": "cancelled", "idempotentReplay": true}},
+    {"id": "discover", "command": "account.discover", "idempotencyKey": "defer-discover-00001", "credentialFrom": "exchange", "body": {}, "expect": {"ok": true, "equals": {"result.account.series.0.episodes.0.publication": null}}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "defer-upload-0000002", "credentialFrom": "exchange", "expect": {"ok": true, "equals": {"result.acknowledgement.effect": "revision-sealed", "result.acknowledgement.authoritative": false}}}
+  ]
+}

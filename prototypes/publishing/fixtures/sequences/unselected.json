@@ -1,0 +1,19 @@
+{
+  "name": "unselected",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "unselected-begin-0001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "unselected-exchange-01", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "project", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "unselected-project-001", "credentialFrom": "exchange", "body": {"project": {"id": "local-project"}}, "expect": {"ok": false, "errorCode": "invalid_request", "detail": "schema"}},
+    {"id": "references", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "unselected-refs-000001", "credentialFrom": "exchange", "body": {"references": ["sheet.png"]}, "expect": {"ok": false, "errorCode": "invalid_request", "detail": "schema"}},
+    {"id": "path", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "unselected-path-000001", "credentialFrom": "exchange", "body": {"selection": {"mode": "selected-episode-only", "localStoryRef": "../story.scro"}}, "expect": {"ok": false, "errorCode": "invalid_request", "detail": "schema"}},
+    {"id": "discover", "command": "account.discover", "idempotencyKey": "unselected-discover-01", "credentialFrom": "exchange", "body": {}, "expect": {"ok": true, "equals": {"result.account.series.0.episodes.0.publication": null}}}
+  ]
+}

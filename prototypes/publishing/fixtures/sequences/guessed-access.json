@@ -1,0 +1,24 @@
+{
+  "name": "guessed-access",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "guess-begin-000000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "guess-exchange-000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "guess-upload-00000001", "credentialFrom": "exchange", "expect": {"ok": true}},
+    {"id": "confirm", "command": "publication.confirm", "idempotencyKey": "guess-confirm-0000001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true}},
+    {"id": "asset", "command": "publication.read", "idempotencyKey": "guess-read-asset-00001", "credentialFrom": "exchange", "body": {"canonicalUrl": "http://127.0.0.1:19427/ss-publish/browser/assets/pub_test_0001/1"}, "expect": {"ok": false, "errorCode": "asset_not_addressable"}},
+    {"id": "slices", "command": "publication.read", "idempotencyKey": "guess-read-slices-001", "credentialFrom": "exchange", "body": {"canonicalUrl": "http://127.0.0.1:19427/ss-publish/browser/reader/pub_test_0001/slices/1"}, "expect": {"ok": false, "errorCode": "asset_not_addressable"}},
+    {"id": "public-host", "command": "publication.read", "idempotencyKey": "guess-read-public-001", "credentialFrom": "exchange", "body": {"canonicalUrl": "http://8.8.8.8/ss-publish/reader/pub_test_0001"}, "expect": {"ok": false, "errorCode": "asset_not_addressable"}},
+    {"id": "unknown-id", "command": "publication.read", "idempotencyKey": "guess-read-missing-01", "credentialFrom": "exchange", "body": {"canonicalUrl": "http://127.0.0.1:19427/ss-publish/browser/reader/pub_test_9999"}, "expect": {"ok": false, "errorCode": "not_found"}},
+    {"id": "no-credential", "command": "publication.read", "idempotencyKey": "guess-read-anon-00001", "credentialFrom": null, "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"}, "expect": {"ok": false, "errorCode": "unauthorized"}},
+    {"id": "asset-command", "command": "asset.get", "idempotencyKey": "guess-asset-command-01", "credentialFrom": "exchange", "body": {}, "expect": {"ok": false, "errorCode": "unknown_command"}},
+    {"id": "bypass-command", "command": "auth.bypass", "idempotencyKey": "guess-bypass-command-1", "credentialFrom": null, "body": {}, "expect": {"ok": false, "errorCode": "unknown_command"}}
+  ]
+}

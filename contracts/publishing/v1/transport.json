@@ -1,0 +1,69 @@
+{
+  "origin": "http://127.0.0.1:19427",
+  "hostHeader": "127.0.0.1:19427",
+  "command": {
+    "method": "POST",
+    "path": "/ss-publish/commands",
+    "requestContentType": "application/json",
+    "responseContentType": "application/json; charset=utf-8",
+    "successStatus": 200,
+    "cacheControl": "no-store",
+    "maxBodyBytes": 28000000
+  },
+  "errorStatus": {
+    "invalid_request": 400,
+    "unauthorized": 401,
+    "credential_expired": 401,
+    "credential_revoked": 401,
+    "not_owner": 403,
+    "not_found": 404,
+    "stale_revision": 409,
+    "unknown_command": 404,
+    "idempotency_conflict": 409,
+    "cancelled": 409,
+    "already_terminal": 409,
+    "code_replayed": 401,
+    "state_mismatch": 400,
+    "redirect_rejected": 400,
+    "issuer_rejected": 400,
+    "pkce_rejected": 400,
+    "authorization_expired": 401,
+    "authorization_cancelled": 401,
+    "unsupported_grant": 400,
+    "public_launch_gate": 403,
+    "limit_exceeded": 413,
+    "media_rejected": 400,
+    "metadata_rejected": 400,
+    "asset_not_addressable": 404,
+    "production_transport_not_enabled": 403,
+    "withdrawn": 410,
+    "exchange_consumed": 401
+  },
+  "busy": {
+    "status": 503,
+    "code": "limit_exceeded",
+    "retryable": true,
+    "schema": "#/$defs/busyResponse",
+    "when": "All four request workers are busy. This does not replace errorStatus.limit_exceeded, which stays HTTP 413 with retryable false."
+  },
+  "cookie": {
+    "name": "ss_publish_fixture",
+    "httpOnly": true,
+    "sameSite": "Strict",
+    "path": "/ss-publish/browser",
+    "maxAgeSeconds": 900,
+    "domainAttribute": false,
+    "secure": false,
+    "localHttpReason": "This fixture profile is HTTP on 127.0.0.1. A production protocol would set Secure. Cookies ignore port, so the service uses one port and this path. The desktop callback path is /ss-publish/callback and does not receive this cookie."
+  },
+  "routes": {
+    "authorize": "/ss-publish/browser/authorize",
+    "affirm": "/ss-publish/browser/affirm",
+    "revokeSession": "/ss-publish/browser/session/revoke",
+    "reader": "/ss-publish/browser/reader/",
+    "preview": "/ss-publish/browser/preview/",
+    "readerAsset": "/ss-publish/browser/assets/",
+    "previewAsset": "/ss-publish/browser/preview-assets/"
+  },
+  "deniedReaderStatuses": ["withdrawn", "held"]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "ordered-slices",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "slices-begin-00000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "slices-exchange-00001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "slices-upload-0000001", "credentialFrom": "exchange", "body": {"content": {"kind": "comic", "slices": [{"ordinal": 1, "mediaType": "image/png", "width": "{{media:png.width}}", "height": "{{media:png.height}}", "byteLength": "{{media:png.byteLength}}", "sha256": "{{media:png.sha256}}", "bytesBase64": "{{media:png.bytesBase64}}"}, {"ordinal": 2, "mediaType": "image/jpeg", "width": "{{media:jpeg.width}}", "height": "{{media:jpeg.height}}", "byteLength": "{{media:jpeg.byteLength}}", "sha256": "{{media:jpeg.sha256}}", "bytesBase64": "{{media:jpeg.bytesBase64}}"}]}}, "expect": {"ok": true}},
+    {"id": "preview", "command": "episode.preview", "idempotencyKey": "slices-preview-000001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}"}, "expect": {"ok": true, "matchesMedia": "png", "equals": {"result.content.slices.1.ordinal": 2, "result.content.slices.1.mediaType": "image/jpeg", "result.content.slices.1.sha256": "{{media:jpeg.sha256}}"}}}
+  ]
+}

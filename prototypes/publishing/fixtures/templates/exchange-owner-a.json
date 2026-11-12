@@ -1,0 +1,8 @@
+{
+  "grantType": "authorization_code",
+  "code": "{{callback:begin.code}}",
+  "state": "{{callback:begin.state}}",
+  "codeVerifier": "{{verifier:ownerA}}",
+  "redirectUri": "http://127.0.0.1:43121/ss-publish/callback",
+  "issuer": "http://127.0.0.1:19427/ss-publish/test-issuer"
+}

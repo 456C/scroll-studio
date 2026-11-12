@@ -1,0 +1,16 @@
+{
+  "name": "auth-cancel",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "cancel-auth-begin-001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "cancel", "command": "auth.cancel", "idempotencyKey": "cancel-auth-stop-0001", "credentialFrom": null, "body": {"state": "{{step:begin.result.state}}", "issuer": "http://127.0.0.1:19427/ss-publish/test-issuer", "redirectUri": "http://127.0.0.1:43121/ss-publish/callback"}, "expect": {"ok": true, "equals": {"result.cancelled": true}}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "cancel-auth-exchange-1", "credentialFrom": null, "expect": {"ok": false, "errorCode": "authorization_cancelled"}}
+  ]
+}

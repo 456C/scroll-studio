@@ -1,0 +1,10 @@
+{
+  "transportProfile": "local-http-isolated-fixture",
+  "issuer": "http://127.0.0.1:19427/ss-publish/test-issuer",
+  "redirectUri": "http://127.0.0.1:43121/ss-publish/callback",
+  "codeChallengeMethod": "S256",
+  "codeChallenge": "{{pkce:ownerB}}",
+  "state": "synthetic-state-owner-b-not-for-production-0001",
+  "clientId": "scroll-studio-desktop-test",
+  "scope": ["prototype:creator"]
+}

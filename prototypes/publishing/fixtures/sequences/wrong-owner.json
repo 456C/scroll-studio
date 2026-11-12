@@ -1,0 +1,23 @@
+{
+  "name": "wrong-owner",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "owner-begin-a-00001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "owner-exchange-a-001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "owner-upload-a-00001", "credentialFrom": "exchange", "expect": {"ok": true}},
+    {"id": "confirm", "command": "publication.confirm", "idempotencyKey": "owner-confirm-a-0001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}", "policyEligibility": "private-prototype-only"}, "expect": {"ok": true}},
+    {"id": "beginB", "use": "begin-owner-b", "command": "auth.begin", "idempotencyKey": "owner-begin-b-00001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchangeB", "command": "auth.exchange", "idempotencyKey": "owner-exchange-b-001", "credentialFrom": null, "body": {"grantType": "authorization_code", "code": "{{callback:beginB.code}}", "state": "{{callback:beginB.state}}", "codeVerifier": "{{verifier:ownerB}}", "redirectUri": "http://127.0.0.1:43121/ss-publish/callback", "issuer": "http://127.0.0.1:19427/ss-publish/test-issuer"}, "expect": {"ok": true}},
+    {"id": "discoverB", "command": "account.discover", "idempotencyKey": "owner-discover-b-001", "credentialFrom": "exchangeB", "body": {}, "expect": {"ok": true, "seriesIds": ["ser_test_other"]}},
+    {"id": "uploadB", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "owner-upload-b-00001", "credentialFrom": "exchangeB", "expect": {"ok": false, "errorCode": "not_owner"}},
+    {"id": "previewB", "command": "episode.preview", "idempotencyKey": "owner-preview-b-0001", "credentialFrom": "exchangeB", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}"}, "expect": {"ok": false, "errorCode": "not_owner"}},
+    {"id": "readB", "command": "publication.read", "idempotencyKey": "owner-read-b-000001", "credentialFrom": "exchangeB", "body": {"canonicalUrl": "{{step:confirm.result.acknowledgement.canonicalUrl}}"}, "expect": {"ok": false, "errorCode": "not_owner"}}
+  ]
+}

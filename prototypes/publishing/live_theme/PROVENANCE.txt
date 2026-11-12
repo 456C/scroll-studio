@@ -1,0 +1,17 @@
+Observed on 2026-11-10 from public GET https://scroll.project456.net/
+and https://scroll.project456.net/style.css.
+
+app-icon.png
+  source: https://scroll.project456.net/assets/app-icon.png
+  sha256: 6352e4bdebe01e4a10e82fa065e5fb2c0353b2457429a43ef51fbcf6dba9d0a7
+  The live header uses this mark. It is copied so a Toons page can match that header.
+  This note is not a legal clearance.
+
+Karla.ttf
+  source: https://scroll.project456.net/assets/Karla.ttf
+  sha256: ed3ca4cd9bdd899c543927c30bf5ff50706b24b3f2b7328e64b25f7d2a9d23dc
+  The live stylesheet names this file in an @font-face rule for the family Karla.
+  This note is not a legal clearance.
+
+Comic panels are not these files. They are original images generated for the synthetic demo
+and stored in prototypes/publishing/demo_assets/. That note is also not a legal clearance.

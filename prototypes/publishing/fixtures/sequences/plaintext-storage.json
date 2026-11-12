@@ -1,0 +1,12 @@
+{
+  "name": "plaintext-storage",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "expectStorageError": "plaintext_forbidden",
+  "clientStorage": {"mode": "plaintext-file", "plaintextFallback": true},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": []
+}

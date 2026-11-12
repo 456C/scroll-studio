@@ -1,0 +1,18 @@
+{
+  "name": "idempotency-conflict",
+  "stateEntropy": "synthetic-fixture-not-csprng",
+  "verifierLabel": "synthetic-fixture-not-a-secret",
+  "clock": "2026-11-09T18:00:00Z",
+  "clientStorage": {"mode": "os-credential-store", "plaintextFallback": false},
+  "verifiers": {
+    "ownerA": "fixture-verifier-owner-a-scroll-studio-test-only-001",
+    "ownerB": "fixture-verifier-owner-b-scroll-studio-test-only-001"
+  },
+  "steps": [
+    {"id": "begin", "use": "begin-owner-a", "command": "auth.begin", "idempotencyKey": "conflict-begin-000001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "exchange", "use": "exchange-owner-a", "command": "auth.exchange", "idempotencyKey": "conflict-exchange-001", "credentialFrom": null, "expect": {"ok": true}},
+    {"id": "upload", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "conflict-upload-00001", "credentialFrom": "exchange", "expect": {"ok": true}},
+    {"id": "conflict", "use": "upload-comic", "command": "episode.upload", "idempotencyKey": "conflict-upload-00001", "credentialFrom": "exchange", "body": {"publicMetadata": {"seriesTitle": "Fixture Lane", "episodeTitle": "North door", "synopsis": "A different synopsis.", "language": "en"}}, "expect": {"ok": false, "errorCode": "idempotency_conflict"}},
+    {"id": "preview", "command": "episode.preview", "idempotencyKey": "conflict-preview-0001", "credentialFrom": "exchange", "body": {"seriesId": "ser_test_lane", "episodeId": "ep_test_lane_01", "revisionId": "{{step:upload.result.acknowledgement.revisionId}}"}, "expect": {"ok": true, "equals": {"result.publicMetadata.synopsis": "Synthetic north episode."}}}
+  ]
+}
