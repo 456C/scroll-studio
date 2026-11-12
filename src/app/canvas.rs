@@ -1280,6 +1280,13 @@ impl Studio {
                         }
                     }
                 }
+                // The stroke's points arrived during the gesture; report the finished
+                // stroke so readers of story.changed see all of it.
+                if let Some(id) = self.drag_layer {
+                    let chapter = self.story.chapters[self.chapter].id;
+                    self.pending_scope = Some(commands::ChangeScope::Objects(vec![chapter, id]));
+                    self.changed();
+                }
             }
             if self.tool == Tool::SmartLasso && !self.lasso.is_empty() {
                 if let Some(p) = point {
@@ -2284,6 +2291,23 @@ mod tests {
         }];
         frame(&ctx, &mut studio, vec![]);
         (ctx, studio, id)
+    }
+
+    #[test]
+    fn brush_strokes_start_through_a_command_as_one_undo_step() {
+        let (_ctx, mut studio, _) = fixture();
+        let undo = studio.undo.len();
+        studio.begin_stroke([10.0, 20.0]);
+        assert_eq!(studio.undo.len(), undo + 1);
+        assert_eq!(studio.fallbacks, 0);
+        let id = studio.drag_layer.expect("the stroke is being drawn");
+        let layer = studio.story.chapters[0].layers.last().unwrap();
+        assert_eq!(layer.id, id);
+        assert!(
+            matches!(&layer.kind, LayerKind::Stroke { points, .. } if points == &[[10.0, 20.0]])
+        );
+        studio.undo();
+        assert!(studio.story.chapters[0].layers.iter().all(|l| l.id != id));
     }
 
     fn frame(ctx: &egui::Context, studio: &mut Studio, events: Vec<egui::Event>) {

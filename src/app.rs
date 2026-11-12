@@ -159,6 +159,10 @@ pub struct Studio {
     story_changes: VecDeque<commands::StoryChanged>,
     /// The scope of the change `changed` is about to record, when a command knows it.
     pending_scope: Option<commands::ChangeScope>,
+    /// How often `commit` fell back to the 0.13.2 path, so tests can prove a site uses
+    /// its command.
+    #[cfg(test)]
+    fallbacks: usize,
     document_epoch: u64,
     path: Option<PathBuf>,
     file_stamp: Option<storage::FileStamp>,
@@ -348,6 +352,8 @@ impl Studio {
             revision: 0,
             story_changes: VecDeque::new(),
             pending_scope: None,
+            #[cfg(test)]
+            fallbacks: 0,
             document_epoch: 0,
             path: None,
             file_stamp: None,
@@ -452,6 +458,10 @@ impl Studio {
     ) -> Option<Applied> {
         if let Some(Ok(applied)) = command.map(|command| self.apply_command(command)) {
             return Some(applied);
+        }
+        #[cfg(test)]
+        {
+            self.fallbacks += 1;
         }
         self.checkpoint();
         fallback(self);
@@ -2012,6 +2022,7 @@ mod tests {
         through_command(&mut studio, undo);
         assert!(studio.story.chapters[0].layers.iter().all(|l| l.id != id));
 
+        assert_eq!(studio.fallbacks, 0);
         while !studio.undo.is_empty() && studio.story != start {
             studio.undo();
         }

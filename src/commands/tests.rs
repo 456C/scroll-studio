@@ -1655,3 +1655,191 @@ fn image_commands_are_marked_as_needing_bytes() {
     assert!(Command::Batch(vec![Command::AddGroup, image]).needs_image_bytes());
     assert!(!Command::AddGroup.needs_image_bytes());
 }
+
+fn shape(name: &str) -> crate::model::Layer {
+    crate::model::Layer {
+        id: 0,
+        name: name.into(),
+        visible: true,
+        locked: false,
+        opacity: 1.0,
+        x: 0.0,
+        y: 0.0,
+        width: 10.0,
+        height: 10.0,
+        kind: crate::model::LayerKind::Shape { color: [0; 4] },
+    }
+}
+
+#[test]
+fn layer_commands_refuse_bad_input_without_changing_anything() {
+    let story = Story::demo();
+    let chapter = story.chapters[0].id;
+    let layers = story.chapters[0].layers.len();
+    let first = story.chapters[0].layers[0].clone();
+    let text = story.chapters[0]
+        .layers
+        .iter()
+        .find(|l| matches!(l.kind, crate::model::LayerKind::Text { .. }))
+        .unwrap()
+        .clone();
+    let sketch = story.assets.iter().find(|a| a.width == 0).map(|a| a.id);
+    let mut bad_opacity = first.clone();
+    bad_opacity.opacity = 2.0;
+    let mut missing_preset = text.clone();
+    if let crate::model::LayerKind::Text { style, .. } = &mut missing_preset.kind {
+        style.preset_id = Some(999_999);
+    }
+    let mut cases = vec![
+        Command::AddLayer {
+            chapter,
+            index: Some(layers + 1),
+            layer: shape("x"),
+        },
+        Command::AddLayer {
+            chapter: 999_999,
+            index: None,
+            layer: shape("x"),
+        },
+        Command::MoveLayer {
+            layer: first.id,
+            index: layers,
+        },
+        Command::SetLayer { layer: bad_opacity },
+        Command::SetLayer {
+            layer: missing_preset,
+        },
+        Command::DeleteLayer { layer: 999_999 },
+        Command::InsertLayer {
+            chapter,
+            index: 0,
+            layer: first.clone(),
+        },
+        Command::InsertLayer {
+            chapter,
+            index: 0,
+            layer: crate::model::Layer {
+                id: story.next_id,
+                ..shape("future")
+            },
+        },
+        // Not a speech bubble.
+        Command::AddLinkedBubble { parent: first.id },
+        Command::AddLinkedBubble { parent: 999_999 },
+    ];
+    if let Some(sketch) = sketch {
+        // An image layer needs a sheet that has an image.
+        cases.push(Command::AddLayer {
+            chapter,
+            index: None,
+            layer: crate::model::Layer {
+                kind: crate::model::LayerKind::Image {
+                    asset_id: sketch,
+                    mask: Vec::new(),
+                    clip: None,
+                    source_rect: None,
+                },
+                ..shape("image")
+            },
+        });
+    }
+    let mut locked = story.clone();
+    for layer in &mut locked.chapters[0].layers {
+        layer.locked = true;
+    }
+    for command in cases {
+        let mut s = story.clone();
+        let name = command.name();
+        let before = manifest(&s);
+        assert!(s.apply(command).is_err(), "{name} should fail");
+        assert!(manifest(&s) == before, "{name} changed the story");
+    }
+    // A locked bubble cannot gain a linked bubble, as in the app.
+    let before = manifest(&locked);
+    assert!(locked
+        .apply(Command::AddLinkedBubble { parent: text.id })
+        .is_err());
+    assert!(manifest(&locked) == before);
+}
+
+#[test]
+fn removing_an_added_layer_never_rewinds_past_newer_objects() {
+    let mut story = Story::demo();
+    let chapter = story.chapters[0].id;
+    let added = story
+        .apply(Command::AddLayer {
+            chapter,
+            index: None,
+            layer: shape("first"),
+        })
+        .unwrap();
+    let later = story.apply(Command::AddGroup).unwrap().created[0];
+    story.apply(added.inverse).unwrap();
+    assert!(story.next_id > later);
+}
+
+#[test]
+fn deleted_layers_undo_even_if_current_rules_would_refuse_them() {
+    // An older story can hold a layer today's rules reject (here: opacity above 1).
+    let mut story = Story::demo();
+    story.chapters[0].layers[0].opacity = 1.5;
+    let before = manifest(&story);
+    let id = story.chapters[0].layers[0].id;
+    let deleted = story.apply(Command::DeleteLayer { layer: id }).unwrap();
+    story.apply(deleted.inverse).unwrap();
+    assert!(manifest(&story) == before);
+    // A linked bubble added next to it also undoes, though the odd layer is untouched.
+    let bubble = story.chapters[0]
+        .layers
+        .iter()
+        .find(|l| matches!(l.kind, crate::model::LayerKind::Text { bubble: true, .. }) && !l.locked)
+        .unwrap()
+        .id;
+    let linked = story
+        .apply(Command::AddLinkedBubble { parent: bubble })
+        .unwrap();
+    story.apply(linked.inverse).unwrap();
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn story_wide_replace_reaches_dialogue_and_scales_linearly() {
+    let mut story = Story::demo();
+    let line = story.alloc_id();
+    let preset = story.bubble_presets[0].id;
+    let mut style = crate::model::TextStyle::dialogue();
+    style.preset_id = Some(preset);
+    story.chapters[0].layers.push(crate::model::Layer {
+        id: line,
+        kind: crate::model::LayerKind::Text {
+            text: "Mira, wait!".into(),
+            color: [0, 0, 0, 255],
+            size: 38.0,
+            bubble: true,
+            style,
+        },
+        ..shape("Dialogue")
+    });
+    for i in 0..20_000 {
+        let id = story.alloc_id();
+        story.chapters[0].layers.push(crate::model::Layer {
+            id,
+            ..shape(&format!("filler {i}"))
+        });
+    }
+    let started = std::time::Instant::now();
+    let applied = story
+        .apply(Command::ReplaceText {
+            find: "Mira".into(),
+            replace: "Mina".into(),
+            scope: Scope::Story,
+        })
+        .unwrap();
+    // Linear in the number of fields; the old quadratic scan took minutes here.
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(applied.touched.contains(&line));
+    assert_eq!(
+        story.field(Target::Object(line), Field::Text).unwrap(),
+        "Mina, wait!"
+    );
+}

@@ -250,7 +250,9 @@ pub struct PanelDraft {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Replace one whitelisted text field.
+    /// Replace one whitelisted text field. Changing a text layer's `text` keeps its
+    /// geometry: the bubble is not refitted (the app refits as you type). To refit, send the
+    /// fitted layer with [`Command::SetLayer`].
     SetField {
         target: Target,
         field: Field,
@@ -410,6 +412,10 @@ pub enum Command {
         layer: Layer,
     },
     /// Replace a layer's settings and content, keeping its ID and place in the stack.
+    ///
+    /// Layer commands do not check `locked`: the app's own menus decide what a locked layer
+    /// allows (it can still be shown, hidden or unlocked). The addon host applies its own
+    /// rule for locked layers.
     SetLayer {
         layer: Layer,
     },
@@ -762,8 +768,11 @@ impl Story {
 
     /// What kind of object an ID names, if any.
     pub fn object_kind(&self, target: Target) -> Option<ObjectKind> {
-        let slot = self.slot(target).ok()?;
-        Some(match slot {
+        Some(self.slot_kind(self.slot(target).ok()?))
+    }
+
+    fn slot_kind(&self, slot: Slot) -> ObjectKind {
+        match slot {
             Slot::Story => ObjectKind::Story,
             Slot::Panel(..) => ObjectKind::Panel,
             Slot::Asset(index) => {
@@ -783,20 +792,22 @@ impl Story {
                 LayerKind::Text { .. } => ObjectKind::TextLayer,
                 _ => ObjectKind::Layer,
             },
-        })
+        }
     }
 
     /// Read a whitelisted field.
     pub fn field(&self, target: Target, field: Field) -> Result<&str> {
-        let kind = self
-            .object_kind(target)
-            .context("That object no longer exists")?;
+        let slot = self.slot(target).context("That object no longer exists")?;
         ensure!(
-            Field::allowed_on(kind).contains(&field),
+            Field::allowed_on(self.slot_kind(slot)).contains(&field),
             "{} cannot be edited on this object",
             field.as_str()
         );
-        let slot = self.slot(target)?;
+        self.slot_text(slot, field)
+    }
+
+    /// The text of an allowed field at a known slot, without another lookup.
+    fn slot_text(&self, slot: Slot, field: Field) -> Result<&str> {
         Ok(match (slot, field) {
             (Slot::Story, Field::Title) => &self.title,
             (Slot::Story, Field::Synopsis) => &self.synopsis,
@@ -831,30 +842,76 @@ impl Story {
 
     /// Every whitelisted (target, field) pair in the story, in a stable order.
     pub fn text_fields(&self) -> Vec<(Target, Field)> {
-        let mut targets = vec![Target::Story];
-        targets.extend(
-            self.chapters
-                .iter()
-                .flat_map(|chapter| chapter.panels.iter().map(|panel| Target::Object(panel.id))),
-        );
-        targets.extend(self.chapters.iter().map(|c| Target::Object(c.id)));
-        targets.extend(self.assets.iter().map(|asset| Target::Object(asset.id)));
-        targets.extend(self.groups.iter().map(|g| Target::Object(g.id)));
-        targets.extend(
-            self.chapters
-                .iter()
-                .flat_map(|c| c.layers.iter().map(|l| Target::Object(l.id))),
-        );
-        targets.extend(self.locations.iter().map(|l| Target::Object(l.id)));
-        targets.extend(self.lore.iter().map(|n| Target::Object(n.id)));
-        targets.extend(self.lore_board.cards.iter().map(|c| Target::Object(c.id)));
-        let mut fields = Vec::new();
-        for target in targets {
-            if let Some(kind) = self.object_kind(target) {
-                fields.extend(Field::allowed_on(kind).iter().map(|field| (target, *field)));
-            }
+        self.slots()
+            .into_iter()
+            .flat_map(|(target, slot)| {
+                Field::allowed_on(self.slot_kind(slot))
+                    .iter()
+                    .map(move |field| (target, *field))
+            })
+            .collect()
+    }
+
+    /// Every object that has text fields, with its slot, in one pass over the story.
+    fn slots(&self) -> Vec<(Target, Slot)> {
+        let mut slots = vec![(Target::Story, Slot::Story)];
+        for (c, chapter) in self.chapters.iter().enumerate() {
+            slots.extend(
+                chapter
+                    .panels
+                    .iter()
+                    .enumerate()
+                    .map(|(p, panel)| (Target::Object(panel.id), Slot::Panel(c, p))),
+            );
         }
-        fields
+        let object = |id| Target::Object(id);
+        slots.extend(
+            self.chapters
+                .iter()
+                .enumerate()
+                .map(|(c, chapter)| (object(chapter.id), Slot::Chapter(c))),
+        );
+        slots.extend(
+            self.assets
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (object(a.id), Slot::Asset(i))),
+        );
+        slots.extend(
+            self.groups
+                .iter()
+                .enumerate()
+                .map(|(g, x)| (object(x.id), Slot::Group(g))),
+        );
+        for (c, chapter) in self.chapters.iter().enumerate() {
+            slots.extend(
+                chapter
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(l, layer)| (object(layer.id), Slot::Layer(c, l))),
+            );
+        }
+        slots.extend(
+            self.locations
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (object(l.id), Slot::Location(i))),
+        );
+        slots.extend(
+            self.lore
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (object(n.id), Slot::LoreNote(i))),
+        );
+        slots.extend(
+            self.lore_board
+                .cards
+                .iter()
+                .enumerate()
+                .map(|(i, card)| (object(card.id), Slot::LoreCard(i))),
+        );
+        slots
     }
 
     fn slot(&self, target: Target) -> Result<Slot> {
@@ -1056,8 +1113,15 @@ impl Story {
     /// The rules storage applies to a saved layer. The command layer has no image bytes,
     /// so an image layer must point at a sheet that has an image.
     fn check_layer(&self, layer: &Layer) -> Result<()> {
-        let presets: HashSet<_> = self.bubble_presets.iter().map(|p| p.id).collect();
-        crate::storage::validate_layer(self, layer, &presets, |id| {
+        self.check_layer_with(layer, &self.preset_ids())
+    }
+
+    fn preset_ids(&self) -> HashSet<u64> {
+        self.bubble_presets.iter().map(|p| p.id).collect()
+    }
+
+    fn check_layer_with(&self, layer: &Layer, presets: &HashSet<u64>) -> Result<()> {
+        crate::storage::validate_layer(self, layer, presets, |id| {
             self.assets
                 .iter()
                 .any(|a| a.id == id && a.width > 0 && a.height > 0)
@@ -1297,21 +1361,21 @@ impl Story {
                 ensure!(!find.is_empty(), "Enter the text to find");
                 check_text(&find, LONG)?;
                 check_text(&replace, LONG)?;
-                let fields: Vec<_> = match scope {
-                    Scope::Story => self.text_fields(),
-                    Scope::Target(target) => {
-                        let kind = self
-                            .object_kind(target)
-                            .context("That object no longer exists")?;
-                        Field::allowed_on(kind)
-                            .iter()
-                            .map(|f| (target, *f))
-                            .collect()
-                    }
+                // One pass over the story; only matching fields cost a lookup to edit.
+                let slots: Vec<_> = match scope {
+                    Scope::Story => self.slots(),
+                    Scope::Target(target) => vec![(
+                        target,
+                        self.slot(target).context("That object no longer exists")?,
+                    )],
                 };
                 let mut edits = Vec::new();
-                for (target, field) in fields {
-                    let current = self.field(target, field)?;
+                for (target, slot, field) in slots.into_iter().flat_map(|(target, slot)| {
+                    Field::allowed_on(self.slot_kind(slot))
+                        .iter()
+                        .map(move |field| (target, slot, *field))
+                }) {
+                    let current = self.slot_text(slot, field)?;
                     if current.contains(&find) {
                         // SetField validates each replacement; the batch rolls back on error.
                         let value = current.replace(&find, &replace);
@@ -2109,7 +2173,8 @@ impl Story {
                         && !self.all_ids().any(|id| id == layer.id),
                     "That layer ID is already in use"
                 );
-                self.check_layer(&layer)?;
+                // The layer came out of this story, so it is put back as it was rather than
+                // re-validated: a layer an older version allowed must still undo.
                 let id = layer.id;
                 self.chapters[c].layers.insert(index, layer);
                 Ok(Applied::new(Command::DeleteLayer { layer: id })
@@ -2129,9 +2194,15 @@ impl Story {
                     .touch(layer))
             }
             Command::AddLinkedBubble { parent } => {
-                let Slot::Layer(c, _) = self.slot(Target::Object(parent))? else {
-                    bail!("That bubble no longer exists")
+                // Same messages as the app's linked-bubble helper.
+                let Ok(Slot::Layer(c, _)) = self.slot(Target::Object(parent)) else {
+                    bail!("Select an unlocked bubble")
                 };
+                ensure!(
+                    self.chapters[c].layers.len() < MAX_LAYERS,
+                    "A chapter can have at most {MAX_LAYERS} layers"
+                );
+                self.ensure_ids(1)?;
                 // The helper validates the parent and adjusts the whole cluster; capture
                 // the chapter's layers so undo puts every bubble back exactly.
                 let inverse = self.restore(Sections {
@@ -2140,6 +2211,12 @@ impl Story {
                 });
                 let mut next = self.clone();
                 let id = crate::bubbles::add_cluster_bubble(&mut next, c, parent)?;
+                let child = next.chapters[c]
+                    .layers
+                    .iter()
+                    .find(|l| l.id == id)
+                    .context("The linked bubble was not added")?;
+                next.check_layer(child)?;
                 *self = next;
                 Ok(Applied::new(inverse)
                     .touch(self.chapters[c].id)
@@ -2260,11 +2337,20 @@ impl Story {
                 self.next_id = self.safe_next_id(restored_next);
                 let checked = self.check_sections().and_then(|_| match layer_chapter {
                     Some(id) => {
+                        // Only layers this restore changes are checked: unchanged ones were
+                        // already in the story, and must not block an undo.
                         let c = self.chapter_index(id)?;
+                        let before: std::collections::HashMap<_, _> = old
+                            .layers
+                            .as_ref()
+                            .map(|(_, layers)| layers.iter().map(|l| (l.id, l)).collect())
+                            .unwrap_or_default();
+                        let presets = self.preset_ids();
                         self.chapters[c]
                             .layers
                             .iter()
-                            .try_for_each(|l| self.check_layer(l))
+                            .filter(|l| before.get(&l.id) != Some(l))
+                            .try_for_each(|l| self.check_layer_with(l, &presets))
                     }
                     None => Ok(()),
                 });
