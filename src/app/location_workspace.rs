@@ -168,9 +168,14 @@ impl Studio {
                         }
                     });
                 if location != original {
-                    self.checkpoint();
-                    self.story.locations[index] = location;
-                    self.changed();
+                    let applied = commands::location_edit(&original, &location)
+                        .map(|command| self.apply_command(command));
+                    // Anything a command cannot describe or accept keeps 0.13.2 behaviour.
+                    if !matches!(applied, Some(Ok(_))) {
+                        self.checkpoint();
+                        self.story.locations[index] = location;
+                        self.changed();
+                    }
                 }
                 ctx.data_mut(|d| d.insert_temp(key, view));
             });

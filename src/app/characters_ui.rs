@@ -709,9 +709,15 @@ impl Studio {
                 });
                 ctx.data_mut(|data| data.insert_temp(state_id, view));
                 if character != original {
-                    self.checkpoint();
-                    self.story.assets[index] = character.clone();
-                    self.changed();
+                    // Sheet edits are named commands.
+                    let applied = commands::character_edit(&original, &character)
+                        .map(|command| self.apply_command(command));
+                    // Anything a command cannot describe or accept keeps 0.13.2 behaviour.
+                    if !matches!(applied, Some(Ok(_))) {
+                        self.checkpoint();
+                        self.story.assets[index] = character.clone();
+                        self.changed();
+                    }
                 }
                 if copy_prompt {
                     ctx.copy_text(characters::compose_prompt(

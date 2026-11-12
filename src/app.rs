@@ -39,7 +39,12 @@ mod story_setup_ui;
 mod timeline_ui;
 
 use eframe::egui::{self, Color32, RichText};
-use scroll_studio::{compositor, export, model::*, recovery, storage};
+use scroll_studio::{
+    commands::{self, Applied, Command, Field, Target},
+    compositor, export,
+    model::*,
+    recovery, storage,
+};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -389,9 +394,15 @@ impl Studio {
     }
 
     fn checkpoint(&mut self) {
+        let snapshot = self.story.clone();
+        self.record_history(snapshot);
+    }
+
+    /// Push `previous` as one undo step. Shared by `checkpoint` and `apply_command`.
+    fn record_history(&mut self, previous: Story) {
         self.preset_slider_edit = None;
-        if self.undo.back() != Some(&self.story) {
-            self.undo.push_back(self.story.clone());
+        if self.undo.back() != Some(&previous) {
+            self.undo.push_back(previous);
             if self.undo.len() > 48 {
                 self.undo.pop_front();
             }
@@ -401,6 +412,27 @@ impl Studio {
         self.assets.retain(|id, _| retained.contains(id));
         // An abandoned redo branch may free IDs that the next edit reuses.
         self.previews.retain_assets(&retained);
+    }
+
+    /// Apply a named edit as one undo step. Undo still restores the whole-story snapshot,
+    /// exactly as before; a command that fails or changes nothing leaves history untouched.
+    /// The caller decides whether to report an error; sheet and board edits stay silent
+    /// as they always have.
+    fn apply_command(&mut self, command: Command) -> anyhow::Result<Applied> {
+        let previous = self.story.clone();
+        let applied = self.story.apply(command)?;
+        if self.story != previous {
+            self.record_history(previous);
+            self.changed();
+        }
+        Ok(applied)
+    }
+
+    /// Apply a command inside a gesture that already took its undo step (a card drag).
+    fn apply_in_gesture(&mut self, command: Command) -> anyhow::Result<Applied> {
+        let applied = self.story.apply(command)?;
+        self.changed();
+        Ok(applied)
     }
 
     fn changed(&mut self) {
@@ -1632,6 +1664,45 @@ mod tests {
         let mut branch = before;
         assert_eq!(branch.alloc_id(), id);
         assert!(!retained.contains(&id));
+    }
+
+    #[test]
+    fn commands_are_one_undo_step_and_failures_keep_redo() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let before = studio.story.clone();
+        let title = |value: &str| Command::SetField {
+            target: Target::Story,
+            field: Field::Title,
+            value: value.into(),
+        };
+        studio.apply_command(title("Rain")).unwrap();
+        assert_eq!(studio.story.title, "Rain");
+        assert_eq!(studio.undo.len(), 1);
+        studio.undo();
+        assert_eq!(studio.story, before);
+        assert_eq!(studio.redo.len(), 1);
+        // A failed command and a command that changes nothing leave history alone.
+        assert!(studio
+            .apply_command(Command::DisconnectLore {
+                connection: 999_999
+            })
+            .is_err());
+        studio.apply_command(title(&before.title)).unwrap();
+        assert_eq!(studio.redo.len(), 1);
+        studio.redo();
+        assert_eq!(studio.story.title, "Rain");
+        // A note created through the board is one step, card and all.
+        let undo = studio.undo.len();
+        studio.new_lore();
+        assert_eq!(studio.undo.len(), undo + 1);
+        assert_eq!(
+            studio.story.lore_board.cards.len(),
+            before.lore_board.cards.len() + 1
+        );
+        studio.undo();
+        assert_eq!(studio.story.lore, before.lore);
+        assert_eq!(studio.story.lore_board, before.lore_board);
     }
 
     #[test]

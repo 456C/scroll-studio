@@ -1,0 +1,1548 @@
+//! Named, undoable story edits.
+//!
+//! Every command goes through [`Story::apply`], which checks the command against the
+//! current story before changing anything, applies it, and returns the command that
+//! undoes it. A command that fails leaves the story exactly as it was.
+//!
+//! The app still keeps whole-story snapshots for Undo/Redo (see `Studio::apply_command`);
+//! the inverse returned here is what later stages (the read API and addons) build on.
+//! Commands only describe text and structure. They never save, open, export or delete
+//! files.
+
+use crate::{
+    locations, lore,
+    model::{
+        CharacterGender, CharacterOutfit, CharacterReference, CharacterSwatch, LoreBoard,
+        LoreConnection, LoreEntry, Panel, Story,
+    },
+};
+use anyhow::{bail, ensure, Context, Result};
+use std::collections::HashSet;
+
+// Byte limits mirror what `storage::validate_story` accepts, so a command can never produce
+// a story that fails to save.
+const SHORT: usize = 4096;
+const LONG: usize = 1_000_000;
+const LORE_TEXT: usize = 100_000;
+const LOCATION_TEXT: usize = 64 * 1024;
+const MAX_OUTFITS: usize = 32;
+const MAX_SWATCHES: usize = 16;
+const MAX_LORE_NOTES: usize = 4096;
+const COORDINATE_LIMIT: f32 = 1_000_000.0;
+
+/// What a field edit targets. The story itself has no numeric ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Target {
+    Story,
+    Object(u64),
+}
+
+/// The editable text fields. This is a whitelist: anything not listed here cannot be set
+/// by a command. Which fields exist depends on the object; see [`Field::allowed_on`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Field {
+    // Story, panels and lore notes
+    Title,
+    Synopsis,
+    VisualStyle,
+    Script,
+    // Shared by several objects
+    Name,
+    Notes,
+    Prompt,
+    Consistency,
+    Avoid,
+    // Characters
+    Tagline,
+    Role,
+    Age,
+    /// Kept for older stories. The app no longer shows it, but it is still saved.
+    Pronouns,
+    Personality,
+    Backstory,
+    Relationships,
+    Face,
+    Hair,
+    Eyes,
+    Skin,
+    Build,
+    DistinguishingFeatures,
+    // Locations
+    Description,
+    Atmosphere,
+    Lighting,
+    // Lore notes and lore board cards
+    Text,
+    BoardNote,
+}
+
+/// The kinds of objects a [`Target::Object`] can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectKind {
+    Story,
+    Panel,
+    Character,
+    /// A background, image or other non-character asset.
+    Asset,
+    Location,
+    LoreNote,
+    LoreCard,
+    LoreConnection,
+}
+
+impl Field {
+    pub const ALL: [Field; 27] = [
+        Field::Title,
+        Field::Synopsis,
+        Field::VisualStyle,
+        Field::Script,
+        Field::Name,
+        Field::Notes,
+        Field::Prompt,
+        Field::Consistency,
+        Field::Avoid,
+        Field::Tagline,
+        Field::Role,
+        Field::Age,
+        Field::Pronouns,
+        Field::Personality,
+        Field::Backstory,
+        Field::Relationships,
+        Field::Face,
+        Field::Hair,
+        Field::Eyes,
+        Field::Skin,
+        Field::Build,
+        Field::DistinguishingFeatures,
+        Field::Description,
+        Field::Atmosphere,
+        Field::Lighting,
+        Field::Text,
+        Field::BoardNote,
+    ];
+
+    /// Stable lowercase names, used later by the read API and addons.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Field::Title => "title",
+            Field::Synopsis => "synopsis",
+            Field::VisualStyle => "visual_style",
+            Field::Script => "script",
+            Field::Name => "name",
+            Field::Notes => "notes",
+            Field::Prompt => "prompt",
+            Field::Consistency => "consistency",
+            Field::Avoid => "avoid",
+            Field::Tagline => "tagline",
+            Field::Role => "role",
+            Field::Age => "age",
+            Field::Pronouns => "pronouns",
+            Field::Personality => "personality",
+            Field::Backstory => "backstory",
+            Field::Relationships => "relationships",
+            Field::Face => "face",
+            Field::Hair => "hair",
+            Field::Eyes => "eyes",
+            Field::Skin => "skin",
+            Field::Build => "build",
+            Field::DistinguishingFeatures => "distinguishing_features",
+            Field::Description => "description",
+            Field::Atmosphere => "atmosphere",
+            Field::Lighting => "lighting",
+            Field::Text => "text",
+            Field::BoardNote => "board_note",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Field> {
+        Field::ALL.into_iter().find(|field| field.as_str() == name)
+    }
+
+    /// The fields an object kind accepts, in a stable order.
+    pub fn allowed_on(kind: ObjectKind) -> &'static [Field] {
+        use Field::*;
+        match kind {
+            ObjectKind::Story => &[Title, Synopsis, VisualStyle],
+            ObjectKind::Panel => &[Title, Script, Notes, Prompt],
+            ObjectKind::Character => &[
+                Name,
+                Tagline,
+                Role,
+                Age,
+                Pronouns,
+                Personality,
+                Backstory,
+                Relationships,
+                Face,
+                Hair,
+                Eyes,
+                Skin,
+                Build,
+                DistinguishingFeatures,
+                Consistency,
+                Avoid,
+                Notes,
+                Prompt,
+            ],
+            ObjectKind::Asset => &[Name, Notes, Prompt],
+            ObjectKind::Location => &[
+                Name,
+                Description,
+                Atmosphere,
+                Lighting,
+                Consistency,
+                Avoid,
+                Prompt,
+                Notes,
+            ],
+            ObjectKind::LoreNote => &[Title, Text],
+            ObjectKind::LoreCard => &[BoardNote],
+            ObjectKind::LoreConnection => &[],
+        }
+    }
+}
+
+/// Where [`Command::ReplaceText`] looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Every whitelisted text field in the story.
+    Story,
+    /// Only the whitelisted fields of one object (or the story's own fields).
+    Target(Target),
+}
+
+/// A new panel. Its ID is assigned when the command is applied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelDraft {
+    pub title: String,
+    pub y: f32,
+    pub height: f32,
+    pub script: String,
+    pub notes: String,
+    pub prompt: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Command {
+    /// Replace one whitelisted text field.
+    SetField {
+        target: Target,
+        field: Field,
+        value: String,
+    },
+    /// Find and replace literal text (case-sensitive) in whitelisted fields.
+    ReplaceText {
+        find: String,
+        replace: String,
+        scope: Scope,
+    },
+    /// Insert a panel after `after`, or at the end of the chapter when `after` is `None`.
+    AddPanel {
+        chapter: u64,
+        after: Option<u64>,
+        panel: PanelDraft,
+    },
+    SetGender {
+        character: u64,
+        gender: Option<CharacterGender>,
+    },
+    /// Append an outfit. The first outfit also becomes the active look, as in the sheet.
+    AddOutfit {
+        character: u64,
+        outfit: CharacterOutfit,
+    },
+    SetOutfit {
+        character: u64,
+        index: usize,
+        outfit: CharacterOutfit,
+    },
+    RemoveOutfit {
+        character: u64,
+        index: usize,
+    },
+    SetActiveOutfit {
+        character: u64,
+        index: Option<usize>,
+    },
+    AddPaletteColor {
+        character: u64,
+        name: String,
+        color: [u8; 4],
+    },
+    SetPaletteColor {
+        character: u64,
+        index: usize,
+        name: String,
+        color: [u8; 4],
+    },
+    RemovePaletteColor {
+        character: u64,
+        index: usize,
+    },
+    /// Edit an additional reference's label and notes. The image itself is not touched.
+    SetReference {
+        character: u64,
+        asset: u64,
+        label: String,
+        notes: String,
+    },
+    /// Detach an additional reference from a character. The image stays in the story.
+    RemoveReference {
+        character: u64,
+        asset: u64,
+    },
+    /// Create a lore note and its card on the board.
+    AddLoreNote {
+        title: String,
+        position: [f32; 2],
+    },
+    /// Pin an existing character, location, group or note to the lore board.
+    AddLoreCard {
+        target: u64,
+        position: [f32; 2],
+    },
+    /// Remove a card and its connections. With `delete_note`, a note card's note is also
+    /// deleted and unlinked everywhere.
+    RemoveLoreCard {
+        card: u64,
+        delete_note: bool,
+    },
+    MoveLoreCard {
+        card: u64,
+        position: [f32; 2],
+    },
+    SetLoreCardColor {
+        card: u64,
+        color: [u8; 3],
+    },
+    ConnectLore {
+        from: u64,
+        to: u64,
+        label: String,
+    },
+    SetLoreConnection {
+        connection: u64,
+        label: String,
+        color: [u8; 3],
+    },
+    DisconnectLore {
+        connection: u64,
+    },
+    /// Applied and undone as one step. If any part fails, nothing changes.
+    Batch(Vec<Command>),
+
+    // The commands below exist so every command has an exact inverse. They restore state
+    // captured by `apply` and are not part of the surface offered to addons.
+    #[doc(hidden)]
+    RemovePanel {
+        chapter: u64,
+        panel: u64,
+        next_id: u64,
+    },
+    #[doc(hidden)]
+    InsertOutfit {
+        character: u64,
+        index: usize,
+        outfit: CharacterOutfit,
+        active_outfit: Option<usize>,
+    },
+    #[doc(hidden)]
+    InsertPaletteColor {
+        character: u64,
+        index: usize,
+        swatch: CharacterSwatch,
+    },
+    #[doc(hidden)]
+    InsertReference {
+        character: u64,
+        index: usize,
+        reference: CharacterReference,
+    },
+    #[doc(hidden)]
+    RestoreLore {
+        lore: Vec<LoreEntry>,
+        board: LoreBoard,
+        next_id: u64,
+    },
+}
+
+impl Command {
+    /// Commands that only exist to undo other commands. Later stages must refuse these
+    /// when they arrive from outside the app.
+    pub fn is_internal(&self) -> bool {
+        match self {
+            Command::RemovePanel { .. }
+            | Command::InsertOutfit { .. }
+            | Command::InsertPaletteColor { .. }
+            | Command::InsertReference { .. }
+            | Command::RestoreLore { .. } => true,
+            Command::Batch(commands) => commands.iter().any(Command::is_internal),
+            _ => false,
+        }
+    }
+
+    /// A short, stable name for logs and status messages.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Command::SetField { .. } => "set_field",
+            Command::ReplaceText { .. } => "replace_text",
+            Command::AddPanel { .. } => "add_panel",
+            Command::SetGender { .. } => "set_gender",
+            Command::AddOutfit { .. } => "add_outfit",
+            Command::SetOutfit { .. } => "set_outfit",
+            Command::RemoveOutfit { .. } => "remove_outfit",
+            Command::SetActiveOutfit { .. } => "set_active_outfit",
+            Command::AddPaletteColor { .. } => "add_palette_color",
+            Command::SetPaletteColor { .. } => "set_palette_color",
+            Command::RemovePaletteColor { .. } => "remove_palette_color",
+            Command::SetReference { .. } => "set_reference",
+            Command::RemoveReference { .. } => "remove_reference",
+            Command::AddLoreNote { .. } => "add_lore_note",
+            Command::AddLoreCard { .. } => "add_lore_card",
+            Command::RemoveLoreCard { .. } => "remove_lore_card",
+            Command::MoveLoreCard { .. } => "move_lore_card",
+            Command::SetLoreCardColor { .. } => "set_lore_card_color",
+            Command::ConnectLore { .. } => "connect_lore",
+            Command::SetLoreConnection { .. } => "set_lore_connection",
+            Command::DisconnectLore { .. } => "disconnect_lore",
+            Command::Batch(_) => "batch",
+            Command::RemovePanel { .. } => "remove_panel",
+            Command::InsertOutfit { .. } => "insert_outfit",
+            Command::InsertPaletteColor { .. } => "insert_palette_color",
+            Command::InsertReference { .. } => "insert_reference",
+            Command::RestoreLore { .. } => "restore_lore",
+        }
+    }
+}
+
+/// The result of a successful [`Story::apply`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Applied {
+    /// Applying this restores the story to its state before the command.
+    pub inverse: Command,
+    /// IDs of objects whose content changed (the story itself is not listed).
+    pub touched: Vec<u64>,
+    /// IDs created by the command, in creation order.
+    pub created: Vec<u64>,
+}
+
+impl Applied {
+    fn new(inverse: Command) -> Self {
+        Self {
+            inverse,
+            touched: Vec::new(),
+            created: Vec::new(),
+        }
+    }
+    fn touch(mut self, id: u64) -> Self {
+        if !self.touched.contains(&id) {
+            self.touched.push(id);
+        }
+        self
+    }
+    fn create(mut self, id: u64) -> Self {
+        self.created.push(id);
+        self.touch(id)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Story,
+    Panel(usize, usize),
+    Asset(usize),
+    Location(usize),
+    LoreNote(usize),
+    LoreCard(usize),
+    LoreConnection,
+}
+
+impl Story {
+    /// Check `command`, apply it, and return its inverse. On error the story is unchanged.
+    pub fn apply(&mut self, command: Command) -> Result<Applied> {
+        match command {
+            Command::Batch(commands) => {
+                // A failure part-way through restores the original story exactly.
+                let backup = self.clone();
+                let mut inverses = Vec::with_capacity(commands.len());
+                let mut touched = Vec::new();
+                let mut created = Vec::new();
+                for command in commands {
+                    match self.apply(command) {
+                        Ok(applied) => {
+                            for id in applied.touched {
+                                if !touched.contains(&id) {
+                                    touched.push(id);
+                                }
+                            }
+                            created.extend(applied.created);
+                            inverses.push(applied.inverse);
+                        }
+                        Err(error) => {
+                            *self = backup;
+                            return Err(error);
+                        }
+                    }
+                }
+                inverses.reverse();
+                Ok(Applied {
+                    inverse: Command::Batch(inverses),
+                    touched,
+                    created,
+                })
+            }
+            command => self.apply_one(command),
+        }
+    }
+
+    /// What kind of object an ID names, if any.
+    pub fn object_kind(&self, target: Target) -> Option<ObjectKind> {
+        let slot = self.slot(target).ok()?;
+        Some(match slot {
+            Slot::Story => ObjectKind::Story,
+            Slot::Panel(..) => ObjectKind::Panel,
+            Slot::Asset(index) => {
+                if self.assets[index].kind == crate::model::AssetKind::Character {
+                    ObjectKind::Character
+                } else {
+                    ObjectKind::Asset
+                }
+            }
+            Slot::Location(_) => ObjectKind::Location,
+            Slot::LoreNote(_) => ObjectKind::LoreNote,
+            Slot::LoreCard(_) => ObjectKind::LoreCard,
+            Slot::LoreConnection => ObjectKind::LoreConnection,
+        })
+    }
+
+    /// Read a whitelisted field.
+    pub fn field(&self, target: Target, field: Field) -> Result<&str> {
+        let kind = self
+            .object_kind(target)
+            .context("That object no longer exists")?;
+        ensure!(
+            Field::allowed_on(kind).contains(&field),
+            "{} cannot be edited on this object",
+            field.as_str()
+        );
+        let slot = self.slot(target)?;
+        Ok(match (slot, field) {
+            (Slot::Story, Field::Title) => &self.title,
+            (Slot::Story, Field::Synopsis) => &self.synopsis,
+            (Slot::Story, Field::VisualStyle) => &self.visual_style,
+            (Slot::Panel(c, p), field) => {
+                let panel = &self.chapters[c].panels[p];
+                match field {
+                    Field::Title => &panel.title,
+                    Field::Script => &panel.script,
+                    Field::Notes => &panel.notes,
+                    _ => &panel.prompt,
+                }
+            }
+            (Slot::Asset(i), field) => {
+                let asset = &self.assets[i];
+                let p = &asset.character;
+                match field {
+                    Field::Name => &asset.name,
+                    Field::Notes => &asset.notes,
+                    Field::Prompt => &asset.prompt,
+                    Field::Tagline => &p.tagline,
+                    Field::Role => &p.role,
+                    Field::Age => &p.age,
+                    Field::Pronouns => &p.pronouns,
+                    Field::Personality => &p.personality,
+                    Field::Backstory => &p.backstory,
+                    Field::Relationships => &p.relationships,
+                    Field::Face => &p.face,
+                    Field::Hair => &p.hair,
+                    Field::Eyes => &p.eyes,
+                    Field::Skin => &p.skin,
+                    Field::Build => &p.build,
+                    Field::DistinguishingFeatures => &p.distinguishing_features,
+                    Field::Consistency => &p.consistency,
+                    _ => &p.avoid,
+                }
+            }
+            (Slot::Location(i), field) => {
+                let location = &self.locations[i];
+                let p = &location.profile;
+                match field {
+                    Field::Name => &location.name,
+                    Field::Description => &p.description,
+                    Field::Atmosphere => &p.atmosphere,
+                    Field::Lighting => &p.lighting,
+                    Field::Consistency => &p.consistency,
+                    Field::Avoid => &p.avoid,
+                    Field::Prompt => &p.prompt,
+                    _ => &p.notes,
+                }
+            }
+            (Slot::LoreNote(i), Field::Title) => &self.lore[i].title,
+            (Slot::LoreNote(i), _) => &self.lore[i].text,
+            (Slot::LoreCard(i), _) => &self.lore_board.cards[i].note,
+            _ => bail!("{} cannot be edited on this object", field.as_str()),
+        })
+    }
+
+    /// Every whitelisted (target, field) pair in the story, in a stable order.
+    pub fn text_fields(&self) -> Vec<(Target, Field)> {
+        let mut targets = vec![Target::Story];
+        targets.extend(
+            self.chapters
+                .iter()
+                .flat_map(|chapter| chapter.panels.iter().map(|panel| Target::Object(panel.id))),
+        );
+        targets.extend(self.assets.iter().map(|asset| Target::Object(asset.id)));
+        targets.extend(self.locations.iter().map(|l| Target::Object(l.id)));
+        targets.extend(self.lore.iter().map(|n| Target::Object(n.id)));
+        targets.extend(self.lore_board.cards.iter().map(|c| Target::Object(c.id)));
+        let mut fields = Vec::new();
+        for target in targets {
+            if let Some(kind) = self.object_kind(target) {
+                fields.extend(Field::allowed_on(kind).iter().map(|field| (target, *field)));
+            }
+        }
+        fields
+    }
+
+    fn slot(&self, target: Target) -> Result<Slot> {
+        let id = match target {
+            Target::Story => return Ok(Slot::Story),
+            Target::Object(id) => id,
+        };
+        for (c, chapter) in self.chapters.iter().enumerate() {
+            if let Some(p) = chapter.panels.iter().position(|panel| panel.id == id) {
+                return Ok(Slot::Panel(c, p));
+            }
+        }
+        if let Some(i) = self.assets.iter().position(|a| a.id == id) {
+            return Ok(Slot::Asset(i));
+        }
+        if let Some(i) = self.locations.iter().position(|l| l.id == id) {
+            return Ok(Slot::Location(i));
+        }
+        if let Some(i) = self.lore.iter().position(|n| n.id == id) {
+            return Ok(Slot::LoreNote(i));
+        }
+        if let Some(i) = self.lore_board.cards.iter().position(|c| c.id == id) {
+            return Ok(Slot::LoreCard(i));
+        }
+        if self.lore_board.connections.iter().any(|e| e.id == id) {
+            return Ok(Slot::LoreConnection);
+        }
+        bail!("Object {id} no longer exists")
+    }
+
+    fn field_mut(&mut self, target: Target, field: Field) -> Result<&mut String> {
+        // `field` validates the combination; the match below only maps it to storage.
+        self.field(target, field)?;
+        let slot = self.slot(target)?;
+        Ok(match (slot, field) {
+            (Slot::Story, Field::Title) => &mut self.title,
+            (Slot::Story, Field::Synopsis) => &mut self.synopsis,
+            (Slot::Story, _) => &mut self.visual_style,
+            (Slot::Panel(c, p), field) => {
+                let panel = &mut self.chapters[c].panels[p];
+                match field {
+                    Field::Title => &mut panel.title,
+                    Field::Script => &mut panel.script,
+                    Field::Notes => &mut panel.notes,
+                    _ => &mut panel.prompt,
+                }
+            }
+            (Slot::Asset(i), field) => {
+                let asset = &mut self.assets[i];
+                let p = &mut asset.character;
+                match field {
+                    Field::Name => &mut asset.name,
+                    Field::Notes => &mut asset.notes,
+                    Field::Prompt => &mut asset.prompt,
+                    Field::Tagline => &mut p.tagline,
+                    Field::Role => &mut p.role,
+                    Field::Age => &mut p.age,
+                    Field::Pronouns => &mut p.pronouns,
+                    Field::Personality => &mut p.personality,
+                    Field::Backstory => &mut p.backstory,
+                    Field::Relationships => &mut p.relationships,
+                    Field::Face => &mut p.face,
+                    Field::Hair => &mut p.hair,
+                    Field::Eyes => &mut p.eyes,
+                    Field::Skin => &mut p.skin,
+                    Field::Build => &mut p.build,
+                    Field::DistinguishingFeatures => &mut p.distinguishing_features,
+                    Field::Consistency => &mut p.consistency,
+                    _ => &mut p.avoid,
+                }
+            }
+            (Slot::Location(i), field) => {
+                let location = &mut self.locations[i];
+                let p = &mut location.profile;
+                match field {
+                    Field::Name => &mut location.name,
+                    Field::Description => &mut p.description,
+                    Field::Atmosphere => &mut p.atmosphere,
+                    Field::Lighting => &mut p.lighting,
+                    Field::Consistency => &mut p.consistency,
+                    Field::Avoid => &mut p.avoid,
+                    Field::Prompt => &mut p.prompt,
+                    _ => &mut p.notes,
+                }
+            }
+            (Slot::LoreNote(i), Field::Title) => &mut self.lore[i].title,
+            (Slot::LoreNote(i), _) => &mut self.lore[i].text,
+            (Slot::LoreCard(i), _) => &mut self.lore_board.cards[i].note,
+            (Slot::LoreConnection, _) => unreachable!("connections have no text fields"),
+        })
+    }
+
+    fn character_index(&self, id: u64) -> Result<usize> {
+        let index = self
+            .assets
+            .iter()
+            .position(|a| a.id == id)
+            .context("That character no longer exists")?;
+        ensure!(
+            self.assets[index].kind == crate::model::AssetKind::Character,
+            "That asset is not a character"
+        );
+        Ok(index)
+    }
+
+    fn card_index(&self, id: u64) -> Result<usize> {
+        self.lore_board
+            .cards
+            .iter()
+            .position(|c| c.id == id)
+            .context("That card is no longer on the board")
+    }
+
+    fn connection_index(&self, id: u64) -> Result<usize> {
+        self.lore_board
+            .connections
+            .iter()
+            .position(|e| e.id == id)
+            .context("That connection no longer exists")
+    }
+
+    fn lore_snapshot(&self) -> Command {
+        Command::RestoreLore {
+            lore: self.lore.clone(),
+            board: self.lore_board.clone(),
+            next_id: self.next_id,
+        }
+    }
+
+    fn apply_one(&mut self, command: Command) -> Result<Applied> {
+        match command {
+            Command::Batch(_) => unreachable!("batches are handled by apply"),
+            Command::SetField {
+                target,
+                field,
+                value,
+            } => {
+                let kind = self
+                    .object_kind(target)
+                    .context("That object no longer exists")?;
+                check_text(&value, field_limit(kind, field))?;
+                let value = if field == Field::Name
+                    && self.object_kind(target) == Some(ObjectKind::Location)
+                {
+                    locations::checked_name(&value)?.to_owned()
+                } else {
+                    value
+                };
+                let slot = self.field_mut(target, field)?;
+                let old = std::mem::replace(slot, value);
+                let applied = Applied::new(Command::SetField {
+                    target,
+                    field,
+                    value: old,
+                });
+                Ok(match target {
+                    Target::Story => applied,
+                    Target::Object(id) => applied.touch(id),
+                })
+            }
+            Command::ReplaceText {
+                find,
+                replace,
+                scope,
+            } => {
+                ensure!(!find.is_empty(), "Enter the text to find");
+                check_text(&find, LONG)?;
+                check_text(&replace, LONG)?;
+                let fields: Vec<_> = match scope {
+                    Scope::Story => self.text_fields(),
+                    Scope::Target(target) => {
+                        let kind = self
+                            .object_kind(target)
+                            .context("That object no longer exists")?;
+                        Field::allowed_on(kind)
+                            .iter()
+                            .map(|f| (target, *f))
+                            .collect()
+                    }
+                };
+                let mut edits = Vec::new();
+                for (target, field) in fields {
+                    let current = self.field(target, field)?;
+                    if current.contains(&find) {
+                        let value = current.replace(&find, &replace);
+                        // A location name must stay a valid name after the replacement.
+                        if field == Field::Name
+                            && self.object_kind(target) == Some(ObjectKind::Location)
+                        {
+                            locations::checked_name(&value)?;
+                        }
+                        let kind = self
+                            .object_kind(target)
+                            .context("That object no longer exists")?;
+                        check_text(&value, field_limit(kind, field))?;
+                        edits.push(Command::SetField {
+                            target,
+                            field,
+                            value,
+                        });
+                    }
+                }
+                self.apply(Command::Batch(edits))
+            }
+            Command::AddPanel {
+                chapter,
+                after,
+                panel,
+            } => {
+                let c = self
+                    .chapters
+                    .iter()
+                    .position(|ch| ch.id == chapter)
+                    .context("That chapter no longer exists")?;
+                check_text(&panel.title, SHORT)?;
+                for text in [&panel.script, &panel.notes, &panel.prompt] {
+                    check_text(text, LONG)?;
+                }
+                let height = self.chapters[c].height as f32;
+                ensure!(
+                    panel.y.is_finite()
+                        && panel.height.is_finite()
+                        && panel.y >= 0.0
+                        && panel.height >= 1.0
+                        && panel.y + panel.height <= height,
+                    "The panel must fit inside the chapter"
+                );
+                let index = match after {
+                    None => self.chapters[c].panels.len(),
+                    Some(after) => {
+                        self.chapters[c]
+                            .panels
+                            .iter()
+                            .position(|p| p.id == after)
+                            .context("The panel to insert after no longer exists")?
+                            + 1
+                    }
+                };
+                let next_id = self.next_id;
+                let id = self.alloc_id();
+                self.chapters[c].panels.insert(
+                    index,
+                    Panel {
+                        id,
+                        title: panel.title,
+                        y: panel.y,
+                        height: panel.height,
+                        script: panel.script,
+                        notes: panel.notes,
+                        prompt: panel.prompt,
+                    },
+                );
+                Ok(Applied::new(Command::RemovePanel {
+                    chapter,
+                    panel: id,
+                    next_id,
+                })
+                .touch(chapter)
+                .create(id))
+            }
+            Command::RemovePanel {
+                chapter,
+                panel,
+                next_id,
+            } => {
+                let c = self
+                    .chapters
+                    .iter()
+                    .position(|ch| ch.id == chapter)
+                    .context("That chapter no longer exists")?;
+                let index = self.chapters[c]
+                    .panels
+                    .iter()
+                    .position(|p| p.id == panel)
+                    .context("That panel no longer exists")?;
+                // Restoring the counter makes a redo assign the same panel ID again.
+                ensure!(
+                    panel >= next_id && next_id <= self.next_id,
+                    "Invalid ID restore"
+                );
+                let removed = self.chapters[c].panels.remove(index);
+                self.next_id = next_id;
+                let after = index.checked_sub(1).map(|i| self.chapters[c].panels[i].id);
+                Ok(Applied::new(Command::AddPanel {
+                    chapter,
+                    after,
+                    panel: PanelDraft {
+                        title: removed.title,
+                        y: removed.y,
+                        height: removed.height,
+                        script: removed.script,
+                        notes: removed.notes,
+                        prompt: removed.prompt,
+                    },
+                })
+                .touch(chapter))
+            }
+            Command::SetGender { character, gender } => {
+                let i = self.character_index(character)?;
+                let old = std::mem::replace(&mut self.assets[i].character.gender, gender);
+                Ok(Applied::new(Command::SetGender {
+                    character,
+                    gender: old,
+                })
+                .touch(character))
+            }
+            Command::AddOutfit { character, outfit } => {
+                let i = self.character_index(character)?;
+                check_outfit(&outfit)?;
+                let profile = &mut self.assets[i].character;
+                ensure!(
+                    profile.outfits.len() < MAX_OUTFITS,
+                    "A character can have at most {MAX_OUTFITS} outfits"
+                );
+                let active = profile.active_outfit;
+                profile.outfits.push(outfit);
+                if profile.active_outfit.is_none() {
+                    profile.active_outfit = Some(profile.outfits.len() - 1);
+                }
+                let index = profile.outfits.len() - 1;
+                // Undo removes the outfit and restores the previous active look exactly.
+                let inverse = Command::Batch(vec![
+                    Command::RemoveOutfit { character, index },
+                    Command::SetActiveOutfit {
+                        character,
+                        index: active,
+                    },
+                ]);
+                Ok(Applied::new(inverse).touch(character))
+            }
+            Command::SetOutfit {
+                character,
+                index,
+                outfit,
+            } => {
+                let i = self.character_index(character)?;
+                check_outfit(&outfit)?;
+                let slot = self.assets[i]
+                    .character
+                    .outfits
+                    .get_mut(index)
+                    .context("That outfit no longer exists")?;
+                let old = std::mem::replace(slot, outfit);
+                Ok(Applied::new(Command::SetOutfit {
+                    character,
+                    index,
+                    outfit: old,
+                })
+                .touch(character))
+            }
+            Command::RemoveOutfit { character, index } => {
+                let i = self.character_index(character)?;
+                let profile = &mut self.assets[i].character;
+                ensure!(
+                    index < profile.outfits.len(),
+                    "That outfit no longer exists"
+                );
+                let active = profile.active_outfit;
+                let outfit = profile.outfits.remove(index);
+                profile.active_outfit = match active {
+                    Some(a) if a == index => None,
+                    Some(a) if a > index => Some(a - 1),
+                    other => other,
+                };
+                Ok(Applied::new(Command::InsertOutfit {
+                    character,
+                    index,
+                    outfit,
+                    active_outfit: active,
+                })
+                .touch(character))
+            }
+            Command::InsertOutfit {
+                character,
+                index,
+                outfit,
+                active_outfit,
+            } => {
+                let i = self.character_index(character)?;
+                let profile = &mut self.assets[i].character;
+                ensure!(index <= profile.outfits.len(), "Invalid outfit position");
+                ensure!(
+                    active_outfit.is_none_or(|a| a <= profile.outfits.len()),
+                    "Invalid active outfit"
+                );
+                let active = profile.active_outfit;
+                profile.outfits.insert(index, outfit);
+                profile.active_outfit = active_outfit;
+                Ok(Applied::new(Command::Batch(vec![
+                    Command::RemoveOutfit { character, index },
+                    Command::SetActiveOutfit {
+                        character,
+                        index: active,
+                    },
+                ]))
+                .touch(character))
+            }
+            Command::SetActiveOutfit { character, index } => {
+                let i = self.character_index(character)?;
+                let profile = &mut self.assets[i].character;
+                ensure!(
+                    index.is_none_or(|index| index < profile.outfits.len()),
+                    "That outfit no longer exists"
+                );
+                let old = std::mem::replace(&mut profile.active_outfit, index);
+                Ok(Applied::new(Command::SetActiveOutfit {
+                    character,
+                    index: old,
+                })
+                .touch(character))
+            }
+            Command::AddPaletteColor {
+                character,
+                name,
+                color,
+            } => {
+                let i = self.character_index(character)?;
+                check_text(&name, SHORT)?;
+                let palette = &mut self.assets[i].character.palette;
+                ensure!(
+                    palette.len() < MAX_SWATCHES,
+                    "A palette can have at most {MAX_SWATCHES} colors"
+                );
+                palette.push(CharacterSwatch { name, color });
+                Ok(Applied::new(Command::RemovePaletteColor {
+                    character,
+                    index: palette.len() - 1,
+                })
+                .touch(character))
+            }
+            Command::SetPaletteColor {
+                character,
+                index,
+                name,
+                color,
+            } => {
+                let i = self.character_index(character)?;
+                check_text(&name, SHORT)?;
+                let swatch = self.assets[i]
+                    .character
+                    .palette
+                    .get_mut(index)
+                    .context("That color no longer exists")?;
+                let old = std::mem::replace(swatch, CharacterSwatch { name, color });
+                Ok(Applied::new(Command::SetPaletteColor {
+                    character,
+                    index,
+                    name: old.name,
+                    color: old.color,
+                })
+                .touch(character))
+            }
+            Command::RemovePaletteColor { character, index } => {
+                let i = self.character_index(character)?;
+                let palette = &mut self.assets[i].character.palette;
+                ensure!(index < palette.len(), "That color no longer exists");
+                let swatch = palette.remove(index);
+                Ok(Applied::new(Command::InsertPaletteColor {
+                    character,
+                    index,
+                    swatch,
+                })
+                .touch(character))
+            }
+            Command::InsertPaletteColor {
+                character,
+                index,
+                swatch,
+            } => {
+                let i = self.character_index(character)?;
+                let palette = &mut self.assets[i].character.palette;
+                ensure!(index <= palette.len(), "Invalid color position");
+                palette.insert(index, swatch);
+                Ok(Applied::new(Command::RemovePaletteColor { character, index }).touch(character))
+            }
+            Command::SetReference {
+                character,
+                asset,
+                label,
+                notes,
+            } => {
+                let i = self.character_index(character)?;
+                check_text(&label, SHORT)?;
+                check_text(&notes, LONG)?;
+                let reference = self.assets[i]
+                    .character
+                    .references
+                    .iter_mut()
+                    .find(|r| r.asset_id == asset)
+                    .context("That reference no longer exists")?;
+                let old_label = std::mem::replace(&mut reference.label, label);
+                let old_notes = std::mem::replace(&mut reference.notes, notes);
+                Ok(Applied::new(Command::SetReference {
+                    character,
+                    asset,
+                    label: old_label,
+                    notes: old_notes,
+                })
+                .touch(character))
+            }
+            Command::RemoveReference { character, asset } => {
+                let i = self.character_index(character)?;
+                let references = &mut self.assets[i].character.references;
+                let index = references
+                    .iter()
+                    .position(|r| r.asset_id == asset)
+                    .context("That reference no longer exists")?;
+                let reference = references.remove(index);
+                Ok(Applied::new(Command::InsertReference {
+                    character,
+                    index,
+                    reference,
+                })
+                .touch(character))
+            }
+            Command::InsertReference {
+                character,
+                index,
+                reference,
+            } => {
+                let i = self.character_index(character)?;
+                ensure!(
+                    self.assets
+                        .iter()
+                        .any(|a| a.id == reference.asset_id
+                            && a.kind == crate::model::AssetKind::Image),
+                    "That reference image no longer exists"
+                );
+                let references = &mut self.assets[i].character.references;
+                ensure!(index <= references.len(), "Invalid reference position");
+                ensure!(
+                    !references.iter().any(|r| r.asset_id == reference.asset_id),
+                    "That reference is already attached"
+                );
+                let asset = reference.asset_id;
+                references.insert(index, reference);
+                Ok(Applied::new(Command::RemoveReference { character, asset }).touch(character))
+            }
+            Command::AddLoreNote { title, position } => {
+                check_text(&title, SHORT)?;
+                let position = board_position(position)?;
+                ensure!(
+                    self.lore.len() < MAX_LORE_NOTES
+                        && self.lore_board.cards.len() < lore::MAX_CARDS,
+                    "The lore board is full"
+                );
+                let inverse = self.lore_snapshot();
+                let id = self.alloc_id();
+                self.lore.push(LoreEntry {
+                    id,
+                    title,
+                    text: String::new(),
+                    links: Vec::new(),
+                });
+                let card = lore::pin(self, id, position).expect("a new note can always be pinned");
+                Ok(Applied::new(inverse).create(id).create(card))
+            }
+            Command::AddLoreCard { target, position } => {
+                let position = board_position(position)?;
+                ensure!(
+                    lore::targets(self).contains_key(&target),
+                    "Only characters, locations, groups and notes can be pinned"
+                );
+                if let Some(card) = self.lore_board.cards.iter().find(|c| c.target == target) {
+                    // Already pinned: nothing changes, and the existing card is reported.
+                    let id = card.id;
+                    return Ok(Applied {
+                        inverse: Command::Batch(Vec::new()),
+                        touched: vec![id],
+                        created: Vec::new(),
+                    });
+                }
+                ensure!(
+                    self.lore_board.cards.len() < lore::MAX_CARDS,
+                    "The lore board is full"
+                );
+                let inverse = self.lore_snapshot();
+                let card = lore::pin(self, target, position).context("Could not pin that card")?;
+                Ok(Applied::new(inverse).create(card))
+            }
+            Command::RemoveLoreCard { card, delete_note } => {
+                let index = self.card_index(card)?;
+                let target = self.lore_board.cards[index].target;
+                let inverse = self.lore_snapshot();
+                lore::unpin(self, card);
+                let mut applied = Applied::new(inverse).touch(card);
+                if delete_note && self.lore.iter().any(|n| n.id == target) {
+                    self.lore.retain(|n| n.id != target);
+                    lore::unlink_target(self, target);
+                    applied = applied.touch(target);
+                }
+                Ok(applied)
+            }
+            Command::MoveLoreCard { card, position } => {
+                let position = board_position(position)?;
+                let index = self.card_index(card)?;
+                let old = std::mem::replace(&mut self.lore_board.cards[index].position, position);
+                Ok(Applied::new(Command::MoveLoreCard {
+                    card,
+                    position: old,
+                })
+                .touch(card))
+            }
+            Command::SetLoreCardColor { card, color } => {
+                let index = self.card_index(card)?;
+                let old = std::mem::replace(&mut self.lore_board.cards[index].color, color);
+                Ok(Applied::new(Command::SetLoreCardColor { card, color: old }).touch(card))
+            }
+            Command::ConnectLore { from, to, label } => {
+                check_text(&label, SHORT)?;
+                ensure!(from != to, "A card cannot connect to itself");
+                self.card_index(from)?;
+                self.card_index(to)?;
+                if let Some(edge) = self
+                    .lore_board
+                    .connections
+                    .iter()
+                    .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
+                {
+                    let id = edge.id;
+                    return Ok(Applied {
+                        inverse: Command::Batch(Vec::new()),
+                        touched: vec![id],
+                        created: Vec::new(),
+                    });
+                }
+                ensure!(
+                    self.lore_board.connections.len() < lore::MAX_CONNECTIONS,
+                    "The lore board has too many connections"
+                );
+                let inverse = self.lore_snapshot();
+                let id = lore::connect(self, from, to).context("Could not connect those cards")?;
+                let index = self.connection_index(id)?;
+                self.lore_board.connections[index].label = label;
+                Ok(Applied::new(inverse).create(id))
+            }
+            Command::SetLoreConnection {
+                connection,
+                label,
+                color,
+            } => {
+                check_text(&label, SHORT)?;
+                let index = self.connection_index(connection)?;
+                let edge = &mut self.lore_board.connections[index];
+                let old = LoreConnection {
+                    label: std::mem::replace(&mut edge.label, label),
+                    color: std::mem::replace(&mut edge.color, color),
+                    ..edge.clone()
+                };
+                Ok(Applied::new(Command::SetLoreConnection {
+                    connection,
+                    label: old.label,
+                    color: old.color,
+                })
+                .touch(connection))
+            }
+            Command::DisconnectLore { connection } => {
+                self.connection_index(connection)?;
+                let inverse = self.lore_snapshot();
+                self.lore_board.connections.retain(|e| e.id != connection);
+                Ok(Applied::new(inverse).touch(connection))
+            }
+            Command::RestoreLore {
+                lore: entries,
+                board,
+                next_id,
+            } => {
+                // Only lore changes; every other ID in the story must still be unique.
+                let mut restored = self.clone();
+                restored.lore = entries;
+                restored.lore_board = board;
+                restored.next_id = next_id;
+                check_restored_lore(&restored)?;
+                let inverse = self.lore_snapshot();
+                *self = restored;
+                Ok(Applied::new(inverse))
+            }
+        }
+    }
+}
+
+fn check_text(value: &str, limit: usize) -> Result<()> {
+    ensure!(value.len() <= limit, "That text is too long");
+    Ok(())
+}
+
+/// The largest value (in bytes) a whitelisted field may hold.
+pub fn field_limit(kind: ObjectKind, field: Field) -> usize {
+    match (kind, field) {
+        (_, Field::Title | Field::Name) => SHORT,
+        (ObjectKind::Location, _) => LOCATION_TEXT,
+        (ObjectKind::LoreNote | ObjectKind::LoreCard, _) => LORE_TEXT,
+        _ => LONG,
+    }
+}
+
+fn check_outfit(outfit: &CharacterOutfit) -> Result<()> {
+    check_text(&outfit.name, SHORT)?;
+    check_text(&outfit.description, LONG)
+}
+
+/// Board positions must be finite; like the board itself, far positions are clamped.
+fn board_position(position: [f32; 2]) -> Result<[f32; 2]> {
+    ensure!(
+        position.iter().all(|v| v.is_finite()),
+        "That position is outside the board"
+    );
+    Ok(position.map(|v| v.clamp(-COORDINATE_LIMIT, COORDINATE_LIMIT)))
+}
+
+fn check_restored_lore(story: &Story) -> Result<()> {
+    let mut ids = HashSet::new();
+    let lore_ids = story
+        .lore
+        .iter()
+        .map(|n| n.id)
+        .chain(story.lore_board.cards.iter().map(|c| c.id))
+        .chain(story.lore_board.connections.iter().map(|e| e.id));
+    for id in lore_ids {
+        ensure!(
+            id < story.next_id && ids.insert(id),
+            "Lore IDs are not valid"
+        );
+    }
+    lore::validate_board(story)
+}
+
+/// Commands that turn `before` into `after` for one character sheet edit.
+///
+/// The sheet edits a copy of the character each frame; this describes the difference as
+/// named commands. Changes the commands cannot express (none today) return `None`, and
+/// the caller keeps its previous behaviour.
+pub fn character_edit(
+    before: &crate::model::Asset,
+    after: &crate::model::Asset,
+) -> Option<Command> {
+    use crate::model::Asset;
+    let id = before.id;
+    // Fields no sheet edits: if any of these differ, this is not a sheet edit.
+    let same_frame = |a: &Asset, b: &Asset| {
+        a.id == b.id && a.kind == b.kind && a.width == b.width && a.height == b.height
+    };
+    if !same_frame(before, after) {
+        return None;
+    }
+    let mut commands = Vec::new();
+    let character = Target::Object(id);
+    for field in Field::allowed_on(ObjectKind::Character) {
+        let (old, new) = (asset_text(before, *field), asset_text(after, *field));
+        if old != new {
+            commands.push(Command::SetField {
+                target: character,
+                field: *field,
+                value: new.to_owned(),
+            });
+        }
+    }
+    let (b, a) = (&before.character, &after.character);
+    if b.gender != a.gender {
+        commands.push(Command::SetGender {
+            character: id,
+            gender: a.gender,
+        });
+    }
+    // Outfits: one added, one removed, or edits in place.
+    let mut outfits = b.outfits.clone();
+    let mut active = b.active_outfit;
+    if a.outfits.len() == outfits.len() + 1 && a.outfits[..outfits.len()] == outfits[..] {
+        commands.push(Command::AddOutfit {
+            character: id,
+            outfit: a.outfits[outfits.len()].clone(),
+        });
+        outfits.push(a.outfits[outfits.len()].clone());
+        if active.is_none() {
+            active = Some(outfits.len() - 1);
+        }
+    } else if a.outfits.len() + 1 == outfits.len() {
+        let index = (0..outfits.len()).find(|&i| {
+            let mut rest = outfits.clone();
+            rest.remove(i);
+            rest == a.outfits
+        })?;
+        commands.push(Command::RemoveOutfit {
+            character: id,
+            index,
+        });
+        outfits.remove(index);
+        active = match active {
+            Some(x) if x == index => None,
+            Some(x) if x > index => Some(x - 1),
+            other => other,
+        };
+    }
+    if outfits.len() != a.outfits.len() {
+        return None;
+    }
+    for (index, (old, new)) in outfits.iter().zip(&a.outfits).enumerate() {
+        if old != new {
+            commands.push(Command::SetOutfit {
+                character: id,
+                index,
+                outfit: new.clone(),
+            });
+        }
+    }
+    if active != a.active_outfit {
+        commands.push(Command::SetActiveOutfit {
+            character: id,
+            index: a.active_outfit,
+        });
+    }
+    // Palette: one added, one removed, or edits in place.
+    let mut palette = b.palette.clone();
+    if a.palette.len() == palette.len() + 1 && a.palette[..palette.len()] == palette[..] {
+        let swatch = a.palette[palette.len()].clone();
+        commands.push(Command::AddPaletteColor {
+            character: id,
+            name: swatch.name.clone(),
+            color: swatch.color,
+        });
+        palette.push(swatch);
+    } else if a.palette.len() + 1 == palette.len() {
+        let index = (0..palette.len()).find(|&i| {
+            let mut rest = palette.clone();
+            rest.remove(i);
+            rest == a.palette
+        })?;
+        commands.push(Command::RemovePaletteColor {
+            character: id,
+            index,
+        });
+        palette.remove(index);
+    }
+    if palette.len() != a.palette.len() {
+        return None;
+    }
+    for (index, (old, new)) in palette.iter().zip(&a.palette).enumerate() {
+        if old != new {
+            commands.push(Command::SetPaletteColor {
+                character: id,
+                index,
+                name: new.name.clone(),
+                color: new.color,
+            });
+        }
+    }
+    // References: removals, then label and note edits. Adding needs an image import,
+    // which happens outside the sheet.
+    let mut references = b.references.clone();
+    for reference in &b.references {
+        if !a
+            .references
+            .iter()
+            .any(|r| r.asset_id == reference.asset_id)
+        {
+            commands.push(Command::RemoveReference {
+                character: id,
+                asset: reference.asset_id,
+            });
+            references.retain(|r| r.asset_id != reference.asset_id);
+        }
+    }
+    if references.len() != a.references.len()
+        || references
+            .iter()
+            .zip(&a.references)
+            .any(|(old, new)| old.asset_id != new.asset_id)
+    {
+        return None;
+    }
+    for (old, new) in references.iter().zip(&a.references) {
+        if old != new {
+            commands.push(Command::SetReference {
+                character: id,
+                asset: new.asset_id,
+                label: new.label.clone(),
+                notes: new.notes.clone(),
+            });
+        }
+    }
+    Some(Command::Batch(commands))
+}
+
+fn asset_text(asset: &crate::model::Asset, field: Field) -> &str {
+    let p = &asset.character;
+    match field {
+        Field::Name => &asset.name,
+        Field::Notes => &asset.notes,
+        Field::Prompt => &asset.prompt,
+        Field::Tagline => &p.tagline,
+        Field::Role => &p.role,
+        Field::Age => &p.age,
+        Field::Pronouns => &p.pronouns,
+        Field::Personality => &p.personality,
+        Field::Backstory => &p.backstory,
+        Field::Relationships => &p.relationships,
+        Field::Face => &p.face,
+        Field::Hair => &p.hair,
+        Field::Eyes => &p.eyes,
+        Field::Skin => &p.skin,
+        Field::Build => &p.build,
+        Field::DistinguishingFeatures => &p.distinguishing_features,
+        Field::Consistency => &p.consistency,
+        Field::Avoid => &p.avoid,
+        _ => "",
+    }
+}
+
+/// Commands that turn `before` into `after` for one location sheet edit.
+pub fn location_edit(
+    before: &crate::model::BackgroundLocation,
+    after: &crate::model::BackgroundLocation,
+) -> Option<Command> {
+    if before.id != after.id || before.asset_ids != after.asset_ids {
+        return None;
+    }
+    let text = |l: &crate::model::BackgroundLocation, field: Field| -> String {
+        let p = &l.profile;
+        match field {
+            Field::Name => l.name.clone(),
+            Field::Description => p.description.clone(),
+            Field::Atmosphere => p.atmosphere.clone(),
+            Field::Lighting => p.lighting.clone(),
+            Field::Consistency => p.consistency.clone(),
+            Field::Avoid => p.avoid.clone(),
+            Field::Prompt => p.prompt.clone(),
+            _ => p.notes.clone(),
+        }
+    };
+    let commands = Field::allowed_on(ObjectKind::Location)
+        .iter()
+        .filter(|field| text(before, **field) != text(after, **field))
+        .map(|field| Command::SetField {
+            target: Target::Object(before.id),
+            field: *field,
+            value: text(after, *field),
+        })
+        .collect();
+    Some(Command::Batch(commands))
+}
+
+#[cfg(test)]
+mod tests;

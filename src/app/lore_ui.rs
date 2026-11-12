@@ -91,20 +91,18 @@ impl Studio {
         if self.story.lore.len() >= 4096 || self.story.lore_board.cards.len() >= lore::MAX_CARDS {
             return;
         }
-        self.checkpoint();
-        let id = self.story.alloc_id();
-        self.story.lore.push(LoreEntry {
-            id,
+        let Ok(applied) = self.apply_command(Command::AddLoreNote {
             title: "Untitled note".into(),
-            text: String::new(),
-            links: Vec::new(),
-        });
-        self.lore_view.selected = lore::pin(&mut self.story, id, [at.x, at.y]);
+            position: [at.x, at.y],
+        }) else {
+            return;
+        };
+        let (note, card) = (applied.created[0], applied.created[1]);
+        self.lore_view.selected = Some(card);
         self.lore_view.connection = None;
         self.lore_view.fit = false;
-        self.selected_lore = Some(id);
+        self.selected_lore = Some(note);
         self.tab = LibraryTab::Lore;
-        self.changed();
     }
     pub(super) fn unlink_lore_target(&mut self, id: u64) {
         lore::unlink_target(&mut self.story, id);
@@ -126,11 +124,15 @@ impl Studio {
             )) * self.lore_view.zoom;
             return;
         }
-        self.checkpoint();
-        self.lore_view.selected = lore::pin(&mut self.story, target, [at.x, at.y]);
+        self.lore_view.selected = self
+            .apply_command(Command::AddLoreCard {
+                target,
+                position: [at.x, at.y],
+            })
+            .ok()
+            .and_then(|applied| applied.created.first().copied());
         self.lore_view.connection = None;
         self.lore_view.fit = false;
-        self.changed();
     }
     fn lore_card_menu(&mut self, ui: &mut egui::Ui, at: Pos2) {
         for kind in [Kind::Character, Kind::Location, Kind::Group] {
@@ -184,10 +186,16 @@ impl Studio {
     fn connect_lore_card(&mut self, to: u64) {
         if let Some(from) = self.lore_view.link_from.take() {
             if from != to {
-                self.checkpoint();
-                self.lore_view.connection = lore::connect(&mut self.story, from, to);
+                // An existing connection between the two cards is selected instead.
+                self.lore_view.connection = self
+                    .apply_command(Command::ConnectLore {
+                        from,
+                        to,
+                        label: String::new(),
+                    })
+                    .ok()
+                    .and_then(|a| a.created.first().or(a.touched.first()).copied());
                 self.lore_view.selected = None;
-                self.changed();
             }
             self.lore_view.connecting = false;
         } else {
@@ -196,22 +204,12 @@ impl Studio {
         }
     }
     fn remove_lore_card(&mut self, id: u64, delete_note: bool) {
-        let target = self
-            .story
-            .lore_board
-            .cards
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| c.target);
-        self.checkpoint();
-        lore::unpin(&mut self.story, id);
-        if let Some(target) = target.filter(|_| delete_note) {
-            self.story.lore.retain(|n| n.id != target);
-            lore::unlink_target(&mut self.story, target);
-        }
+        let _ = self.apply_command(Command::RemoveLoreCard {
+            card: id,
+            delete_note,
+        });
         self.lore_view.selected = None;
         self.lore_view.cancel_gesture();
-        self.changed();
     }
 
     // The existing navigation panel becomes a compact inspector when an object is selected.
@@ -238,9 +236,11 @@ impl Studio {
                 remove_edge = Some(edge.id);
             }
             if edge != self.story.lore_board.connections[index] {
-                self.checkpoint();
-                self.story.lore_board.connections[index] = edge;
-                self.changed();
+                let _ = self.apply_command(Command::SetLoreConnection {
+                    connection: edge.id,
+                    label: edge.label,
+                    color: edge.color,
+                });
             }
         } else if let Some(index) = self
             .story
@@ -279,10 +279,22 @@ impl Studio {
                     (ui.available_height() - 52.0).max(100.0),
                     25_000,
                 );
-                if note != self.story.lore[note_index] {
-                    self.checkpoint();
-                    self.story.lore[note_index] = note;
-                    self.changed();
+                let previous = &self.story.lore[note_index];
+                let mut edits = Vec::new();
+                for (field, old, new) in [
+                    (Field::Title, &previous.title, &note.title),
+                    (Field::Text, &previous.text, &note.text),
+                ] {
+                    if old != new {
+                        edits.push(Command::SetField {
+                            target: Target::Object(note.id),
+                            field,
+                            value: new.clone(),
+                        });
+                    }
+                }
+                if !edits.is_empty() {
+                    let _ = self.apply_command(Command::Batch(edits));
                 }
             } else {
                 ui.add(egui::Label::new(RichText::new(title).strong()).wrap());
@@ -301,10 +313,23 @@ impl Studio {
                     25_000,
                 );
             }
-            if card != self.story.lore_board.cards[index] {
-                self.checkpoint();
-                self.story.lore_board.cards[index] = card;
-                self.changed();
+            let previous = &self.story.lore_board.cards[index];
+            let mut edits = Vec::new();
+            if card.note != previous.note {
+                edits.push(Command::SetField {
+                    target: Target::Object(card.id),
+                    field: Field::BoardNote,
+                    value: card.note.clone(),
+                });
+            }
+            if card.color != previous.color {
+                edits.push(Command::SetLoreCardColor {
+                    card: card.id,
+                    color: card.color,
+                });
+            }
+            if !edits.is_empty() {
+                let _ = self.apply_command(Command::Batch(edits));
             }
         } else if !self.story.lore_board.cards.is_empty() {
             ui.label(
@@ -318,10 +343,8 @@ impl Studio {
             );
         }
         if let Some(id) = remove_edge {
-            self.checkpoint();
-            self.story.lore_board.connections.retain(|e| e.id != id);
+            let _ = self.apply_command(Command::DisconnectLore { connection: id });
             self.lore_view.connection = None;
-            self.changed();
         }
     }
 
@@ -333,9 +356,7 @@ impl Studio {
             }
             if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
                 if let Some(id) = self.lore_view.connection.take() {
-                    self.checkpoint();
-                    self.story.lore_board.connections.retain(|e| e.id != id);
-                    self.changed();
+                    let _ = self.apply_command(Command::DisconnectLore { connection: id });
                 } else if let Some(id) = self.lore_view.selected {
                     let is_note = self
                         .story
@@ -554,13 +575,10 @@ impl Studio {
                     self.register_context(&r);
                     appearance::context_menu(&r, |ui| {
                         if motion::button(ui, "Remove connection").clicked() {
-                            self.checkpoint();
-                            self.story
-                                .lore_board
-                                .connections
-                                .retain(|e| e.id != edge.id);
+                            let _ = self.apply_command(Command::DisconnectLore {
+                                connection: edge.id,
+                            });
                             self.lore_view.connection = None;
-                            self.changed();
                             ui.close_menu();
                         }
                     });
@@ -681,17 +699,20 @@ impl Studio {
                 if let Some((id, start, initial)) = self.lore_view.dragging {
                     if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
                         let delta = (pointer - start) / zoom;
-                        if let Some(card) =
-                            self.story.lore_board.cards.iter_mut().find(|c| c.id == id)
-                        {
-                            let position = [
-                                (initial[0] + delta.x).clamp(-1_000_000.0, 1_000_000.0),
-                                (initial[1] + delta.y).clamp(-1_000_000.0, 1_000_000.0),
-                            ];
-                            if card.position != position {
-                                card.position = position;
-                                self.changed();
-                            }
+                        let position = [
+                            (initial[0] + delta.x).clamp(-1_000_000.0, 1_000_000.0),
+                            (initial[1] + delta.y).clamp(-1_000_000.0, 1_000_000.0),
+                        ];
+                        let moved = self
+                            .story
+                            .lore_board
+                            .cards
+                            .iter()
+                            .any(|c| c.id == id && c.position != position);
+                        // The drag took its single undo step when it started.
+                        if moved {
+                            let _ =
+                                self.apply_in_gesture(Command::MoveLoreCard { card: id, position });
                         }
                     }
                     if !ui.input(|i| i.pointer.primary_down()) {
