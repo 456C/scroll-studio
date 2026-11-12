@@ -579,10 +579,13 @@ impl Command {
 pub struct Applied {
     /// Applying this restores the story to its state before the command.
     pub inverse: Command,
-    /// IDs of objects whose content changed (the story itself is not listed).
+    /// IDs of objects whose content changed; [`STORY_ID`] for story-level data such as
+    /// its own fields or the chronology.
     pub touched: Vec<u64>,
     /// IDs created by the command, in creation order.
     pub created: Vec<u64>,
+    /// Whole sections were replaced (a restore), so `touched` is not a complete list.
+    pub everything: bool,
 }
 
 impl Applied {
@@ -591,7 +594,18 @@ impl Applied {
             inverse,
             touched: Vec::new(),
             created: Vec::new(),
+            everything: false,
         }
+    }
+    /// A command that changed nothing; `existing` names the object it found instead.
+    fn unchanged(existing: u64) -> Self {
+        Self {
+            touched: vec![existing],
+            ..Self::new(Command::Batch(Vec::new()))
+        }
+    }
+    fn touch_all(self, ids: impl IntoIterator<Item = u64>) -> Self {
+        ids.into_iter().fold(self, Applied::touch)
     }
     fn touch(mut self, id: u64) -> Self {
         if !self.touched.contains(&id) {
@@ -624,6 +638,10 @@ impl Story {
         match command {
             // One command is already atomic; sheet typing sends one per keystroke, so skip
             // the backup copy.
+            // Nothing to do, and nothing to back up.
+            Command::Batch(commands) if commands.is_empty() => {
+                Ok(Applied::new(Command::Batch(Vec::new())))
+            }
             Command::Batch(mut commands) if commands.len() == 1 => {
                 let applied = self.apply(commands.pop().expect("one command"))?;
                 Ok(Applied {
@@ -637,6 +655,7 @@ impl Story {
                 let mut inverses = Vec::with_capacity(commands.len());
                 let mut touched = Vec::new();
                 let mut created = Vec::new();
+                let mut everything = false;
                 for command in commands {
                     match self.apply(command) {
                         Ok(applied) => {
@@ -646,6 +665,7 @@ impl Story {
                                 }
                             }
                             created.extend(applied.created);
+                            everything |= applied.everything;
                             inverses.push(applied.inverse);
                         }
                         Err(error) => {
@@ -659,6 +679,7 @@ impl Story {
                     inverse: Command::Batch(inverses),
                     touched,
                     created,
+                    everything,
                 })
             }
             command => self.apply_one(command),
@@ -872,6 +893,45 @@ impl Story {
             .iter()
             .position(|e| e.id == id)
             .context("That connection no longer exists")
+    }
+
+    /// `count` more IDs can be allocated without exhausting the ID space.
+    fn ensure_ids(&self, count: u64) -> Result<()> {
+        ensure!(
+            self.next_id
+                .checked_add(count)
+                .is_some_and(|n| n < u64::MAX),
+            "Story ID space exhausted"
+        );
+        Ok(())
+    }
+
+    /// Lore objects that change when `target` (a note or group) disappears: notes that
+    /// link to it, its card and that card's connections.
+    fn lore_cascade(&self, target: u64) -> Vec<u64> {
+        let mut ids: Vec<_> = self
+            .lore
+            .iter()
+            .filter(|n| n.links.contains(&target))
+            .map(|n| n.id)
+            .collect();
+        for card in self.lore_board.cards.iter().filter(|c| c.target == target) {
+            ids.extend(self.card_cascade(card.id));
+        }
+        ids
+    }
+
+    /// A card and the connections that are removed with it.
+    fn card_cascade(&self, card: u64) -> Vec<u64> {
+        std::iter::once(card)
+            .chain(
+                self.lore_board
+                    .connections
+                    .iter()
+                    .filter(|e| e.from == card || e.to == card)
+                    .map(|e| e.id),
+            )
+            .collect()
     }
 
     fn chapter_index(&self, id: u64) -> Result<usize> {
@@ -1102,6 +1162,7 @@ impl Story {
                     "A chapter can have at most {MAX_PANELS} panels"
                 );
                 check_panel_draft(&panel, self.chapters[c].height)?;
+                self.ensure_ids(1)?;
                 let index = match after {
                     None => self.chapters[c].panels.len(),
                     Some(after) => {
@@ -1442,6 +1503,7 @@ impl Story {
                         && self.lore_board.cards.len() < lore::MAX_CARDS,
                     "The lore board is full"
                 );
+                self.ensure_ids(2)?;
                 let inverse = self.lore_snapshot();
                 let id = self.alloc_id();
                 self.lore.push(LoreEntry {
@@ -1461,17 +1523,13 @@ impl Story {
                 );
                 if let Some(card) = self.lore_board.cards.iter().find(|c| c.target == target) {
                     // Already pinned: nothing changes, and the existing card is reported.
-                    let id = card.id;
-                    return Ok(Applied {
-                        inverse: Command::Batch(Vec::new()),
-                        touched: vec![id],
-                        created: Vec::new(),
-                    });
+                    return Ok(Applied::unchanged(card.id));
                 }
                 ensure!(
                     self.lore_board.cards.len() < lore::MAX_CARDS,
                     "The lore board is full"
                 );
+                self.ensure_ids(1)?;
                 let inverse = self.lore_snapshot();
                 let card = lore::pin(self, target, position).context("Could not pin that card")?;
                 Ok(Applied::new(inverse).create(card))
@@ -1479,15 +1537,19 @@ impl Story {
             Command::RemoveLoreCard { card, delete_note } => {
                 let index = self.card_index(card)?;
                 let target = self.lore_board.cards[index].target;
+                let delete_note = delete_note && self.lore.iter().any(|n| n.id == target);
+                let affected = if delete_note {
+                    self.lore_cascade(target)
+                } else {
+                    self.card_cascade(card)
+                };
                 let inverse = self.lore_snapshot();
                 lore::unpin(self, card);
-                let mut applied = Applied::new(inverse).touch(card);
-                if delete_note && self.lore.iter().any(|n| n.id == target) {
+                if delete_note {
                     self.lore.retain(|n| n.id != target);
                     lore::unlink_target(self, target);
-                    applied = applied.touch(target);
                 }
-                Ok(applied)
+                Ok(Applied::new(inverse).touch(card).touch_all(affected))
             }
             Command::MoveLoreCard { card, position } => {
                 let position = board_position(position)?;
@@ -1515,17 +1577,13 @@ impl Story {
                     .iter()
                     .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
                 {
-                    let id = edge.id;
-                    return Ok(Applied {
-                        inverse: Command::Batch(Vec::new()),
-                        touched: vec![id],
-                        created: Vec::new(),
-                    });
+                    return Ok(Applied::unchanged(edge.id));
                 }
                 ensure!(
                     self.lore_board.connections.len() < lore::MAX_CONNECTIONS,
                     "The lore board has too many connections"
                 );
+                self.ensure_ids(1)?;
                 let inverse = self.lore_snapshot();
                 let id = lore::connect(self, from, to).context("Could not connect those cards")?;
                 let index = self.connection_index(id)?;
@@ -1585,6 +1643,7 @@ impl Story {
                 if let Some(panel) = &opening {
                     check_panel_draft(panel, height)?;
                 }
+                self.ensure_ids(2)?;
                 let next_id = self.next_id;
                 let id = self.alloc_id();
                 let mut chapter = Chapter::new(id, name, width, height);
@@ -1614,6 +1673,10 @@ impl Story {
                     !self.timeline.iter().any(|e| e.chapter_id == chapter),
                     "That chapter has timeline notes"
                 );
+                // Its inverse re-adds the chapter, so the opening panel must still fit.
+                if let Some(panel) = last.panels.first() {
+                    check_panel_draft(&PanelDraft::from(panel.clone()), last.height)?;
+                }
                 let removed = self.chapters.pop().expect("checked above");
                 self.next_id = self.safe_next_id(next_id);
                 let opening = removed.panels.into_iter().next().map(PanelDraft::from);
@@ -1687,12 +1750,20 @@ impl Story {
                     locations: location.map(|_| self.locations.clone()),
                     ..Default::default()
                 });
+                self.ensure_ids(1)?;
+                let next_id = self.next_id;
                 let id = self.alloc_id();
                 self.assets.push(new_asset(id, name, kind, 0, 0));
+                let mut applied = Applied::new(inverse).create(id);
                 if let Some(location) = location {
-                    locations::move_asset(self, id, Some(location))?;
+                    if let Err(error) = locations::move_asset(self, id, Some(location)) {
+                        self.assets.pop();
+                        self.next_id = next_id;
+                        return Err(error);
+                    }
+                    applied = applied.touch(location);
                 }
-                Ok(Applied::new(inverse).create(id))
+                Ok(applied)
             }
             Command::AddImageAsset {
                 name,
@@ -1733,6 +1804,7 @@ impl Story {
                         Some(g)
                     }
                 };
+                self.ensure_ids(1)?;
                 let inverse = self.restore(Sections {
                     assets: Some(self.assets.clone()),
                     groups: group.map(|_| self.groups.clone()),
@@ -1814,10 +1886,11 @@ impl Story {
                     card_thumbnails: Some(self.card_thumbnails.clone()),
                     ..Default::default()
                 });
+                let affected = self.lore_cascade(group);
                 self.groups.remove(g);
                 lore::unlink_target(self, group);
                 self.card_thumbnails.retain(|t| t.target != group);
-                Ok(Applied::new(inverse).touch(group))
+                Ok(Applied::new(inverse).touch(group).touch_all(affected))
             }
             Command::MoveChronology { chapter, before } => {
                 let inverse = self.restore(Sections {
@@ -1825,7 +1898,7 @@ impl Story {
                     ..Default::default()
                 });
                 timeline::move_before(self, chapter, before)?;
-                Ok(Applied::new(inverse).touch(chapter))
+                Ok(Applied::new(inverse).touch(STORY_ID).touch(chapter))
             }
             Command::SetChronologyEntry {
                 chapter,
@@ -1850,7 +1923,7 @@ impl Story {
                     entry.summary = summary;
                     self.timeline = next;
                 }
-                Ok(Applied::new(inverse).touch(chapter))
+                Ok(Applied::new(inverse).touch(STORY_ID).touch(chapter))
             }
             Command::OrderChronologyByReading => {
                 let old = timeline::entries(self);
@@ -1866,7 +1939,7 @@ impl Story {
                 if old != next {
                     self.timeline = next;
                 }
-                Ok(Applied::new(inverse))
+                Ok(Applied::new(inverse).touch(STORY_ID))
             }
             Command::Restore(sections) => {
                 let previous_next = self.next_id;
@@ -1880,10 +1953,13 @@ impl Story {
                     self.next_id = previous_next;
                     return Err(error);
                 }
-                Ok(Applied::new(Command::Restore(Box::new(Sections {
-                    next_id: previous_next,
-                    ..old
-                }))))
+                Ok(Applied {
+                    everything: true,
+                    ..Applied::new(Command::Restore(Box::new(Sections {
+                        next_id: previous_next,
+                        ..old
+                    })))
+                })
             }
             Command::RestoreLore {
                 lore: entries,
@@ -1902,7 +1978,10 @@ impl Story {
                     self.next_id = old_next;
                     return Err(error);
                 }
-                Ok(Applied::new(inverse))
+                Ok(Applied {
+                    everything: true,
+                    ..Applied::new(inverse)
+                })
             }
         }
     }

@@ -1229,3 +1229,116 @@ fn restores_that_break_cross_section_rules_change_nothing() {
     assert!(story.apply(restore).is_err());
     assert!(manifest(&story) == before);
 }
+
+#[test]
+fn touched_ids_cover_cascades_and_story_level_changes() {
+    let story = world();
+    let group = story.groups[0].id;
+    let note = story
+        .lore
+        .iter()
+        .find(|n| n.links.contains(&group))
+        .unwrap()
+        .id;
+    let card = story
+        .lore_board
+        .cards
+        .iter()
+        .find(|c| c.target == group)
+        .unwrap()
+        .id;
+    let edges: Vec<_> = story
+        .lore_board
+        .connections
+        .iter()
+        .filter(|e| e.from == card || e.to == card)
+        .map(|e| e.id)
+        .collect();
+    let applied = story.clone().apply(Command::RemoveGroup { group }).unwrap();
+    for id in [group, note, card].into_iter().chain(edges) {
+        assert!(
+            applied.touched.contains(&id),
+            "{id} missing from {:?}",
+            applied.touched
+        );
+    }
+    let applied = story
+        .clone()
+        .apply(Command::OrderChronologyByReading)
+        .unwrap();
+    assert!(applied.touched.contains(&STORY_ID));
+    let station = story.locations[0].id;
+    let applied = story
+        .clone()
+        .apply(Command::AddAsset {
+            name: "Platform".into(),
+            kind: AssetKind::Background,
+            location: Some(station),
+        })
+        .unwrap();
+    assert!(applied.touched.contains(&station));
+    // A restore replaces whole sections and says so.
+    let mut changed = story.clone();
+    let added = changed.apply(Command::AddGroup).unwrap();
+    assert!(changed.apply(added.inverse).unwrap().everything);
+}
+
+#[test]
+fn a_new_chapter_whose_opening_panel_was_moved_out_is_not_removed_by_its_inverse() {
+    let mut story = Story::demo();
+    let added = story
+        .apply(Command::AddChapter {
+            name: "Two".into(),
+            width: 800,
+            height: 6400,
+            opening: Some(PanelDraft {
+                title: "Opening".into(),
+                y: 0.0,
+                height: 100.0,
+                script: String::new(),
+                notes: String::new(),
+                prompt: String::new(),
+            }),
+        })
+        .unwrap();
+    let panel = added.created[1];
+    story
+        .apply(Command::SetPanelGeometry {
+            panel,
+            y: 9000.0,
+            height: 100.0,
+        })
+        .unwrap();
+    let before = manifest(&story);
+    // Removing it would leave an inverse that can never be applied.
+    assert!(story.apply(added.inverse).is_err());
+    assert!(manifest(&story) == before);
+}
+
+#[test]
+fn allocating_commands_refuse_an_exhausted_id_space() {
+    let mut story = Story::demo();
+    story.next_id = u64::MAX - 1;
+    let before = manifest(&story);
+    for command in [
+        Command::AddAsset {
+            name: "x".into(),
+            kind: AssetKind::Character,
+            location: None,
+        },
+        Command::AddLoreNote {
+            title: "x".into(),
+            position: [0.0, 0.0],
+        },
+        Command::AddChapter {
+            name: "x".into(),
+            width: 800,
+            height: 6400,
+            opening: None,
+        },
+    ] {
+        let name = command.name();
+        assert!(story.apply(command).is_err(), "{name} should refuse");
+        assert!(manifest(&story) == before);
+    }
+}

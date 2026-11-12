@@ -411,6 +411,10 @@ impl Studio {
     /// Push `previous` as one undo step. Shared by `checkpoint` and `apply_command`.
     fn record_history(&mut self, previous: Story) {
         self.preset_slider_edit = None;
+        // Keep image bytes for the story before this edit and its history, as 0.13.2 did by
+        // checkpointing first. Using the edited story instead would keep stale bytes when the
+        // edit reuses an ID that undo freed (an abandoned redo branch).
+        let retained = retained_asset_ids(&previous, &self.undo, &[]);
         if self.undo.back() != Some(&previous) {
             self.undo.push_back(previous);
             if self.undo.len() > 48 {
@@ -418,7 +422,6 @@ impl Studio {
             }
         }
         self.redo.clear();
-        let retained = retained_asset_ids(&self.story, &self.undo, &self.redo);
         self.assets.retain(|id, _| retained.contains(id));
         // An abandoned redo branch may free IDs that the next edit reuses.
         self.previews.retain_assets(&retained);
@@ -433,7 +436,7 @@ impl Studio {
         let applied = self.story.apply(command)?;
         if self.story != previous {
             self.record_history(previous);
-            self.pending_scope = Some(commands::ChangeScope::Objects(applied.touched.clone()));
+            self.pending_scope = Some(scope_of(&applied));
             self.changed();
         }
         Ok(applied)
@@ -459,19 +462,24 @@ impl Studio {
     /// Apply a command inside a gesture that already took its undo step (a card drag).
     fn apply_in_gesture(&mut self, command: Command) -> anyhow::Result<Applied> {
         let applied = self.story.apply(command)?;
-        self.pending_scope = Some(commands::ChangeScope::Objects(applied.touched.clone()));
+        self.pending_scope = Some(scope_of(&applied));
         self.changed();
         Ok(applied)
     }
 
     fn changed(&mut self) {
+        let covers = self.story.card_thumbnails.len();
         scroll_studio::thumbnails::prune(&mut self.story);
         self.dirty = true;
         self.revision += 1;
-        let scope = self
+        let mut scope = self
             .pending_scope
             .take()
             .unwrap_or(commands::ChangeScope::Everything);
+        // Pruning removed card covers the command did not report.
+        if self.story.card_thumbnails.len() != covers {
+            scope = commands::ChangeScope::Everything;
+        }
         if self.story_changes.len() == MAX_STORY_CHANGES {
             // A reader that falls this far behind must re-read the whole story anyway.
             self.story_changes.pop_front();
@@ -599,6 +607,12 @@ impl Studio {
 
     fn reset_view(&mut self) {
         self.interrupt_preset_slider_edit();
+        // A new, opened or recovered document: earlier notices describe another story.
+        self.story_changes.clear();
+        self.story_changes.push_back(commands::StoryChanged {
+            revision: self.revision,
+            scope: commands::ChangeScope::Everything,
+        });
         self.settings_open = false;
         if self.path.is_none() {
             self.file_stamp = None;
@@ -1418,6 +1432,15 @@ fn assets_for_story(story: &Story, pool: &AssetBytes) -> AssetBytes {
         .collect()
 }
 
+/// The `story.changed` scope for an applied command.
+fn scope_of(applied: &Applied) -> commands::ChangeScope {
+    if applied.everything {
+        commands::ChangeScope::Everything
+    } else {
+        commands::ChangeScope::Objects(applied.touched.clone())
+    }
+}
+
 fn retained_asset_ids(story: &Story, undo: &VecDeque<Story>, redo: &[Story]) -> HashSet<u64> {
     std::iter::once(story)
         .chain(undo.iter())
@@ -1835,6 +1858,58 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(studio.take_story_changes().len(), MAX_STORY_CHANGES);
+    }
+
+    #[test]
+    fn an_id_reused_after_undo_never_keeps_the_old_image_bytes() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        let character = studio
+            .apply_command(Command::AddAsset {
+                name: "Mira".into(),
+                kind: AssetKind::Character,
+                location: None,
+            })
+            .unwrap()
+            .created[0];
+        studio.import_character_reference_bytes(character, png(4, 6), "Side".into());
+        let reference = studio.story.next_id - 1;
+        assert!(studio.assets.contains_key(&reference));
+        studio.undo();
+        // The undone import freed its ID; the next new sheet reuses it.
+        let reused = studio
+            .apply_command(Command::AddAsset {
+                name: "Station".into(),
+                kind: AssetKind::Background,
+                location: None,
+            })
+            .unwrap()
+            .created[0];
+        assert_eq!(reused, reference);
+        assert!(!studio.assets.contains_key(&reused), "stale bytes survived");
+        storage::validate_story(&studio.story, &studio.assets).unwrap();
+    }
+
+    #[test]
+    fn opening_a_document_resets_story_changed() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio
+            .apply_command(Command::SetField {
+                target: Target::Story,
+                field: Field::Title,
+                value: "Old".into(),
+            })
+            .unwrap();
+        studio.reset_view();
+        assert_eq!(
+            studio
+                .take_story_changes()
+                .into_iter()
+                .map(|c| c.scope)
+                .collect::<Vec<_>>(),
+            [commands::ChangeScope::Everything]
+        );
     }
 
     #[test]

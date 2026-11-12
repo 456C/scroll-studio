@@ -82,6 +82,7 @@ impl Studio {
                 .groups
                 .iter()
                 .zip(&edited)
+                .filter(|(before, after)| before != after)
                 .filter_map(|(before, after)| commands::group_edit(before, after))
                 .collect();
             self.commit(Some(Command::Batch(parts)), |studio| {
