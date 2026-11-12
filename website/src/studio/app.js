@@ -195,26 +195,46 @@ function renderPrompt(root,e,type){
 }
 function currentPrompt(){return M.prompt(story,section,entry(),$('#prompt-kind')?.value||'Portrait',$('#scene-direction')?.value||'');}
 function renderTimeline(root){
-  timelineBoard=new TimelineBoard(root,{entries:M.timeline(story),chapters:story.chapters,view:timelineView,
-    move:(id,before)=>{
-      if(!wouldMove(M.timeline(story).map(e=>e.chapter_id),id,before))return;
-      checkpoint();M.reorderTimeline(story,id,before);changed(true);
-      const card=root.querySelector('[data-chapter="'+id+'"] .chapter-card');
-      card?.focus({preventScroll:true});card?.scrollIntoView({block:'nearest',inline:'nearest'});
-      const message=root.querySelector('[role=status]');if(message)message.textContent='Moved to position '+(M.timeline(story).findIndex(e=>e.chapter_id===id)+1);
-    },edit:id=>{
-      const e=M.timeline(story).find(e=>e.chapter_id===id);
-      modal('Timeline notes','<label class="field">When<input id="timeline-when" maxlength="1024" value="'+esc(e.when)+'" placeholder="Date or era"></label><label class="field">Notes<textarea id="timeline-summary" maxlength="20000" rows="6">'+esc(e.summary)+'</textarea></label>',button('Cancel','closeModal')+button('Save','saveTimeline','','class="primary"'));
+  const ids=()=>M.timeline(story).map(M.entryId);
+  const edit=id=>{
+    const e=M.timeline(story).find(entry=>M.entryId(entry)===id);if(!e)return;
+    if(e.event){
+      const choices=M.linkChoices(story);
+      modal('Story event','<label class="field">Title<input id="event-title" maxlength="4096" value="'+esc(e.event.title)+'" placeholder="Title"></label><div class="event-kind" role="group" aria-label="Kind">'+M.eventKinds.map(kind=>'<button type="button" data-kind="'+kind+'" aria-pressed="'+(e.event.kind===kind)+'">'+kind+'</button>').join('')+'</div><label class="field">When<input id="timeline-when" maxlength="1024" value="'+esc(e.when)+'" placeholder="In-world date or era"></label><label class="field">Summary<textarea id="timeline-summary" maxlength="20000" rows="5" placeholder="What happens in this moment…">'+esc(e.summary)+'</textarea></label>'+(choices.length?'<div class="member-grid">'+choices.map(choice=>'<label class="check-row"><input type="checkbox" data-link="'+choice.id+'" '+(e.event.links.includes(choice.id)?'checked':'')+'><span>'+esc(choice.name)+'</span><small>'+esc(choice.kind)+'</small></label>').join('')+'</div>':''),button('Cancel','closeModal')+button('Save','saveTimeline','','class="primary"'));
+      let kind=e.event.kind;
+      for(const node of $$('[data-kind]'))node.onclick=()=>{kind=node.dataset.kind;for(const other of $$('[data-kind]'))other.setAttribute('aria-pressed',String(other===node));};
       $('[data-action="saveTimeline"]').onclick=()=>{
-        const when=$('#timeline-when').value,summary=$('#timeline-summary').value;closeModal();
-        if(when===e.when&&summary===e.summary)return;
-        checkpoint();story.timeline=M.timeline(story);Object.assign(story.timeline.find(t=>t.chapter_id===id),{when,summary});changed(true);
+        const title=$('#event-title').value,when=$('#timeline-when').value,summary=$('#timeline-summary').value;
+        const links=[...$$('[data-link]')].filter(input=>input.checked).map(input=>Number(input.dataset.link));
+        closeModal();
+        if(title===e.event.title&&kind===e.event.kind&&when===e.when&&summary===e.summary&&links.join(',')===e.event.links.join(','))return;
+        checkpoint();story.timeline=M.timeline(story);
+        const entry=story.timeline.find(item=>M.entryId(item)===id);
+        Object.assign(entry,{when,summary});Object.assign(entry.event,{title,kind,links});changed(true);
       };
+      return;
     }
+    modal('Timeline notes','<label class="field">When<input id="timeline-when" maxlength="1024" value="'+esc(e.when)+'" placeholder="Date or era"></label><label class="field">Notes<textarea id="timeline-summary" maxlength="20000" rows="6">'+esc(e.summary)+'</textarea></label>',button('Cancel','closeModal')+button('Save','saveTimeline','','class="primary"'));
+    $('[data-action="saveTimeline"]').onclick=()=>{
+      const when=$('#timeline-when').value,summary=$('#timeline-summary').value;closeModal();
+      if(when===e.when&&summary===e.summary)return;
+      checkpoint();story.timeline=M.timeline(story);Object.assign(story.timeline.find(item=>M.entryId(item)===id),{when,summary});changed(true);
+    };
+  };
+  timelineBoard=new TimelineBoard(root,{entries:M.timeline(story),chapters:story.chapters,labels:Object.fromEntries(M.linkChoices(story).map(choice=>[choice.id,choice.name])),view:timelineView,
+    move:(id,before)=>{
+      if(!wouldMove(ids(),id,before))return;
+      checkpoint();M.reorderTimeline(story,id,before);changed(true);
+      const card=root.querySelector('[data-id="'+id+'"] .chapter-card');
+      card?.focus({preventScroll:true});card?.scrollIntoView({block:'nearest',inline:'nearest'});
+      const message=root.querySelector('[role=status]');if(message)message.textContent='Moved to position '+(ids().indexOf(id)+1);
+    },edit,
+    remove:id=>{checkpoint();M.deleteEvent(story,id);const next=M.timeline(story);if(timelineView.selected===id)timelineView.selected=next[0]?M.entryId(next[0]):null;changed(true);},
+    add:()=>{checkpoint();const id=M.insertEvent(story,timelineView.selected);timelineView.selected=id;changed(true);edit(id);}
   });
 }
 function renderSettings(root){
-  root.innerHTML='<div class="workspace-header"><h1>Settings</h1></div><div class="content-scroll"><div class="settings-list"><div class="setting"><div>Frosted surfaces<small>Controls and menus</small></div><input type="checkbox" data-setting="glass" aria-label="Frosted surfaces" '+(appearance.glass?'checked':'')+'></div><div class="setting"><div>Motion<small>Brief transitions</small></div><input type="checkbox" data-setting="motion" aria-label="Motion" '+(appearance.motion?'checked':'')+'></div><div class="setting"><div>Original artwork<small>Previews resize. Original files stay intact.</small></div>'+icon('check')+'</div><div class="setting"><div>Temporary workspace<small>Expires after 24 hours without use.</small></div>'+button('Export','export','export')+'</div><p class="plain-text">Edits are saved temporarily on this server and a recovery draft is kept in this browser. Export .scro to keep your world and open it in Scroll Studio 0.13.1 or newer. <a href="/privacy.html">Privacy</a></p>'+button('Clear browser recovery draft','clearDraft','trash','class="ghost"')+'</div></div>';
+  root.innerHTML='<div class="workspace-header"><h1>Settings</h1></div><div class="content-scroll"><div class="settings-list"><div class="setting"><div>Frosted surfaces<small>Controls and menus</small></div><input type="checkbox" data-setting="glass" aria-label="Frosted surfaces" '+(appearance.glass?'checked':'')+'></div><div class="setting"><div>Motion<small>Brief transitions</small></div><input type="checkbox" data-setting="motion" aria-label="Motion" '+(appearance.motion?'checked':'')+'></div><div class="setting"><div>Original artwork<small>Previews resize. Original files stay intact.</small></div>'+icon('check')+'</div><div class="setting"><div>Temporary workspace<small>Expires after 24 hours without use.</small></div>'+button('Export','export','export')+'</div><p class="plain-text">Edits are saved temporarily on this server and a recovery draft is kept in this browser. Export .scro to keep your world. This editor writes format 12, including timeline events. <a href="/privacy.html">Privacy</a></p>'+button('Clear browser recovery draft','clearDraft','trash','class="ghost"')+'</div></div>';
   $$('[data-setting]',root).forEach(input=>input.addEventListener('change',()=>{appearance[input.dataset.setting]=input.checked;localStorage.setItem('scroll-appearance',JSON.stringify(appearance));applyAppearance();}));
 }
 function renderLore(root){
@@ -430,7 +450,7 @@ async function action(name,element){
   if(key==='openTarget'){closeModal();return openTarget(n);}
   if(key==='removeCard')return removeCard(n);
   if(key==='removeEdge'){checkpoint();story.lore_board.connections=story.lore_board.connections.filter(e=>e.id!==boardView.edge);boardView.edge=null;closeModal();changed();return inspectLore(false);}
-  if(key==='timeUp'||key==='timeDown'){const list=M.timeline(story),index=list.findIndex(e=>e.chapter_id===n);if((key==='timeUp'&&index===0)||(key==='timeDown'&&index===list.length-1))return;checkpoint();M.reorderTimeline(story,n,key==='timeUp'?list[index-1].chapter_id:list[index+2]?.chapter_id??null);return changed(true);}
+  if(key==='timeUp'||key==='timeDown'){const list=M.timeline(story),index=list.findIndex(e=>M.entryId(e)===n);if((key==='timeUp'&&index===0)||(key==='timeDown'&&index===list.length-1))return;checkpoint();M.reorderTimeline(story,n,key==='timeUp'?M.entryId(list[index-1]):list[index+2]?M.entryId(list[index+2]):null);return changed(true);}
   if(key==='clearDraft'){const db=await database();db.transaction('draft','readwrite').objectStore('draft').clear();return toast('Browser recovery draft cleared');}
 }
 document.addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(!b)return;Promise.resolve().then(()=>action(b.dataset.action,b)).catch(error=>toast(error.message));});

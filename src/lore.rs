@@ -152,6 +152,11 @@ pub fn unlink_target(story: &mut Story, target: u64) {
     for entry in &mut story.lore {
         entry.links.retain(|id| *id != target);
     }
+    for entry in &mut story.timeline {
+        if let Some(event) = &mut entry.event {
+            event.links.retain(|id| *id != target);
+        }
+    }
     let ids: Vec<_> = story
         .lore_board
         .cards

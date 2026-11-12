@@ -368,7 +368,9 @@ The visual pass follows [Apple's materials guidance](https://developer.apple.com
 
 ## File format
 
-`.scro` version 6 is a ZIP container (version 1–5 files are upgraded in memory when opened):
+`.scro` format **12** is a ZIP container. Versions 1–11 still open and upgrade in memory. The first save that replaces an older file writes a backup beside it, named `<name>.v<version>.bak.scro` (for example `My story.v11.bak.scro`). An existing backup is left untouched. The status line names the backup that was written. Format 12 adds in-world timeline events — a title, an in-world date, a summary, a kind (`Flashback`, `Lore`, or `Other`), and optional links to characters, locations, or groups — ordered among chapters. Chapter reading order stays separate.
+
+`.scro` version 6 introduced the ZIP container (version 1–5 files are upgraded in memory when opened):
 
 ```text
 manifest.json          Story title, notes, chapters, script beats, layers,

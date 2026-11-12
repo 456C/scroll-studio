@@ -1,9 +1,11 @@
 use super::*;
 use egui::{pos2, vec2, Align2, FontId, Rect, Sense};
+use scroll_studio::model::{ChronologyEntry, StoryEventKind};
 use scroll_studio::timeline;
 
 #[derive(Clone, Copy)]
-struct ChapterDrag(u64);
+struct ItemDrag(u64);
+
 impl Studio {
     pub(super) fn move_timeline(&mut self, id: u64, before: Option<u64>) {
         // A move that changes nothing leaves history alone, as before.
@@ -14,8 +16,55 @@ impl Studio {
             self.error = Some(e.to_string());
         }
     }
+
+    fn add_timeline_event(&mut self, ctx: &egui::Context, after: Option<u64>) -> Option<u64> {
+        let mut next = self.story.clone();
+        match timeline::insert_event(&mut next, after) {
+            Ok(id) => {
+                self.checkpoint();
+                self.story = next;
+                self.changed();
+                if let Some(entry) = self.story.timeline.iter().find(|entry| entry.key() == id) {
+                    let draft_key = egui::Id::new(("timeline_note_draft", self.document_epoch));
+                    ctx.data_mut(|data| data.insert_temp(draft_key, entry.clone()));
+                }
+                self.status = "Event added".into();
+                Some(id)
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                None
+            }
+        }
+    }
+
+    fn delete_timeline_event(&mut self, ctx: &egui::Context, id: u64) {
+        let mut next = self.story.clone();
+        match timeline::delete_event(&mut next, id) {
+            Ok(true) => {
+                self.checkpoint();
+                self.story = next;
+                self.changed();
+                let draft_key = egui::Id::new(("timeline_note_draft", self.document_epoch));
+                ctx.data_mut(|data| {
+                    if data
+                        .get_temp::<ChronologyEntry>(draft_key)
+                        .is_some_and(|entry| entry.key() == id)
+                    {
+                        data.remove::<ChronologyEntry>(draft_key);
+                    }
+                });
+                self.status = "Event removed".into();
+            }
+            Ok(false) => {}
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     pub(super) fn timeline_workspace(&mut self, ctx: &egui::Context) {
         self.canvas_rect = Rect::NOTHING;
+        let selected_key = egui::Id::new(("timeline_selected", self.document_epoch));
+        let draft_key = egui::Id::new(("timeline_note_draft", self.document_epoch));
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG).inner_margin(22.0))
             .show(ctx, |ui| {
@@ -23,7 +72,7 @@ impl Studio {
                     ui.heading("Timeline");
                     ui.label(RichText::new("Chronology").color(MUTED))
                         .on_hover_text(
-                            "Arrange the story's events without changing chapter reading order",
+                            "Arrange chapters and in-world moments without changing reading order",
                         );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.assets_only && primary(ui, "+ Chapter").clicked() {
@@ -31,17 +80,28 @@ impl Studio {
                             self.dialog_name =
                                 format!("Chapter {:02}", self.story.chapters.len() + 1);
                         }
+                        let add_event = motion::button(ui, "+ Event");
+                        #[cfg(test)]
+                        ctx.data_mut(|data| {
+                            data.insert_temp(egui::Id::new("timeline_add_event"), add_event.rect)
+                        });
+                        if add_event.clicked() {
+                            let after = ctx
+                                .data(|data| data.get_temp::<u64>(selected_key))
+                                .or_else(|| {
+                                    self.story
+                                        .chapters
+                                        .get(self.chapter)
+                                        .map(|chapter| chapter.id)
+                                });
+                            if let Some(id) = self.add_timeline_event(ctx, after) {
+                                ctx.data_mut(|data| data.insert_temp(selected_key, id));
+                            }
+                        }
                         motion::menu_button(ui, "•••", |ui| {
                             if motion::button(ui, "Use reading order").clicked() {
                                 let old = timeline::entries(&self.story);
-                                let next: Vec<_> = self
-                                    .story
-                                    .chapters
-                                    .iter()
-                                    .filter_map(|c| {
-                                        old.iter().find(|e| e.chapter_id == c.id).cloned()
-                                    })
-                                    .collect();
+                                let next = timeline::reading_order(&self.story);
                                 if old != next {
                                     self.commit(
                                         Some(Command::OrderChronologyByReading),
@@ -55,14 +115,13 @@ impl Studio {
                 });
                 ui.add_space(24.0);
                 let entries = timeline::entries(&self.story);
-                let selected_key = egui::Id::new(("timeline_selected", self.document_epoch));
                 let mut selected = ctx
-                    .data(|d| d.get_temp::<u64>(selected_key))
-                    .filter(|id| entries.iter().any(|e| e.chapter_id == *id))
+                    .data(|data| data.get_temp::<u64>(selected_key))
+                    .filter(|id| entries.iter().any(|entry| entry.key() == *id))
                     .unwrap_or(self.story.chapters[self.chapter].id);
                 let mut reorder = None;
+                let mut remove_event = None;
                 let mut card_rects = Vec::new();
-                let draft_key = egui::Id::new(("timeline_note_draft", self.document_epoch));
                 let area = egui::ScrollArea::horizontal()
                     .id_salt(("timeline_board", self.document_epoch))
                     .max_height(274.0)
@@ -71,47 +130,60 @@ impl Studio {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 22.0;
                             for (index, entry) in entries.iter().enumerate() {
-                                let Some(chapter) = self
-                                    .story
-                                    .chapters
-                                    .iter()
-                                    .find(|c| c.id == entry.chapter_id)
-                                else {
+                                if !entry.is_event()
+                                    && !self
+                                        .story
+                                        .chapters
+                                        .iter()
+                                        .any(|chapter| chapter.id == entry.chapter_id)
+                                {
                                     continue;
+                                }
+                                let id = entry.key();
+                                let title = timeline_label(&self.story, entry);
+                                let cover = if entry.is_event() || self.assets_only {
+                                    None
+                                } else {
+                                    self.story
+                                        .chapters
+                                        .iter()
+                                        .find(|chapter| chapter.id == entry.chapter_id)
+                                        .and_then(|chapter| {
+                                            chapter.layers.iter().find_map(|layer| {
+                                                if let LayerKind::Image { asset_id, .. } =
+                                                    layer.kind
+                                                {
+                                                    layer.visible.then_some(asset_id)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        })
                                 };
-                                let name = chapter.name.clone();
-                                let cover = chapter
-                                    .layers
-                                    .iter()
-                                    .filter(|_| !self.assets_only)
-                                    .find_map(|l| {
-                                        if let LayerKind::Image { asset_id, .. } = l.kind {
-                                            l.visible.then_some(asset_id)
-                                        } else {
-                                            None
-                                        }
-                                    });
                                 let (rect, response) = ui.allocate_exact_size(
                                     vec2(238.0, 246.0),
                                     Sense::click_and_drag(),
                                 );
                                 #[cfg(test)]
-                                ctx.data_mut(|d| {
-                                    d.insert_temp(
-                                        egui::Id::new(("timeline_card", entry.chapter_id)),
-                                        rect,
-                                    )
+                                ctx.data_mut(|data| {
+                                    data.insert_temp(egui::Id::new(("timeline_card", id)), rect)
                                 });
-                                card_rects.push((entry.chapter_id, rect));
+                                card_rects.push((id, rect));
                                 response
                                     .clone()
                                     .on_hover_text("Drag to reorder · Right-click for more");
-                                response.dnd_set_drag_payload(ChapterDrag(entry.chapter_id));
+                                response.dnd_set_drag_payload(ItemDrag(id));
                                 if response.clicked() {
-                                    selected = entry.chapter_id;
+                                    selected = id;
                                 }
-                                if !self.assets_only && response.double_clicked() {
-                                    self.open_timeline_chapter(entry.chapter_id);
+                                if response.double_clicked() {
+                                    if entry.is_event() {
+                                        ctx.data_mut(|data| {
+                                            data.insert_temp(draft_key, entry.clone())
+                                        });
+                                    } else if !self.assets_only {
+                                        self.open_timeline_chapter(entry.chapter_id);
+                                    }
                                 }
                                 if ui.is_rect_visible(rect) {
                                     ui.painter().rect_filled(rect, 10.0, PANEL);
@@ -126,11 +198,7 @@ impl Studio {
                                     ui.painter().circle_filled(
                                         pos2(rect.left() + 14.0, track_y),
                                         3.0,
-                                        if selected == entry.chapter_id {
-                                            ACCENT
-                                        } else {
-                                            MUTED
-                                        },
+                                        if selected == id { ACCENT } else { MUTED },
                                     );
                                     ui.painter().text(
                                         rect.min + vec2(14.0, 20.0),
@@ -148,7 +216,7 @@ impl Studio {
                                             ui.painter().circle_filled(pos2(x, y), 1.4, MUTED);
                                         }
                                     }
-                                    if selected == entry.chapter_id {
+                                    if selected == id {
                                         ui.painter().rect_stroke(
                                             rect,
                                             10.0,
@@ -160,8 +228,18 @@ impl Studio {
                                         rect.min + vec2(10.0, 36.0),
                                         vec2(218.0, 106.0),
                                     );
-                                    if let Some(id) = cover {
-                                        self.paint_character_reference(ui, ctx, id, art, true);
+                                    if let Some(event) = &entry.event {
+                                        ui.painter().text(
+                                            art.center(),
+                                            Align2::CENTER_CENTER,
+                                            event.kind.label(),
+                                            FontId::proportional(18.0),
+                                            event_color(event.kind),
+                                        );
+                                    } else if let Some(asset_id) = cover {
+                                        self.paint_character_reference(
+                                            ui, ctx, asset_id, art, true,
+                                        );
                                     } else {
                                         icons::draw(
                                             ui.painter(),
@@ -174,7 +252,7 @@ impl Studio {
                                     painter.text(
                                         rect.min + vec2(14.0, 163.0),
                                         Align2::LEFT_CENTER,
-                                        name,
+                                        &title,
                                         FontId::proportional(17.0),
                                         TEXT,
                                     );
@@ -197,21 +275,30 @@ impl Studio {
                                         MUTED,
                                     );
                                 }
+                                let event = entry.is_event();
                                 appearance::context_menu(&response, |ui| {
-                                    if !self.assets_only
+                                    if event && motion::button(ui, "Edit").clicked() {
+                                        ctx.data_mut(|data| {
+                                            data.insert_temp(draft_key, entry.clone())
+                                        });
+                                        ui.close_menu();
+                                    }
+                                    if !event
+                                        && !self.assets_only
                                         && motion::button(ui, "Open chapter").clicked()
                                     {
                                         self.open_timeline_chapter(entry.chapter_id);
+                                        ui.close_menu();
+                                    }
+                                    if event && motion::button(ui, "Delete").clicked() {
+                                        remove_event = Some(id);
                                         ui.close_menu();
                                     }
                                     if ui
                                         .add_enabled(index > 0, motion::Button::new("Earlier"))
                                         .clicked()
                                     {
-                                        reorder = Some((
-                                            entry.chapter_id,
-                                            Some(entries[index - 1].chapter_id),
-                                        ));
+                                        reorder = Some((id, Some(entries[index - 1].key())));
                                         ui.close_menu();
                                     }
                                     if ui
@@ -222,8 +309,8 @@ impl Studio {
                                         .clicked()
                                     {
                                         reorder = Some((
-                                            entry.chapter_id,
-                                            entries.get(index + 2).map(|e| e.chapter_id),
+                                            id,
+                                            entries.get(index + 2).map(|entry| entry.key()),
                                         ));
                                         ui.close_menu();
                                     }
@@ -231,26 +318,26 @@ impl Studio {
                             }
                         });
                     });
-                if let Some(payload) = egui::DragAndDrop::payload::<ChapterDrag>(ctx) {
+                if let Some(payload) = egui::DragAndDrop::payload::<ItemDrag>(ctx) {
                     if let Some(pointer) = ctx
                         .pointer_hover_pos()
-                        .filter(|p| area.inner_rect.contains(*p))
+                        .filter(|pointer| area.inner_rect.contains(*pointer))
                     {
                         let remaining: Vec<_> = card_rects
                             .iter()
-                            .filter(|(id, _)| *id != payload.0)
+                            .filter(|(card_id, _)| *card_id != payload.0)
                             .collect();
                         let next = remaining
                             .iter()
                             .find(|(_, rect)| pointer.x < rect.center().x);
-                        let before = next.map(|(id, _)| *id);
+                        let before = next.map(|(card_id, _)| *card_id);
                         let x = next.map_or_else(
                             || {
                                 remaining
                                     .last()
-                                    .map_or(area.inner_rect.left(), |(_, r)| r.right() + 11.0)
+                                    .map_or(area.inner_rect.left(), |(_, rect)| rect.right() + 11.0)
                             },
-                            |(_, r)| r.left() - 11.0,
+                            |(_, rect)| rect.left() - 11.0,
                         );
                         let painter = ui.painter().with_clip_rect(area.inner_rect);
                         painter.line_segment(
@@ -261,7 +348,8 @@ impl Studio {
                             egui::Stroke::new(3.0_f32, ACCENT),
                         );
                         painter.circle_filled(pos2(x, area.inner_rect.top() + 6.0), 4.0, ACCENT);
-                        if let Some((_, rect)) = card_rects.iter().find(|(id, _)| *id == payload.0)
+                        if let Some((_, rect)) =
+                            card_rects.iter().find(|(card_id, _)| *card_id == payload.0)
                         {
                             painter.rect_filled(*rect, 10.0, Color32::from_black_alpha(155));
                         }
@@ -283,18 +371,19 @@ impl Studio {
                             egui::Stroke::new(1.5_f32, ACCENT),
                             egui::StrokeKind::Inside,
                         );
-                        if let Some(chapter) =
-                            self.story.chapters.iter().find(|c| c.id == payload.0)
-                        {
-                            painter.with_clip_rect(ghost.shrink(12.0)).text(
-                                ghost.left_center() + vec2(12.0, 0.0),
-                                Align2::LEFT_CENTER,
-                                &chapter.name,
-                                FontId::proportional(16.0),
-                                TEXT,
-                            );
-                        }
-                        if ctx.input(|i| i.pointer.primary_released()) {
+                        let label = entries
+                            .iter()
+                            .find(|entry| entry.key() == payload.0)
+                            .map(|entry| timeline_label(&self.story, entry))
+                            .unwrap_or_default();
+                        painter.with_clip_rect(ghost.shrink(12.0)).text(
+                            ghost.left_center() + vec2(12.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            label,
+                            FontId::proportional(16.0),
+                            TEXT,
+                        );
+                        if ctx.input(|input| input.pointer.primary_released()) {
                             reorder = Some((payload.0, before));
                             egui::DragAndDrop::clear_payload(ctx);
                         } else {
@@ -307,7 +396,7 @@ impl Studio {
                             };
                             if speed != 0.0 {
                                 let mut state = area.state;
-                                let step = ui.input(|i| i.stable_dt.min(0.05)) * 650.0;
+                                let step = ui.input(|input| input.stable_dt.min(0.05)) * 650.0;
                                 state.offset.x = (state.offset.x + speed * step).clamp(
                                     0.0,
                                     (area.content_size.x - area.inner_rect.width()).max(0.0),
@@ -322,25 +411,44 @@ impl Studio {
                     self.move_timeline(id, before);
                     selected = id;
                 }
-                ctx.data_mut(|d| d.insert_temp(selected_key, selected));
                 ui.add_space(20.0);
-                if let Some(entry) = entries.iter().find(|e| e.chapter_id == selected) {
-                    let name = self
-                        .story
-                        .chapters
-                        .iter()
-                        .find(|c| c.id == selected)
-                        .map_or("Chapter", |c| c.name.as_str())
-                        .to_owned();
+                if let Some(entry) = entries
+                    .iter()
+                    .find(|entry| entry.key() == selected)
+                    .cloned()
+                {
+                    let title = timeline_label(&self.story, &entry);
                     ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(name).size(20.0)).truncate());
+                        ui.add(egui::Label::new(RichText::new(title).size(20.0)).truncate());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if motion::button(ui, "Edit notes").clicked() {
-                                ctx.data_mut(|d| d.insert_temp(draft_key, entry.clone()));
+                            if motion::button(
+                                ui,
+                                if entry.is_event() {
+                                    "Edit"
+                                } else {
+                                    "Edit notes"
+                                },
+                            )
+                            .clicked()
+                            {
+                                ctx.data_mut(|data| data.insert_temp(draft_key, entry.clone()));
+                            }
+                            if entry.is_event() {
+                                let remove = motion::button(ui, "Delete");
+                                #[cfg(test)]
+                                ctx.data_mut(|data| {
+                                    data.insert_temp(
+                                        egui::Id::new("timeline_delete_event"),
+                                        remove.rect,
+                                    )
+                                });
+                                if remove.clicked() {
+                                    remove_event = Some(entry.key());
+                                }
                             }
                             let index = entries
                                 .iter()
-                                .position(|e| e.chapter_id == selected)
+                                .position(|item| item.key() == selected)
                                 .unwrap_or(0);
                             if ui
                                 .add_enabled(
@@ -351,26 +459,41 @@ impl Studio {
                             {
                                 self.move_timeline(
                                     selected,
-                                    entries.get(index + 2).map(|e| e.chapter_id),
+                                    entries.get(index + 2).map(|item| item.key()),
                                 );
                             }
                             if ui
                                 .add_enabled(index > 0, motion::Button::new("‹ Earlier"))
                                 .clicked()
                             {
-                                self.move_timeline(selected, Some(entries[index - 1].chapter_id));
+                                self.move_timeline(selected, Some(entries[index - 1].key()));
                             }
-                            if !self.assets_only && motion::button(ui, "Open chapter").clicked() {
+                            if !entry.is_event()
+                                && !self.assets_only
+                                && motion::button(ui, "Open chapter").clicked()
+                            {
                                 self.open_timeline_chapter(selected);
                             }
                         });
                     });
                     ui.add_space(8.0);
+                    if let Some(event) = &entry.event {
+                        ui.label(RichText::new(event.kind.label()).color(event_color(event.kind)));
+                        let links = event
+                            .links
+                            .iter()
+                            .filter_map(|id| link_name(&self.story, *id))
+                            .collect::<Vec<_>>()
+                            .join("   ·   ");
+                        if !links.is_empty() {
+                            ui.label(RichText::new(links).color(MUTED));
+                        }
+                    }
                     ui.label(
                         RichText::new(if entry.when.is_empty() {
                             "Undated"
                         } else {
-                            &entry.when
+                            entry.when.as_str()
                         })
                         .color(ACCENT),
                     );
@@ -381,35 +504,94 @@ impl Studio {
                             ui.add(egui::Label::new(&entry.summary).wrap().selectable(true));
                         });
                 }
+                if let Some(id) = remove_event {
+                    let fallback = entries
+                        .iter()
+                        .map(|entry| entry.key())
+                        .find(|key| *key != id);
+                    self.delete_timeline_event(ctx, id);
+                    if selected == id {
+                        selected = fallback.unwrap_or(self.story.chapters[self.chapter].id);
+                    }
+                }
+                ctx.data_mut(|data| data.insert_temp(selected_key, selected));
             });
         let draft_key = egui::Id::new(("timeline_note_draft", self.document_epoch));
-        if let Some(mut draft) =
-            ctx.data(|d| d.get_temp::<scroll_studio::model::ChronologyEntry>(draft_key))
-        {
+        if let Some(mut draft) = ctx.data(|data| data.get_temp::<ChronologyEntry>(draft_key)) {
             let mut save = false;
             let mut cancel = false;
+            let choices = event_link_choices(&self.story);
             let modal = egui::Modal::new(draft_key).show(ctx, |ui| {
-                ui.set_width(420.0);
-                ui.heading("Timeline notes");
+                ui.set_width(440.0);
+                if draft.is_event() {
+                    ui.heading("Story event");
+                } else {
+                    ui.heading("Timeline notes");
+                }
                 ui.add_space(12.0);
+                if let Some(event) = draft.event.as_mut() {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut event.title)
+                            .hint_text("Title")
+                            .desired_width(f32::INFINITY)
+                            .char_limit(timeline::MAX_TITLE_BYTES),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        for kind in StoryEventKind::ALL {
+                            ui.selectable_value(&mut event.kind, kind, kind.label());
+                        }
+                    });
+                    ui.add_space(8.0);
+                }
+                let when_hint = if draft.is_event() {
+                    "In-world date or era"
+                } else {
+                    "Date or era"
+                };
+                let summary_hint = if draft.is_event() {
+                    "What happens in this moment…"
+                } else {
+                    "What happens in this chapter…"
+                };
                 ui.add(
                     egui::TextEdit::singleline(&mut draft.when)
-                        .hint_text("Date or era")
+                        .hint_text(when_hint)
                         .desired_width(f32::INFINITY)
                         .char_limit(1024),
                 );
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical()
-                    .max_height(220.0)
+                    .max_height(180.0)
                     .show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::multiline(&mut draft.summary)
-                                .hint_text("What happens in this chapter…")
+                                .hint_text(summary_hint)
                                 .desired_width(f32::INFINITY)
-                                .desired_rows(8)
+                                .desired_rows(6)
                                 .char_limit(20_000),
                         );
                     });
+                if draft.is_event() && !choices.is_empty() {
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for (id, label) in &choices {
+                                let links = &mut draft.event.as_mut().unwrap().links;
+                                let mut on = links.contains(id);
+                                if ui.checkbox(&mut on, label).changed() {
+                                    if on {
+                                        if !links.contains(id) {
+                                            links.push(*id);
+                                        }
+                                    } else {
+                                        links.retain(|link| link != id);
+                                    }
+                                }
+                            }
+                        });
+                }
                 ui.horizontal(|ui| {
                     cancel = motion::button(ui, "Cancel").clicked();
                     save = primary(ui, "Save").clicked();
@@ -417,7 +599,7 @@ impl Studio {
             });
             if save {
                 let mut next = timeline::entries(&self.story);
-                if let Some(entry) = next.iter_mut().find(|e| e.chapter_id == draft.chapter_id) {
+                if let Some(entry) = next.iter_mut().find(|entry| entry.key() == draft.key()) {
                     if *entry != draft {
                         let command = Command::SetChronologyEntry {
                             chapter: draft.chapter_id,
@@ -429,17 +611,23 @@ impl Studio {
                     }
                 }
             } else if !cancel && !modal.should_close() {
-                ctx.data_mut(|d| d.insert_temp(draft_key, draft));
+                ctx.data_mut(|data| data.insert_temp(draft_key, draft));
                 return;
             }
-            ctx.data_mut(|d| d.remove::<scroll_studio::model::ChronologyEntry>(draft_key));
+            ctx.data_mut(|data| data.remove::<ChronologyEntry>(draft_key));
         }
     }
+
     fn open_timeline_chapter(&mut self, id: u64) {
         if self.assets_only {
             return;
         }
-        if let Some(index) = self.story.chapters.iter().position(|c| c.id == id) {
+        if let Some(index) = self
+            .story
+            .chapters
+            .iter()
+            .position(|chapter| chapter.id == id)
+        {
             self.chapter = index;
             self.tab = LibraryTab::Chapters;
             self.selected = None;
@@ -447,6 +635,56 @@ impl Studio {
             self.active_panel = None;
             self.jump_y = Some(0.0);
         }
+    }
+}
+
+fn timeline_label(story: &Story, entry: &ChronologyEntry) -> String {
+    if let Some(event) = &entry.event {
+        if event.title.trim().is_empty() {
+            "Untitled event".into()
+        } else {
+            event.title.clone()
+        }
+    } else {
+        story
+            .chapters
+            .iter()
+            .find(|chapter| chapter.id == entry.chapter_id)
+            .map(|chapter| chapter.name.clone())
+            .unwrap_or_else(|| "Chapter".into())
+    }
+}
+
+fn link_name(story: &Story, id: u64) -> Option<String> {
+    event_link_choices(story)
+        .into_iter()
+        .find(|(choice, _)| *choice == id)
+        .map(|(_, label)| label)
+}
+
+fn event_link_choices(story: &Story) -> Vec<(u64, String)> {
+    let mut choices = Vec::new();
+    for asset in story
+        .assets
+        .iter()
+        .filter(|asset| asset.kind == AssetKind::Character)
+    {
+        choices.push((asset.id, format!("Character · {}", asset.name)));
+    }
+    for location in &story.locations {
+        choices.push((location.id, format!("Location · {}", location.name)));
+    }
+    for group in &story.groups {
+        choices.push((group.id, format!("Group · {}", group.name)));
+    }
+    choices
+}
+
+fn event_color(kind: StoryEventKind) -> Color32 {
+    match kind {
+        StoryEventKind::Flashback => Color32::from_rgb(222, 176, 96),
+        StoryEventKind::Lore => Color32::from_rgb(214, 186, 122),
+        StoryEventKind::Other => ACCENT,
     }
 }
 
@@ -515,8 +753,8 @@ mod tests {
             frame(&ctx, &mut studio, vec![]);
         }
         let card = |id| {
-            ctx.data(|d| {
-                d.get_temp::<Rect>(egui::Id::new(("timeline_card", id)))
+            ctx.data(|data| {
+                data.get_temp::<Rect>(egui::Id::new(("timeline_card", id)))
                     .unwrap()
             })
         };
@@ -557,13 +795,18 @@ mod tests {
                 .chapters
                 .push(Chapter::new(id, name, 800, 1200));
         }
-        let ids: Vec<_> = studio.story.chapters.iter().map(|c| c.id).collect();
+        let ids: Vec<_> = studio
+            .story
+            .chapters
+            .iter()
+            .map(|chapter| chapter.id)
+            .collect();
         for _ in 0..3 {
             frame(&ctx, &mut studio, vec![]);
         }
         let rect = |id| {
-            ctx.data(|d| {
-                d.get_temp::<Rect>(egui::Id::new(("timeline_card", id)))
+            ctx.data(|data| {
+                data.get_temp::<Rect>(egui::Id::new(("timeline_card", id)))
                     .unwrap()
             })
         };
@@ -584,14 +827,14 @@ mod tests {
         assert_eq!(
             timeline::entries(&studio.story)
                 .iter()
-                .map(|e| e.chapter_id)
+                .map(|entry| entry.chapter_id)
                 .collect::<Vec<_>>(),
             vec![ids[1], ids[0], ids[2]]
         );
         assert!(!ctx.wants_keyboard_input());
         assert_eq!(studio.undo.len(), 1);
         let before = studio.story.clone();
-        egui::DragAndDrop::set_payload(&ctx, ChapterDrag(ids[0]));
+        egui::DragAndDrop::set_payload(&ctx, ItemDrag(ids[0]));
         frame(
             &ctx,
             &mut studio,
@@ -606,5 +849,119 @@ mod tests {
         frame(&ctx, &mut studio, vec![button(gap, false)]);
         assert_eq!(studio.story, before);
         assert_eq!(studio.undo.len(), 1);
+    }
+
+    #[test]
+    fn adding_an_event_places_it_after_the_selection_and_undoes_in_one_step() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.welcome = false;
+        studio.tab = LibraryTab::Timeline;
+        let first = studio.story.chapters[0].id;
+        for _ in 0..3 {
+            frame(&ctx, &mut studio, vec![]);
+        }
+        let rect = ctx.data(|data| {
+            data.get_temp::<Rect>(egui::Id::new("timeline_add_event"))
+                .unwrap()
+        });
+        let original = studio.story.clone();
+        frame(
+            &ctx,
+            &mut studio,
+            vec![
+                egui::Event::PointerMoved(rect.center()),
+                button(rect.center(), true),
+            ],
+        );
+        frame(&ctx, &mut studio, vec![button(rect.center(), false)]);
+        let items = timeline::entries(&studio.story);
+        assert_eq!(items[0].chapter_id, first);
+        assert!(items[1].is_event());
+        assert_eq!(items[1].event.as_ref().unwrap().kind, StoryEventKind::Other);
+        assert_eq!(studio.undo.len(), 1);
+        studio.undo();
+        assert_eq!(studio.story, original);
+    }
+
+    #[test]
+    fn events_can_be_reordered_and_deleted_from_the_timeline() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.welcome = false;
+        studio.tab = LibraryTab::Timeline;
+        let first = studio.story.chapters[0].id;
+        let second = studio.story.alloc_id();
+        studio
+            .story
+            .chapters
+            .push(Chapter::new(second, "Later", 800, 1200));
+        let event = timeline::insert_event(&mut studio.story, Some(first)).unwrap();
+        studio
+            .story
+            .timeline
+            .iter_mut()
+            .find(|entry| entry.key() == event)
+            .unwrap()
+            .event
+            .as_mut()
+            .unwrap()
+            .title = "The fire".into();
+        let original = studio.story.clone();
+        for _ in 0..3 {
+            frame(&ctx, &mut studio, vec![]);
+        }
+        let card = |id| {
+            ctx.data(|data| {
+                data.get_temp::<Rect>(egui::Id::new(("timeline_card", id)))
+                    .unwrap()
+            })
+        };
+        let from = card(event).center();
+        let to = card(first).left_center() + vec2(8.0, 0.0);
+        frame(
+            &ctx,
+            &mut studio,
+            vec![egui::Event::PointerMoved(from), button(from, true)],
+        );
+        frame(
+            &ctx,
+            &mut studio,
+            vec![egui::Event::PointerMoved(from + vec2(30.0, 0.0))],
+        );
+        frame(&ctx, &mut studio, vec![egui::Event::PointerMoved(to)]);
+        frame(&ctx, &mut studio, vec![button(to, false)]);
+        assert_eq!(timeline::entries(&studio.story)[0].key(), event);
+        assert_eq!(studio.undo.len(), 1);
+        frame(&ctx, &mut studio, vec![]);
+        let remove = ctx.data(|data| {
+            data.get_temp::<Rect>(egui::Id::new("timeline_delete_event"))
+                .unwrap()
+        });
+        frame(
+            &ctx,
+            &mut studio,
+            vec![
+                egui::Event::PointerMoved(remove.center()),
+                button(remove.center(), true),
+            ],
+        );
+        frame(&ctx, &mut studio, vec![button(remove.center(), false)]);
+        assert!(timeline::entries(&studio.story)
+            .iter()
+            .all(|entry| !entry.is_event()));
+        studio.undo();
+        assert_eq!(timeline::entries(&studio.story)[0].key(), event);
+        studio.undo();
+        assert_eq!(
+            timeline::entries(&studio.story)
+                .iter()
+                .map(|entry| entry.key())
+                .collect::<Vec<_>>(),
+            timeline::entries(&original)
+                .iter()
+                .map(|entry| entry.key())
+                .collect::<Vec<_>>()
+        );
     }
 }

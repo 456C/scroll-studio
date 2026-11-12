@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
 pub const MAX_POINTER_OFFSET: f32 = 10_000_000.0;
 pub const MAX_BUBBLE_POINTERS: usize = 8;
 pub type AssetBytes = HashMap<u64, Arc<Vec<u8>>>;
@@ -88,12 +88,59 @@ pub struct WorldGroup {
 }
 
 /// Chronological order is independent of the chapters' reading order.
+/// A chapter row leaves `event` empty. An in-world moment sets `event` and `chapter_id` 0.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChronologyEntry {
     pub chapter_id: u64,
     pub when: String,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<StoryEvent>,
+}
+
+impl ChronologyEntry {
+    pub fn is_event(&self) -> bool {
+        self.event.is_some()
+    }
+
+    /// Chapter id, or the event's own id. Those ids share the story's id space.
+    pub fn key(&self) -> u64 {
+        self.event
+            .as_ref()
+            .map(|event| event.id)
+            .unwrap_or(self.chapter_id)
+    }
+}
+
+/// A flashback, lore beat, or other moment that sits on the timeline among chapters.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StoryEvent {
+    pub id: u64,
+    #[serde(default)]
+    pub title: String,
+    pub kind: StoryEventKind,
+    #[serde(default)]
+    pub links: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StoryEventKind {
+    Flashback,
+    Lore,
+    Other,
+}
+
+impl StoryEventKind {
+    pub const ALL: [Self; 3] = [Self::Flashback, Self::Lore, Self::Other];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Flashback => "Flashback",
+            Self::Lore => "Lore",
+            Self::Other => "Other",
+        }
+    }
 }
 
 /// Story-owned background folders. Assets outside these lists remain unsorted.

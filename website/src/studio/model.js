@@ -66,7 +66,16 @@ export function removeEntity(s,type,entityId) {
   if(type==='note')s.lore=s.lore.filter(a=>a.id!==entityId);
   for(const g of s.groups){g.character_ids=g.character_ids.filter(id=>id!==entityId);g.location_ids=g.location_ids.filter(id=>id!==entityId);}
   for(const n of s.lore)n.links=n.links.filter(id=>id!==entityId);
+  for(const entry of s.timeline||[]) if(entry.event) entry.event.links=entry.event.links.filter(id=>id!==entityId);
   for(const c of s.lore_board.cards.filter(c=>c.target===entityId))unpin(s,c.id);
+}
+export function entryId(e){return e.event?.id||e.chapter_id;}
+export function isEvent(e){return !!e.event;}
+export const eventKinds=['Flashback','Lore','Other'];
+export function linkChoices(s){
+  return [...s.assets.filter(a=>a.kind==='Character').map(a=>({id:a.id,name:a.name,kind:'Character'})),
+    ...s.locations.map(l=>({id:l.id,name:l.name,kind:'Location'})),
+    ...s.groups.map(g=>({id:g.id,name:g.name,kind:'Group'}))];
 }
 export function attachReference(s,type,entry,assetId) {
   const a=s.assets.find(a=>a.id===assetId);if(!a)return;
@@ -85,12 +94,24 @@ export function attachReference(s,type,entry,assetId) {
   }
 }
 export function timeline(s) {
-  const seen=new Set(s.timeline.map(t=>t.chapter_id));
+  const seen=new Set(s.timeline.filter(t=>!t.event).map(t=>t.chapter_id));
   return [...s.timeline,...s.chapters.filter(c=>!seen.has(c.id)).map(c=>({chapter_id:c.id,when:'',summary:''}))];
 }
-export function reorderTimeline(s,chapterId,beforeId=null) {
-  const all=timeline(s),entry=all.find(e=>e.chapter_id===chapterId);if(!entry||chapterId===beforeId)return;
-  const rest=all.filter(e=>e!==entry),index=rest.findIndex(e=>e.chapter_id===beforeId);rest.splice(index<0?rest.length:index,0,entry);s.timeline=rest;
+export function reorderTimeline(s,id,beforeId=null) {
+  const all=timeline(s),entry=all.find(e=>entryId(e)===id);if(!entry||id===beforeId)return;
+  const rest=all.filter(e=>e!==entry),index=rest.findIndex(e=>entryId(e)===beforeId);rest.splice(index<0?rest.length:index,0,entry);s.timeline=rest;
+}
+export function insertEvent(s,afterId=null) {
+  if(timeline(s).filter(t=>t.event).length>=4096)throw Error('This timeline has reached its event limit.');
+  const eventId=id(s);
+  const entry={chapter_id:0,when:'',summary:'',event:{id:eventId,title:'',kind:'Other',links:[]}};
+  const all=timeline(s),index=afterId==null?all.length:all.findIndex(e=>entryId(e)===afterId);
+  if(afterId!=null&&index<0)throw Error('Timeline item no longer exists.');
+  all.splice(index<0?all.length:index+1,0,entry);s.timeline=all;return eventId;
+}
+export function deleteEvent(s,eventId) {
+  if(!timeline(s).some(e=>e.event?.id===eventId))throw Error('Event no longer exists.');
+  s.timeline=timeline(s).filter(e=>e.event?.id!==eventId);
 }
 export function hex(color) {return '#'+color.slice(0,3).map(v=>Math.max(0,Math.min(255,v)).toString(16).padStart(2,'0')).join('');}
 export function rgb(hex) {return [1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));}

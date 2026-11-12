@@ -84,6 +84,7 @@ fn main() -> anyhow::Result<()> {
         chapter_id: story.chapters[i].id,
         when: when.into(),
         summary: summary.into(),
+        ..Default::default()
     })
     .to_vec();
     let protagonist = lore::pin(&mut story, character, [0.0, 0.0]).unwrap();

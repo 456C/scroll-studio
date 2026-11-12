@@ -727,6 +727,13 @@ impl Studio {
                 .lore
                 .iter_mut()
                 .flat_map(|entry| &mut entry.links)
+                .chain(
+                    self.story
+                        .timeline
+                        .iter_mut()
+                        .filter_map(|entry| entry.event.as_mut().map(|event| &mut event.links))
+                        .flatten(),
+                )
             {
                 if *link == original.id {
                     *link = new_id;
