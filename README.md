@@ -2,7 +2,15 @@
 
 A native Rust desktop editor for composing vertical comics. A story contains its chapters, script beats, character sheets, backgrounds, image assets, and editable layers in one `.scro` file.
 
-This is an early desktop editor, currently version 0.13.0. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+This is an early desktop editor, currently version 0.14.0. It uses egui with the OpenGL/Glow backend, without a browser runtime or an account requirement. Image generation happens in a separate application; Scroll Studio provides the local composition and continuity workflow.
+
+## Changes in 0.14.0
+
+- Every edit to sheets, the lore board, chapters, script panels, groups, chronology, imports and canvas layers now goes through one **command layer**. Each command is checked before it runs, changes nothing if it fails, and is one undo step. Editing looks and feels the same as 0.13.
+- Commands and a read-only story query have a **JSON format**. This is the boundary future add-ons and AI tools will use to read and edit a story. Image bytes and file paths never cross it.
+- **Review publishing** (in the Export dialog) packages one comic or prose episode and previews it through a private publishing service on this computer only. It is a prototype: nothing is sent to the internet, and sign-in is test-only.
+- The publishing contract and a local prototype service live under `contracts/publishing` and `prototypes/publishing`.
+- Stories still use **format 11**. Files open in Scroll Studio 0.13.0 or newer, and 0.14.0 opens every older story.
 
 ## Changes in 0.13.0
 
