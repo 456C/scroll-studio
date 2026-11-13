@@ -364,3 +364,20 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           compression-level: 0
+      - name: Build and check the download website
+        shell: pwsh
+        working-directory: website
+        # Builds website/dist from these release files. Nothing is deployed.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node build.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Website build failed.' }
+          node check.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Website check failed.' }
+      - name: Upload the built website
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_NAME }}-website
+          path: website/dist
+          retention-days: 14
+          if-no-files-found: error
