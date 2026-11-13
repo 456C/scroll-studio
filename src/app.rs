@@ -686,6 +686,8 @@ impl Studio {
             self.file_stamp = None;
         }
         self.retire_recovery();
+        // A suggestion made for the previous story must not be applied to this one.
+        self.fail_addon_proposals("A different story was opened");
         self.document_epoch += 1;
         self.zoom = 0.0;
         self.auto_fit = true;
@@ -1118,6 +1120,7 @@ impl Studio {
             || self.camera_dialog.is_some()
             || self.dialogue_draft.is_some()
             || self.spacing_draft.is_some()
+            || self.addon_proposal_open()
             || context_ui::context_menu_open(ctx)
         {
             return;
@@ -1405,6 +1408,7 @@ impl eframe::App for Studio {
             && self.snippet.is_none()
             && self.camera_dialog.is_none()
             && !self.settings_open
+            && !self.addon_proposal_open()
         {
             ctx.input(|i| i.raw.dropped_files.clone())
         } else {

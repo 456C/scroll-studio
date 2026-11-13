@@ -328,6 +328,16 @@ impl Running {
             };
             match event {
                 Event::Line(line) => match parse_message(&line) {
+                    // Checked before rehearsing, so a waiting suggestion makes spam cheap.
+                    FromAddon::Request { id, method, .. }
+                        if self.proposal.is_some() && method.starts_with("edit.") =>
+                    {
+                        self.send(error_line(
+                            &id,
+                            BUSY,
+                            "Another suggestion is waiting for the user",
+                        ))
+                    }
                     FromAddon::Request { id, method, params } => {
                         match handle(story, &self.manifest, &method, &params) {
                             Action::Reply(result) => self.send(result_line(&id, result)),

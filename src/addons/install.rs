@@ -35,6 +35,7 @@ impl Registry {
 
     /// Every addon folder, sorted by ID. A missing addons folder means none.
     pub fn list(&self) -> Vec<Installed> {
+        self.recover_interrupted_updates();
         let Ok(entries) = std::fs::read_dir(&self.directory) else {
             return Vec::new();
         };
@@ -148,6 +149,7 @@ impl Registry {
             // Move the old version aside first, so a failed swap can put it back.
             let destination = self.directory.join(&manifest.id);
             let previous = self.directory.join(format!(".previous-{}", manifest.id));
+            self.recover_interrupted_updates();
             if previous.exists() {
                 std::fs::remove_dir_all(&previous)?;
             }
@@ -174,6 +176,25 @@ impl Registry {
         }
         result?;
         Ok(manifest)
+    }
+
+    /// An update stopped between its two renames leaves only `.previous-<id>`: put that
+    /// version back, so the addon is never lost.
+    fn recover_interrupted_updates(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.directory) else {
+            return;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Some(id) = name.strip_prefix(".previous-") else {
+                continue;
+            };
+            if manifest::valid_id(id) && !self.directory.join(id).exists() {
+                let _ = std::fs::rename(entry.path(), self.directory.join(id));
+            }
+        }
     }
 
     /// Delete an addon's folder and forget whether it was enabled.

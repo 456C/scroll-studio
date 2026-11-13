@@ -115,6 +115,15 @@ fn installing_listing_enabling_and_removing() {
     let list = registry.list();
     assert_eq!(list.len(), 1);
     assert!(list[0].folder.join("ai-lite.exe").exists() && list[0].manifest.is_ok());
+    // An update interrupted between its two renames is put back, not lost.
+    std::fs::rename(
+        dir.join("addons/ai-lite"),
+        dir.join("addons/.previous-ai-lite"),
+    )
+    .unwrap();
+    let list = registry.list();
+    assert_eq!(list.len(), 1);
+    assert!(list[0].manifest.is_ok() && list[0].enabled);
     registry.remove("ai-lite").unwrap();
     assert!(registry.list().is_empty());
     assert!(registry.remove("../escape").is_err());

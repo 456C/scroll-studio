@@ -16,6 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// The longest message line an addon may send.
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
@@ -25,6 +26,8 @@ const INCOMING_QUEUE: usize = 256;
 const OUTGOING_QUEUE: usize = 256;
 const ERROR_LINES: usize = 20;
 const ERROR_LINE_CHARS: usize = 500;
+/// How long the UI waits for an addon to exit, or for its last error lines, before moving on.
+const GRACE: Duration = Duration::from_millis(200);
 
 /// Called from a reader thread when something arrives, so the UI can repaint.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -42,7 +45,8 @@ pub enum Event {
 pub struct AddonProcess {
     child: Child,
     outgoing: Option<SyncSender<String>>,
-    events: Receiver<Event>,
+    /// `None` once stopped, which also ends the reader thread and frees its queue.
+    events: Option<Receiver<Event>>,
     errors: Arc<Mutex<VecDeque<String>>>,
     error_reader: Option<JoinHandle<()>>,
 }
@@ -141,7 +145,7 @@ impl AddonProcess {
         Ok(Self {
             child,
             outgoing: Some(outgoing),
-            events,
+            events: Some(events),
             errors,
             error_reader: Some(error_reader),
         })
@@ -161,23 +165,37 @@ impl AddonProcess {
     }
 
     pub fn try_recv(&self) -> Option<Event> {
-        self.events.try_recv().ok()
+        self.events.as_ref()?.try_recv().ok()
     }
 
-    /// The addon's last error output, newest last, on one line. Once the program has
-    /// exited this waits for its last lines.
+    /// The addon's last error output, newest last, on one line. Waits briefly for the
+    /// program to exit and its last lines to arrive, never longer than [`GRACE`]: a program
+    /// it started may keep the error output open.
     pub fn recent_errors(&mut self) -> String {
-        if matches!(self.child.try_wait(), Ok(Some(_))) {
-            if let Some(reader) = self.error_reader.take() {
-                let _ = reader.join();
+        let deadline = Instant::now() + GRACE;
+        while Instant::now() < deadline {
+            let exited = matches!(self.child.try_wait(), Ok(Some(_)));
+            let read = self.error_reader.as_ref().is_none_or(|r| r.is_finished());
+            if exited && read {
+                break;
             }
+            std::thread::sleep(Duration::from_millis(5));
         }
         let recent = self.errors.lock().unwrap_or_else(|e| e.into_inner());
         recent.iter().cloned().collect::<Vec<_>>().join(" / ")
     }
 
+    /// Close the addon's input so it can finish its last reply and exit, then end it.
     pub fn stop(&mut self) {
         self.outgoing = None;
+        self.events = None;
+        let deadline = Instant::now() + GRACE;
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

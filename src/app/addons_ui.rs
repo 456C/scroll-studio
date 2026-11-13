@@ -15,6 +15,16 @@ use std::time::Duration;
 /// A background install: its result, the version it replaces, and whether that was enabled.
 type Installing = (Receiver<Result<Manifest, String>>, Option<Manifest>, bool);
 
+/// A worked-out proposal review and what it was worked out for.
+struct Review {
+    addon: String,
+    request: serde_json::Value,
+    /// Story revision and document the changes were described against.
+    revision: u64,
+    epoch: u64,
+    changes: Vec<Change>,
+}
+
 /// Addons known to this window.
 pub(super) struct AddonState {
     /// `None` when this window has no addons folder (tests, or no per-user folder).
@@ -24,8 +34,8 @@ pub(super) struct AddonState {
     message: Option<String>,
     /// An install running in the background, and the manifest it replaces.
     installing: Option<Installing>,
-    /// The review for the open proposal, worked out once: (addon ID, request ID, changes).
-    review: Option<(String, serde_json::Value, Vec<Change>)>,
+    /// The review for the open proposal, worked out once per story state.
+    review: Option<Review>,
 }
 
 impl AddonState {
@@ -108,7 +118,15 @@ impl Studio {
     pub(super) fn poll_addons(&mut self, ctx: &egui::Context) {
         let changes = self.take_story_changes();
         if let Some((receiver, _, _)) = &self.addons.installing {
-            if let Ok(result) = receiver.try_recv() {
+            let result = match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                // The install thread ended without an answer.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("The install stopped unexpectedly".into()))
+                }
+            };
+            if let Some(result) = result {
                 let (_, previous, was_enabled) = self.addons.installing.take().expect("checked");
                 self.finish_install(ctx, result, previous, was_enabled);
             } else {
@@ -146,13 +164,23 @@ impl Studio {
         let name = running.manifest.name.clone();
         let addon = running.manifest.id.clone();
         let proposal = running.proposal.clone().expect("found above");
-        let current = matches!(&self.addons.review,
-            Some((id, request, _)) if *id == addon && *request == proposal.request_id);
+        // Worked out again whenever the story changes, so Apply does what is shown.
+        let current = self.addons.review.as_ref().is_some_and(|r| {
+            r.addon == addon
+                && r.request == proposal.request_id
+                && r.revision == self.revision
+                && r.epoch == self.document_epoch
+        });
         if !current {
-            let changes = describe(&self.story, &proposal.command);
-            self.addons.review = Some((addon.clone(), proposal.request_id.clone(), changes));
+            self.addons.review = Some(Review {
+                addon: addon.clone(),
+                request: proposal.request_id.clone(),
+                revision: self.revision,
+                epoch: self.document_epoch,
+                changes: describe(&self.story, &proposal.command),
+            });
         }
-        let changes = &self.addons.review.as_ref().expect("set above").2;
+        let changes = &self.addons.review.as_ref().expect("set above").changes;
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::new("addon_proposal")).show(ctx, |ui| {
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(300.0, 680.0));
@@ -281,93 +309,101 @@ impl Studio {
         }
         ui.add_space(12.0);
         let mut action = None;
+        // Nothing may touch an addon's files while an install could be swapping them.
+        let busy = self.addons.installing.is_some();
         for installed in &self.addons.installed {
             let running = self.addons.running(&installed.id);
-            egui::Frame::new()
-                .fill(CARD)
-                .corner_radius(10.0)
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    match &installed.manifest {
-                        Ok(manifest) => {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&manifest.name).strong());
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} · {:.1} MB",
-                                        manifest.version,
-                                        installed.size_bytes as f64 / 1e6
-                                    ))
-                                    .color(MUTED),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if motion::button(ui, "Remove").clicked() {
-                                            action =
-                                                Some(AddonAction::Remove(installed.id.clone()));
-                                        }
-                                        let mut enabled = installed.enabled;
-                                        if ui.checkbox(&mut enabled, "Enabled").changed() {
-                                            action = Some(AddonAction::Enable(
-                                                installed.id.clone(),
-                                                enabled,
-                                            ));
-                                        }
-                                    },
-                                );
-                            });
-                            if !manifest.hardware.is_empty() {
-                                ui.label(RichText::new(&manifest.hardware).color(MUTED));
-                            }
-                            let permissions: Vec<_> = manifest
-                                .permissions
-                                .iter()
-                                .map(|p: &Permission| p.label())
-                                .collect();
-                            if !permissions.is_empty() {
-                                ui.label(
-                                    RichText::new(format!("Can: {}", permissions.join(" · ")))
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::Frame::new()
+                    .fill(CARD)
+                    .corner_radius(10.0)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        match &installed.manifest {
+                            Ok(manifest) => {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&manifest.name).strong());
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} · {:.1} MB",
+                                            manifest.version,
+                                            installed.size_bytes as f64 / 1e6
+                                        ))
                                         .color(MUTED),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if motion::button(ui, "Remove").clicked() {
+                                                action =
+                                                    Some(AddonAction::Remove(installed.id.clone()));
+                                            }
+                                            let mut enabled = installed.enabled;
+                                            if ui.checkbox(&mut enabled, "Enabled").changed() {
+                                                action = Some(AddonAction::Enable(
+                                                    installed.id.clone(),
+                                                    enabled,
+                                                ));
+                                            }
+                                        },
+                                    );
+                                });
+                                if !manifest.hardware.is_empty() {
+                                    ui.label(RichText::new(&manifest.hardware).color(MUTED));
+                                }
+                                let permissions: Vec<_> = manifest
+                                    .permissions
+                                    .iter()
+                                    .map(|p: &Permission| p.label())
+                                    .collect();
+                                if !permissions.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("Can: {}", permissions.join(" · ")))
+                                            .color(MUTED),
+                                    );
+                                }
+                                match running.map(|r| &r.status) {
+                                    Some(Status::Running) => {
+                                        ui.label(RichText::new("Running").color(ACCENT));
+                                    }
+                                    Some(Status::Stopped(reason)) => {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(RichText::new(reason).color(MUTED));
+                                            if motion::button(ui, "Restart").clicked() {
+                                                action = Some(AddonAction::Restart(
+                                                    installed.id.clone(),
+                                                ));
+                                            }
+                                        });
+                                    }
+                                    None => {}
+                                }
+                            }
+                            Err(reason) => {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&installed.id).strong());
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if motion::button(ui, "Remove").clicked() {
+                                                action =
+                                                    Some(AddonAction::Remove(installed.id.clone()));
+                                            }
+                                        },
+                                    );
+                                });
+                                ui.label(
+                                    RichText::new(format!("Cannot be used: {reason}")).color(MUTED),
                                 );
                             }
-                            match running.map(|r| &r.status) {
-                                Some(Status::Running) => {
-                                    ui.label(RichText::new("Running").color(ACCENT));
-                                }
-                                Some(Status::Stopped(reason)) => {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(RichText::new(reason).color(MUTED));
-                                        if motion::button(ui, "Restart").clicked() {
-                                            action =
-                                                Some(AddonAction::Restart(installed.id.clone()));
-                                        }
-                                    });
-                                }
-                                None => {}
-                            }
                         }
-                        Err(reason) => {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&installed.id).strong());
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if motion::button(ui, "Remove").clicked() {
-                                            action =
-                                                Some(AddonAction::Remove(installed.id.clone()));
-                                        }
-                                    },
-                                );
-                            });
-                            ui.label(
-                                RichText::new(format!("Cannot be used: {reason}")).color(MUTED),
-                            );
-                        }
-                    }
-                });
+                    })
+            });
             ui.add_space(8.0);
+        }
+        if busy {
+            action = None;
         }
         if let Some(action) = action {
             self.addon_action(&ctx, action);
@@ -413,6 +449,15 @@ impl Studio {
             Ok(manifest) => manifest,
             Err(error) => {
                 self.addons.message = Some(format!("Could not install: {error}"));
+                // The old version is still installed: bring it back as it was.
+                if let Some(previous) = previous.filter(|_| was_enabled) {
+                    if let Err(error) = self.start_addon(ctx, &previous.id) {
+                        self.addons.message = Some(format!(
+                            "Could not install: {error}. {}: {error:#}",
+                            previous.name
+                        ));
+                    }
+                }
                 return;
             }
         };
@@ -471,6 +516,19 @@ impl Studio {
         if let Err(error) = result {
             self.addons.message = Some(format!("{error:#}"));
         }
+    }
+
+    /// Whether a suggestion is waiting for the user's decision.
+    pub(super) fn addon_proposal_open(&self) -> bool {
+        self.addons.running.iter().any(|r| r.proposal.is_some())
+    }
+
+    /// Turn down every waiting suggestion, for example when another story opens.
+    pub(super) fn fail_addon_proposals(&mut self, reason: &str) {
+        for running in &mut self.addons.running {
+            running.resolve(Decision::Failed(reason.into()));
+        }
+        self.addons.review = None;
     }
 
     /// Stop an addon, telling it about anything it had waiting.
