@@ -11,10 +11,13 @@ use serde_json::{json, Value};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Protocol versions this server speaks, newest first.
-pub const PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
+/// Protocol versions this server speaks, newest first. (2025-03-26 is left out: it allowed
+/// batched messages, which this server does not take.)
+pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
+/// The longest one connection may take, however slowly a client sends or reads.
+const CONNECTION_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 4 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_SESSIONS: usize = 32;
@@ -30,6 +33,7 @@ pub enum Status {
 struct Server {
     port: u16,
     stop: Arc<AtomicBool>,
+    accept: std::thread::JoinHandle<()>,
 }
 
 fn server() -> &'static Mutex<Option<Server>> {
@@ -55,8 +59,13 @@ pub fn apply_settings(state: &Arc<State>, host: &Arc<dyn Host>) {
     }
     if let Some(old) = running.take() {
         old.stop.store(true, Ordering::SeqCst);
-        // Wake the accept loop so it sees the flag.
-        let _ = TcpStream::connect(("127.0.0.1", old.port));
+        // Wake the accept loop so it sees the flag, and wait until it has let go of the
+        // port, so the port can be taken again at once.
+        let _ = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], old.port)),
+            Duration::from_secs(1),
+        );
+        let _ = old.accept.join();
     }
     let status = if settings.mcp {
         match TcpListener::bind(("127.0.0.1", settings.port)) {
@@ -67,10 +76,11 @@ pub fn apply_settings(state: &Arc<State>, host: &Arc<dyn Host>) {
                     state: state.clone(),
                     sessions: Mutex::new(Vec::new()),
                 };
-                spawn_accept(listener, Arc::new(api), stop.clone());
+                let accept = spawn_accept(listener, Arc::new(api), stop.clone());
                 *running = Some(Server {
                     port: settings.port,
                     stop,
+                    accept,
                 });
                 Status::Listening(settings.port)
             }
@@ -85,7 +95,11 @@ pub fn apply_settings(state: &Arc<State>, host: &Arc<dyn Host>) {
     *state.mcp.lock().unwrap_or_else(|e| e.into_inner()) = status;
 }
 
-fn spawn_accept(listener: TcpListener, api: Arc<Api>, stop: Arc<AtomicBool>) {
+fn spawn_accept(
+    listener: TcpListener,
+    api: Arc<Api>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
     let active = Arc::new(AtomicUsize::new(0));
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -107,16 +121,36 @@ fn spawn_accept(listener: TcpListener, api: Arc<Api>, stop: Arc<AtomicBool>) {
             active.fetch_add(1, Ordering::SeqCst);
             let (api, active) = (api.clone(), active.clone());
             std::thread::spawn(move || {
-                stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
                 serve(&api, &mut stream);
                 active.fetch_sub(1, Ordering::SeqCst);
             });
         }
-    });
+    })
+}
+
+/// Reads that give up once the connection's deadline has passed, however the bytes trickle.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl std::io::Read for Deadline<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        let mut stream = self.stream;
+        stream.read(buffer)
+    }
 }
 
 fn serve(api: &Api, stream: &mut TcpStream) {
-    let (status, headers, body) = match http::read_request(&mut *stream, MAX_BODY) {
+    let until = Instant::now() + CONNECTION_DEADLINE;
+    stream.set_write_timeout(Some(CONNECTION_DEADLINE)).ok();
+    let reader = Deadline { stream, until };
+    let (status, headers, body) = match http::read_request(reader, MAX_BODY) {
         Ok(request) => api.respond(&request),
         Err(problem) => (400, Vec::new(), problem.into_bytes()),
     };
@@ -156,8 +190,9 @@ impl Api {
         }
         let token = request
             .header("authorization")
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or_default();
+            .and_then(|v| v.trim().split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map_or("", |(_, token)| token);
         if !same(token.trim(), &self.state.token) {
             return (
                 401,
@@ -230,16 +265,29 @@ impl Api {
         let answer = match method {
             "ping" => success(&id, json!({})),
             "tools/list" => success(&id, json!({ "tools": self.tools() })),
-            "tools/call" => success(&id, self.call_tool(&message["params"])),
+            "tools/call" => match self.call_tool(&message["params"]) {
+                Ok(result) => success(&id, result),
+                Err(problem) => error(&id, -32602, &problem),
+            },
             _ => error(&id, -32601, &format!("Unknown method `{method}`")),
         };
         json_body(200, None, answer)
     }
 
+    /// The API as Scroll Studio describes it, asked for again if it was not known yet.
+    fn methods(&self) -> Option<&Vec<Value>> {
+        if self.state.methods.get().is_none() {
+            if let Ok(described) = self.host.call("host.describe", Value::Null) {
+                if let Some(methods) = described["methods"].as_array() {
+                    let _ = self.state.methods.set(methods.clone());
+                }
+            }
+        }
+        self.state.methods.get()
+    }
+
     fn tools(&self) -> Vec<Value> {
-        self.state
-            .methods
-            .get()
+        self.methods()
             .map(|methods| {
                 methods
                     .iter()
@@ -264,15 +312,15 @@ impl Api {
     }
 
     /// Run a tool. Problems are tool errors (`isError`), which the AI app can act on.
-    fn call_tool(&self, params: &Value) -> Value {
+    fn call_tool(&self, params: &Value) -> Result<Value, String> {
         let name = params["name"].as_str().unwrap_or_default();
-        let Some(method) = self.state.methods.get().and_then(|methods| {
+        let Some(method) = self.methods().and_then(|methods| {
             methods
                 .iter()
                 .filter_map(|m| m["method"].as_str())
                 .find(|m| tool_name(m) == name)
         }) else {
-            return tool_error(&format!("Unknown tool `{name}`"));
+            return Err(format!("Unknown tool `{name}`"));
         };
         let mut arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
         if method == "edit.batch" {
@@ -281,7 +329,7 @@ impl Api {
         if arguments.as_object().is_some_and(|a| a.is_empty()) && !method.starts_with("edit.") {
             arguments = Value::Null;
         }
-        match self.host.call(method, arguments) {
+        Ok(match self.host.call(method, arguments) {
             Ok(result) => json!({
                 "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }],
                 "isError": false,
@@ -291,7 +339,7 @@ impl Api {
                 BUSY => "Another edit is waiting for the user in Scroll Studio; try again after they decide".to_owned(),
                 _ => message,
             }),
-        }
+        })
     }
 }
 
@@ -550,6 +598,76 @@ mod tests {
         assert!(local_origin("http://[::1]:80"));
         assert!(!local_origin("http://127.0.0.1.evil.example"));
         assert!(!local_origin("null"));
+    }
+
+    #[test]
+    fn unknown_tools_are_protocol_errors_and_bearer_is_any_case() {
+        let (api, _) = api(Ok(json!({})));
+        let session = start(&api);
+        let (_, answer, _) = post(
+            &api,
+            Some(&session),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "rm_rf", "arguments": {} } }),
+        );
+        assert_eq!(answer["error"]["code"], -32602);
+        let lower = http::Request {
+            method: "POST".into(),
+            path: "/mcp".into(),
+            headers: vec![
+                ("authorization".into(), "bearer secret".into()),
+                ("mcp-session-id".into(), session),
+            ],
+            body: br#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#.to_vec(),
+        };
+        assert_eq!(api.respond(&lower).0, 200);
+    }
+
+    #[test]
+    fn the_server_can_be_turned_off_and_on_again_on_the_same_port() {
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (api, host) = api(Ok(json!({})));
+        let state = api.state.clone();
+        let host: Arc<dyn Host> = host;
+        let set = |on: bool| {
+            let mut settings = state.settings.lock().unwrap();
+            settings.mcp = on;
+            settings.port = port;
+        };
+        for on in [true, false, true, false] {
+            set(on);
+            apply_settings(&state, &host);
+            let status = state.mcp.lock().unwrap().clone();
+            assert_eq!(
+                status,
+                if on {
+                    Status::Listening(port)
+                } else {
+                    Status::Off
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_silent_client_is_dropped_at_the_deadline() {
+        use std::io::Read;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_side, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let mut reader = Deadline {
+            stream: &server_side,
+            until: started + Duration::from_millis(200),
+        };
+        let mut byte = [0u8; 1];
+        assert!(reader.read(&mut byte).is_err());
+        assert!(reader.read(&mut byte).is_err(), "and stays expired");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

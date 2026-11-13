@@ -164,15 +164,27 @@ pub fn call_json(
     body: Option<&Value>,
     timeout: Duration,
 ) -> Result<Value, String> {
-    let address = (url.host.as_str(), url.port)
+    // `localhost` may resolve to IPv6 first while the server listens on IPv4: try each.
+    let mut last = None;
+    let mut connected = None;
+    for address in (url.host.as_str(), url.port)
         .to_socket_addrs()
         .map_err(|e| format!("Could not find {}: {e}", url.host))?
-        .next()
-        .ok_or_else(|| format!("Could not find {}", url.host))?;
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5)).map_err(|e| {
+    {
+        match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+            Ok(stream) => {
+                connected = Some(stream);
+                break;
+            }
+            Err(error) => last = Some(error),
+        }
+    }
+    let mut stream = connected.ok_or_else(|| {
         format!(
-            "Could not reach the model server at {}:{} ({e}). Is it running?",
-            url.host, url.port
+            "Could not reach the model server at {}:{} ({}). Is it running?",
+            url.host,
+            url.port,
+            last.map_or("not found".into(), |e| e.to_string())
         )
     })?;
     stream.set_read_timeout(Some(timeout)).ok();
@@ -237,7 +249,11 @@ fn read_response(stream: impl Read) -> Result<(u16, Vec<u8>), String> {
             if size == 0 {
                 break;
             }
-            if body.len() + size > MAX_RESPONSE_BODY {
+            if body
+                .len()
+                .checked_add(size)
+                .is_none_or(|end| end > MAX_RESPONSE_BODY)
+            {
                 return Err("The model server's answer is too large".into());
             }
             let start = body.len();

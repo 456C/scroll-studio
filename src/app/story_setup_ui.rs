@@ -236,12 +236,13 @@ impl Studio {
                     (ctx.screen_rect().height() - 260.0).clamp(180.0, 320.0),
                     "Linework, palette, lighting, mood…",
                 );
-                ui.horizontal(|ui| {
+                // Laid out as before unless an addon adds its star beside the button.
+                let copy_style = |ui: &mut egui::Ui, studio: &mut Studio| {
                     if ui
                         .add_enabled_ui(!prompt.trim().is_empty(), |ui| {
                             motion::copy_button(
                                 ui,
-                                ("copy_style_prompt", self.document_epoch),
+                                ("copy_style_prompt", studio.document_epoch),
                                 "Copy style",
                                 true,
                             )
@@ -250,10 +251,17 @@ impl Studio {
                         .clicked()
                     {
                         ctx.copy_text(prompt.clone());
-                        self.status = "Style copied".into();
+                        studio.status = "Style copied".into();
                     }
-                    self.assist_star(ui, serde_json::json!({ "kind": "story" }));
-                });
+                };
+                if self.addons.assistant().is_some() {
+                    ui.horizontal(|ui| {
+                        copy_style(ui, self);
+                        self.assist_star(ui, serde_json::json!({ "kind": "story" }));
+                    });
+                } else {
+                    copy_style(ui, self);
+                }
             });
         self.style_prompt_open = open;
         if prompt != original {

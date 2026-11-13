@@ -425,10 +425,13 @@ fn fake_addon() {
             }
         }
         "proposer" => {
-            for id in 1..=10 {
+            // Proposes until its input closes, pausing after a refusal.
+            for id in 1.. {
                 out(edit(id));
                 let decision = next();
-                eprintln!("decision-code={}", decision["error"]["code"]);
+                if decision["error"]["code"] == host::REFUSED {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         }
         _ => {
@@ -573,18 +576,31 @@ fn a_flooding_addon_cannot_hold_up_a_frame() {
 }
 
 #[test]
-fn repeated_cancels_stop_the_addon() {
+fn repeated_cancels_quiet_the_addon_until_the_user_asks() {
     let mut running = fake("proposer");
     let story = Story::demo();
-    for round in 0..host::MAX_CANCELLED {
-        until(&mut running, &story, |r| {
-            r.proposal.is_some() || r.status != Status::Running
-        });
-        assert_eq!(running.status, Status::Running, "stopped early at {round}");
+    for _ in 0..host::MAX_CANCELLED {
+        until(&mut running, &story, |r| r.proposal.is_some());
         running.resolve(Decision::Cancelled);
     }
-    assert!(matches!(&running.status, Status::Stopped(reason) if reason.contains("cancelled")));
-    assert!(running.proposal.is_none());
+    // Further unrequested suggestions are turned away, and the addon keeps running.
+    let quiet = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < quiet {
+        running.poll(&story);
+        assert!(running.proposal.is_none());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(running.status, Status::Running);
+    // Once the user asks, suggestions are shown again, and cancelling them never counts.
+    running
+        .request("addon.assist", json!({ "request": "x" }))
+        .unwrap();
+    for _ in 0..host::MAX_CANCELLED + 1 {
+        until(&mut running, &story, |r| r.proposal.is_some());
+        assert!(running.proposal.as_ref().unwrap().requested);
+        running.resolve(Decision::Cancelled);
+    }
+    assert_eq!(running.status, Status::Running);
 }
 
 #[test]

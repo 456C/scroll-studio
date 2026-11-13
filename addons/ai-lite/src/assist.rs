@@ -7,8 +7,10 @@ use std::time::Duration;
 
 /// How long a model may take to answer.
 const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
-/// Story text sent to the model is cut to this many characters.
-const MAX_CONTEXT_CHARS: usize = 24_000;
+/// Text sent to the model about what was asked, and about the story, is cut to these many
+/// characters each: the subject always gets its share.
+const MAX_SUBJECT_CHARS: usize = 16_000;
+const MAX_STORY_CHARS: usize = 8_000;
 const MAX_EDITS: usize = 50;
 
 /// What the edits may do, by what the user asked about.
@@ -50,6 +52,16 @@ pub fn run(
     }
     let target = &params["target"];
     let kind = target["kind"].as_str().unwrap_or("story");
+    // What edits may touch: the object asked about (the story is 0), or anything for lore.
+    let subject = match kind {
+        "lore" => None,
+        "character" | "panel" => Some(
+            target["id"]
+                .as_u64()
+                .ok_or_else(|| RpcError::new(INVALID_PARAMS, "The request names no object"))?,
+        ),
+        _ => Some(0),
+    };
     let context = gather(host, target)?;
     let settings = state
         .settings
@@ -64,7 +76,7 @@ pub fn run(
     };
     let methods = state.methods.get().cloned().unwrap_or_default();
     let mut messages = vec![
-        json!({ "role": "system", "content": instructions(kind, &methods) }),
+        json!({ "role": "system", "content": instructions(kind, subject, &methods) }),
         json!({ "role": "user", "content": format!(
             "Story context (JSON):\n{context}\n\nRequest: {wanted}"
         ) }),
@@ -78,7 +90,7 @@ pub fn run(
         if state.is_cancelled(request) {
             return Err(RpcError::new(CANCELLED, "Cancelled"));
         }
-        let (summary, edits) = match parse_reply(&reply, kind) {
+        let (summary, edits) = match parse_reply(&reply, kind, subject) {
             Ok(parsed) => parsed,
             Err(problem) if attempt == 0 => {
                 retry(&mut messages, &reply, &problem);
@@ -123,7 +135,7 @@ fn retry(messages: &mut Vec<Value>, reply: &str, problem: &str) {
     ) }));
 }
 
-/// The story's summary plus what the request is about.
+/// What the request is about, then the story's summary, each within its own budget.
 fn gather(host: &dyn Host, target: &Value) -> Result<String, RpcError> {
     let summary = host.call("story.summary", Value::Null)?;
     let about = match target["kind"].as_str() {
@@ -136,17 +148,25 @@ fn gather(host: &dyn Host, target: &Value) -> Result<String, RpcError> {
         }
         _ => host.call("object.get", json!({ "id": 0 }))?,
     };
-    let mut context = json!({ "story": summary, "subject": about }).to_string();
-    if context.chars().count() > MAX_CONTEXT_CHARS {
-        context = context.chars().take(MAX_CONTEXT_CHARS).collect();
-        context.push_str(" …(cut)");
+    Ok(format!(
+        "Subject:\n{}\n\nStory:\n{}",
+        cut(about.to_string(), MAX_SUBJECT_CHARS),
+        cut(summary.to_string(), MAX_STORY_CHARS)
+    ))
+}
+
+fn cut(text: String, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text;
     }
-    Ok(context)
+    let mut cut: String = text.chars().take(limit).collect();
+    cut.push_str(" …(cut)");
+    cut
 }
 
 /// What the model is told: its job, the reply format, and the methods it may use, with
 /// their parameters as Scroll Studio describes them.
-fn instructions(kind: &str, described: &[Value]) -> String {
+fn instructions(kind: &str, subject: Option<u64>, described: &[Value]) -> String {
     let mut methods = String::new();
     for name in allowed(kind) {
         let full = format!("edit.{name}");
@@ -163,20 +183,28 @@ fn instructions(kind: &str, described: &[Value]) -> String {
             .unwrap_or_default();
         methods.push_str(&format!("- {name}: {schema}\n"));
     }
+    let scope = match subject {
+        Some(id) => format!("Change only the subject: every ID you use must be {id}. "),
+        None => "Use the IDs in the story context. ".to_owned(),
+    };
     format!(
         "You help write a vertical comic in Scroll Studio by proposing edits to its story data. \
 The user reviews every edit before it is applied.\n\
 Reply with JSON only, no prose and no code fences:\n\
 {{\"summary\": \"one short sentence\", \"edits\": [{{\"method\": \"set_field\", \"params\": {{...}}}}]}}\n\
 Use only these methods:\n{methods}\
-Use the IDs in the story context; the story itself is target_id 0. Keep existing text the user did not ask \
+{scope}Keep existing text the user did not ask \
 to change. Write in the story's language and voice. If the request cannot be done with these methods, \
 reply with an empty edits list and say why in the summary."
     )
 }
 
 /// The summary and the edits, checked against the allowed methods.
-fn parse_reply(reply: &str, kind: &str) -> Result<(String, Vec<Value>), String> {
+fn parse_reply(
+    reply: &str,
+    kind: &str,
+    subject: Option<u64>,
+) -> Result<(String, Vec<Value>), String> {
     let value = extract_json(reply).ok_or("The reply was not JSON")?;
     let summary = value["summary"]
         .as_str()
@@ -200,12 +228,37 @@ fn parse_reply(reply: &str, kind: &str) -> Result<(String, Vec<Value>), String> 
             return Err(format!("`{method}` is not one of the methods you may use"));
         }
         let mut entry = json!({ "method": method });
+        if let (Some(subject), Some(params)) = (subject, edit.get("params")) {
+            // Story text can say anything; the edit may still only touch what was asked about.
+            only_touches(params, subject)?;
+        }
         if let Some(params) = edit.get("params").filter(|p| !p.is_null()) {
             entry["params"] = params.clone();
         }
         checked.push(entry);
     }
     Ok((summary, checked))
+}
+
+/// Every ID in `params` is `subject`; a whole-story find-and-replace only for the story.
+fn only_touches(params: &Value, subject: u64) -> Result<(), String> {
+    let Some(map) = params.as_object() else {
+        return Ok(());
+    };
+    for (key, value) in map {
+        if key.ends_with("_id") && value.as_u64() != Some(subject) {
+            return Err(format!(
+                "`{key}` must be {subject}, the object the user asked about"
+            ));
+        }
+        if key == "scope" && value.is_string() && subject != 0 {
+            return Err(format!("Use {{\"target_id\": {subject}}} as the scope"));
+        }
+        if value.is_object() {
+            only_touches(value, subject)?;
+        }
+    }
+    Ok(())
 }
 
 /// The first JSON object in a reply, allowing for code fences and text around it.
@@ -259,17 +312,32 @@ mod tests {
     #[test]
     fn replies_are_found_in_fences_and_checked() {
         let reply = "Sure!\n```json\n{\"summary\": \"Darker\", \"edits\": [{\"method\": \"edit.set_field\", \"params\": {\"target_id\": 4, \"field\": \"hair\", \"value\": \"Black\"}}]}\n```";
-        let (summary, edits) = parse_reply(reply, "character").unwrap();
+        let (summary, edits) = parse_reply(reply, "character", Some(4)).unwrap();
         assert_eq!(summary, "Darker");
         assert_eq!(edits[0]["method"], "set_field");
         assert_eq!(edits[0]["params"]["value"], "Black");
         // Methods outside what the request is about are refused.
         let reply = r#"{"edits": [{"method": "delete_panel", "params": {"panel_id": 3}}]}"#;
-        assert!(parse_reply(reply, "panel").is_err());
-        assert!(parse_reply("no json here", "story").is_err());
-        assert!(parse_reply(r#"{"summary": "x"}"#, "story").is_err());
-        let (_, none) = parse_reply(r#"{"summary": "Can't", "edits": []}"#, "story").unwrap();
+        assert!(parse_reply(reply, "panel", Some(3)).is_err());
+        assert!(parse_reply("no json here", "story", Some(0)).is_err());
+        assert!(parse_reply(r#"{"summary": "x"}"#, "story", Some(0)).is_err());
+        let (_, none) =
+            parse_reply(r#"{"summary": "Can't", "edits": []}"#, "story", Some(0)).unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn edits_may_only_touch_what_was_asked_about() {
+        let other = r#"{"edits": [{"method": "set_field", "params": {"target_id": 9, "field": "name", "value": "x"}}]}"#;
+        assert!(parse_reply(other, "character", Some(4)).is_err());
+        let everywhere = r#"{"edits": [{"method": "replace_text", "params": {"find": "a", "replace": "b", "scope": "story"}}]}"#;
+        assert!(parse_reply(everywhere, "character", Some(4)).is_err());
+        assert!(parse_reply(everywhere, "story", Some(0)).is_ok());
+        let nested = r#"{"edits": [{"method": "replace_text", "params": {"find": "a", "replace": "b", "scope": {"target_id": 9}}}]}"#;
+        assert!(parse_reply(nested, "panel", Some(3)).is_err());
+        // The lore board may link anything.
+        let lore = r#"{"edits": [{"method": "connect_lore", "params": {"from_id": 1, "to_id": 2, "label": "x"}}]}"#;
+        assert!(parse_reply(lore, "lore", None).is_ok());
     }
 
     #[test]
@@ -278,7 +346,7 @@ mod tests {
             json!({ "method": "edit.set_field", "about": "Replace one text field.",
             "params": { "type": "object" } }),
         ];
-        let text = instructions("story", &described);
+        let text = instructions("story", Some(0), &described);
         assert!(text.contains("- set_field: Replace one text field."));
         assert!(text.contains("- replace_text"));
         assert!(!text.contains("add_lore_note"));

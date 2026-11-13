@@ -179,7 +179,16 @@ fn main() {
                 let params = message["params"].clone();
                 std::thread::spawn(move || {
                     let host: Arc<dyn Host> = link.clone();
-                    let result = handle(&state, &host, &method, &id, params);
+                    // Whatever happens, Scroll Studio gets an answer and is not left waiting.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handle(&state, &host, &method, &id, params)
+                    }))
+                    .unwrap_or_else(|_| Err(RpcError::new(REFUSED, "AI Lite ran into a problem")));
+                    if let Some(id) = id.as_u64() {
+                        let mut cancelled =
+                            state.cancelled.lock().unwrap_or_else(|e| e.into_inner());
+                        cancelled.remove(&id);
+                    }
                     link.reply(&id, result);
                 });
             }

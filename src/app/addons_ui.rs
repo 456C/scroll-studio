@@ -684,6 +684,14 @@ impl Studio {
             running.stop(reason.into());
         }
         self.addons.running.retain(|r| r.manifest.id != id);
+        // A restarted addon numbers its requests from 1 again: nothing sent to the old one
+        // may be matched with the new one's answers.
+        self.addons.waiting.retain(|(addon, _, _)| addon != id);
+        if let Some(assist) = self.addons.assist.as_mut().filter(|a| a.addon == id) {
+            if assist.request.take().is_some() {
+                assist.error = Some(format!("{reason}; send again when it is running"));
+            }
+        }
     }
 }
 
@@ -1000,6 +1008,25 @@ mod tests {
             "{color}"
         );
         assert!(!color.contains('{'), "no raw JSON: {color}");
+    }
+
+    #[test]
+    fn a_stopped_addon_leaves_nothing_to_match_its_successors_answers() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio
+            .addons
+            .waiting
+            .push(("ai-lite".into(), 2, Purpose::Assist));
+        studio
+            .addons
+            .waiting
+            .push(("other".into(), 2, Purpose::Settings));
+        studio.stop_addon("ai-lite", "Restarted");
+        assert_eq!(
+            studio.addons.waiting,
+            vec![("other".to_owned(), 2, Purpose::Settings)]
+        );
     }
 
     #[test]

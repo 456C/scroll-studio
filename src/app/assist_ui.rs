@@ -9,15 +9,15 @@ use serde_json::{json, Value};
 
 /// The open request box.
 pub(super) struct Assist {
-    addon: String,
+    pub(super) addon: String,
     label: String,
     /// What the request is about, as `addon.assist` sends it.
     target: Value,
     at: Pos2,
     text: String,
     /// The request the addon is working on.
-    request: Option<u64>,
-    error: Option<String>,
+    pub(super) request: Option<u64>,
+    pub(super) error: Option<String>,
     /// Focus the text box once, when the box opens.
     focus: bool,
 }
@@ -96,8 +96,10 @@ impl Studio {
         }
         let working = assist.request.is_some();
         let mut send = false;
-        let mut close =
-            ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !self.addon_proposal_open();
+        // Escape closes the box only while typing in it, never from elsewhere in the app.
+        let mut close = ctx.memory(|m| m.has_focus(egui::Id::new("addon_assist_text")))
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            && !self.addon_proposal_open();
         let assist = self.addons.assist.as_mut().expect("checked");
         let width = 340.0_f32.min(ctx.screen_rect().width() - 32.0);
         let at = pos2(
@@ -192,6 +194,13 @@ impl Studio {
         };
         assist.request = None;
         match outcome {
+            // Applied: done. Turned down or nothing to change: the request stays, so it
+            // can be reworded and sent again.
+            Ok(answer) if answer["applied"].as_bool() == Some(false) => {
+                assist.error = answer["summary"]
+                    .as_str()
+                    .map(|summary| summary.chars().take(300).collect());
+            }
             Ok(answer) => {
                 if let Some(summary) = answer["summary"].as_str() {
                     self.status = summary.chars().take(200).collect();

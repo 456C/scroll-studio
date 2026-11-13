@@ -91,8 +91,10 @@ impl Settings {
             }
             _ => return Err(format!("Unknown setting `{key}`")),
         }
+        // Saved first, so a setting that could not be kept does not take effect either.
+        next.save()?;
         *self = next;
-        self.save()
+        Ok(())
     }
 
     fn save(&self) -> Result<(), String> {

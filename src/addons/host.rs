@@ -20,7 +20,9 @@
 //! Edits that would change a locked layer are refused before the user sees them, and
 //! checked again when the user applies. A line the host cannot use is answered with a
 //! JSON-RPC error whose `id` is `null`. An
-//! addon whose suggestions are cancelled [`MAX_CANCELLED`] times in a row is stopped.
+//! addon whose unrequested suggestions are cancelled [`MAX_CANCELLED`] times in a row may
+//! not suggest again until the user applies one or asks it through the star button;
+//! cancelling a suggestion the user asked for never counts.
 //!
 //! Permissions limit what an addon may ask the app for. They are not a sandbox: an addon
 //! is a program on the user's computer, running with the user's rights.
@@ -44,7 +46,7 @@ pub const REFUSED: i64 = -32002;
 pub const CANCELLED: i64 = -32003;
 pub const BUSY: i64 = -32004;
 
-/// Cancelled suggestions in a row before the addon is stopped.
+/// Cancelled unrequested suggestions in a row before the addon must wait for the user.
 pub const MAX_CANCELLED: u32 = 3;
 /// Messages handled per frame; the rest wait for the next frame.
 pub const MAX_EVENTS_PER_POLL: usize = 64;
@@ -301,6 +303,8 @@ pub fn decision_line(id: &Value, decision: &Decision) -> String {
 pub struct Proposal {
     pub request_id: Value,
     pub command: Command,
+    /// Made while the user's own `addon.assist` request was open.
+    pub requested: bool,
 }
 
 /// How a started addon is doing.
@@ -329,8 +333,10 @@ pub struct Running {
     process: AddonProcess,
     pub proposal: Option<Proposal>,
     pub status: Status,
-    /// Suggestions cancelled in a row.
+    /// Unrequested suggestions cancelled in a row.
     cancelled: u32,
+    /// The open `addon.assist` requests (also in `pending`).
+    asking: Vec<u64>,
     next_request: u64,
     /// Requests sent to the addon and not yet answered.
     pending: Vec<u64>,
@@ -347,6 +353,7 @@ impl Running {
             proposal: None,
             status: Status::Running,
             cancelled: 0,
+            asking: Vec::new(),
             next_request: 1,
             pending: Vec::new(),
             answers: Vec::new(),
@@ -397,10 +404,20 @@ impl Running {
                                 BUSY,
                                 "Another suggestion is waiting for the user",
                             )),
+                            Action::Propose(_)
+                                if self.asking.is_empty() && self.cancelled >= MAX_CANCELLED =>
+                            {
+                                self.send(error_line(
+                                    &id,
+                                    REFUSED,
+                                    "The user turned down the last few suggestions; wait until they ask again",
+                                ))
+                            }
                             Action::Propose(command) => {
                                 self.proposal = Some(Proposal {
                                     request_id: id,
                                     command: *command,
+                                    requested: !self.asking.is_empty(),
                                 });
                                 polled.proposed = true;
                             }
@@ -413,6 +430,7 @@ impl Running {
                             .and_then(|id| self.pending.iter().position(|p| *p == id))
                         {
                             let id = self.pending.remove(i);
+                            self.asking.retain(|a| *a != id);
                             self.answers.push((id, outcome));
                         }
                     }
@@ -438,16 +456,11 @@ impl Running {
             return;
         };
         match &decision {
-            Decision::Cancelled => self.cancelled += 1,
+            Decision::Cancelled if !proposal.requested => self.cancelled += 1,
             Decision::Applied(_) => self.cancelled = 0,
-            Decision::Failed(_) => {}
+            _ => {}
         }
         self.send(decision_line(&proposal.request_id, &decision));
-        if self.cancelled >= MAX_CANCELLED {
-            self.stop(format!(
-                "Stopped after {MAX_CANCELLED} cancelled suggestions in a row"
-            ));
-        }
     }
 
     pub fn story_changed(&mut self, change: &StoryChanged) {
@@ -468,6 +481,11 @@ impl Running {
         let id = self.next_request;
         self.next_request += 1;
         self.pending.push(id);
+        if method == "addon.assist" {
+            // The user is asking: suggestions are welcome again.
+            self.asking.push(id);
+            self.cancelled = 0;
+        }
         self.send(
             json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string(),
         );
@@ -478,6 +496,7 @@ impl Running {
     pub fn cancel_request(&mut self, id: u64) {
         if let Some(i) = self.pending.iter().position(|p| *p == id) {
             self.pending.remove(i);
+            self.asking.retain(|a| *a != id);
             self.send(notification_line("addon.cancel", json!({ "id": id })));
         }
     }
@@ -496,6 +515,7 @@ impl Running {
     pub fn stop(&mut self, reason: String) {
         self.process.stop();
         self.proposal = None;
+        self.asking.clear();
         for id in std::mem::take(&mut self.pending) {
             self.answers.push((id, Err(reason.clone())));
         }
