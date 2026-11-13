@@ -19,13 +19,23 @@ if (-not (Test-Path -LiteralPath $archive) -or
     foreach ($mirror in @('netix', 'psychz', 'downloads')) {
         $hostName = if ($mirror -eq 'downloads') { 'downloads.sourceforge.net' } else { "$mirror.dl.sourceforge.net" }
         try {
-            Invoke-WebRequest -Uri "https://$hostName/project/nsis/NSIS%203/$nsisVersion/nsis-$nsisVersion.zip" -OutFile $archive -TimeoutSec 60
+            $nsisUrl = "https://$hostName/project/nsis/NSIS%203/$nsisVersion/nsis-$nsisVersion.zip"
+            # SourceForge can answer PowerShell's downloader with its HTML mirror page,
+            # which then fails the checksum. curl.exe (built into Windows 10 and later)
+            # follows the redirect to the file itself.
+            $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue
+            if ($curl) {
+                & $curl.Source --fail --silent --show-error --location --max-time 120 --output $archive $nsisUrl
+                if ($LASTEXITCODE -ne 0) { throw "curl.exe exited with $LASTEXITCODE" }
+            } else {
+                Invoke-WebRequest -Uri $nsisUrl -OutFile $archive -TimeoutSec 60
+            }
             if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -eq $nsisSha256) {
                 $downloaded = $true
                 break
             }
         } catch {
-            Write-Verbose "NSIS mirror $mirror failed: $_"
+            Write-Host "NSIS mirror $mirror failed: $_"
         }
     }
     if (-not $downloaded) { throw 'Could not download the checksum-verified NSIS compiler.' }
