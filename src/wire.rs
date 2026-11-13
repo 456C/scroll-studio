@@ -245,5 +245,7 @@ pub fn batch_entry(command: &Command) -> Result<Value> {
     Ok(Value::Object(entry))
 }
 
+pub mod docs;
+
 #[cfg(test)]
 mod tests;

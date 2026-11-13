@@ -1,6 +1,7 @@
 mod addons_ui;
 mod appearance;
 mod artwork_color;
+mod assist_ui;
 mod bubble_presets_ui;
 mod bubble_preview_ui;
 mod camera_ui;
@@ -688,6 +689,7 @@ impl Studio {
         self.retire_recovery();
         // A suggestion made for the previous story must not be applied to this one.
         self.fail_addon_proposals("A different story was opened");
+        self.close_assist();
         self.document_epoch += 1;
         self.zoom = 0.0;
         self.auto_fit = true;
@@ -1396,6 +1398,7 @@ impl eframe::App for Studio {
         self.camera_dialog_ui(ctx);
         self.dialogue_setup_ui(ctx);
         self.spacing_ui(ctx);
+        self.assist_ui(ctx);
         self.addon_proposal_ui(ctx);
         self.finish_context_frame(ctx);
         self.finish_preset_slider_frame(ctx);

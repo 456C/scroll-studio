@@ -51,6 +51,11 @@ pub struct Manifest {
     pub download_mb: f64,
     #[serde(default)]
     pub hardware: String,
+    /// When set, the app shows a star button with this label beside text, sheets and the
+    /// lore board, and sends what the user types to the addon as `addon.assist`. Needs
+    /// `story.propose`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assist: Option<String>,
 }
 
 impl Manifest {
@@ -108,6 +113,16 @@ impl Manifest {
             self.hardware.len() <= 256,
             "Hardware description is too long"
         );
+        if let Some(label) = &self.assist {
+            ensure!(
+                !label.trim().is_empty() && label.chars().count() <= 32,
+                "The assist label uses 1–32 characters"
+            );
+            ensure!(
+                self.has(Permission::StoryPropose),
+                "An addon that assists needs permission to suggest changes"
+            );
+        }
         Ok(())
     }
 

@@ -33,6 +33,7 @@ pub(super) enum Icon {
     ChevronsUp,
     ChevronsDown,
     More,
+    Star,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, selected: bool, label: &str) -> egui::Response {
@@ -225,6 +226,17 @@ pub(super) fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color:
             };
             line(&[[6.0, flip(6.0)], [12.0, flip(12.0)], [18.0, flip(6.0)]]);
             line(&[[6.0, flip(12.0)], [12.0, flip(18.0)], [18.0, flip(12.0)]]);
+        }
+        Icon::Star => {
+            let points: Vec<[f32; 2]> = (0..=10)
+                .map(|i| {
+                    let angle =
+                        -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                    let radius = if i % 2 == 0 { 10.0 } else { 4.3 };
+                    [12.0 + radius * angle.cos(), 12.8 + radius * angle.sin()]
+                })
+                .collect();
+            line(&points);
         }
         Icon::More => {
             for x in [5.0, 12.0, 19.0] {

@@ -1,0 +1,12 @@
+{
+  "id": "ai-lite",
+  "name": "AI Lite",
+  "version": "0.1.0",
+  "min_app": "0.14.0",
+  "requires": [],
+  "entry": "ai-lite.exe",
+  "permissions": ["story.read", "story.propose"],
+  "download_mb": 1,
+  "hardware": "Any PC that runs Scroll Studio, plus a local model server such as Ollama or LM Studio",
+  "assist": "Ask AI Lite"
+}
