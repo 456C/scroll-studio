@@ -6,6 +6,15 @@ enum Category {
     #[default]
     Appearance,
     Canvas,
+    Addons,
+}
+
+/// What the settings view did this frame.
+pub(super) struct Shown {
+    /// Preferences changed.
+    pub changed: bool,
+    /// The Addons tab is open; the caller draws its contents, which need app state.
+    pub addons: bool,
 }
 
 /// The caller supplies the optional GPU glass painter so this view can also run
@@ -14,7 +23,7 @@ pub(super) fn show(
     ui: &mut egui::Ui,
     preferences: &mut Preferences,
     mut paint_glass: impl FnMut(&egui::Painter, egui::Rect, f32),
-) -> bool {
+) -> Shown {
     let before = preferences.clone();
     let category_id = ui.id().with("settings_category");
     let mut category = ui
@@ -24,12 +33,16 @@ pub(super) fn show(
         for (tab, label) in [
             (Category::Appearance, "Appearance"),
             (Category::Canvas, "Canvas"),
+            (Category::Addons, "Addons"),
         ] {
             if panels::section_tab(ui, label, category == tab).clicked() {
                 category = tab;
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if category == Category::Addons {
+                return;
+            }
             if motion::button(ui, "Reset")
                 .on_hover_text("Reset this section")
                 .clicked()
@@ -42,6 +55,7 @@ pub(super) fn show(
                         preferences.motion = defaults.motion;
                     }
                     Category::Canvas => preferences.set_snap_settings(&defaults.snap_settings()),
+                    Category::Addons => {}
                 }
             }
         });
@@ -63,9 +77,13 @@ pub(super) fn show(
                 canvas_preview(&mut columns[1], preferences);
             });
         }
+        Category::Addons => {}
     }
     preferences.sanitize();
-    *preferences != before
+    Shown {
+        changed: *preferences != before,
+        addons: category == Category::Addons,
+    }
 }
 
 fn appearance(ui: &mut egui::Ui, preferences: &mut Preferences) {
@@ -287,7 +305,7 @@ mod tests {
 
     #[test]
     fn settings_controls_fit_a_small_workspace_without_scrolling() {
-        for category in [Category::Appearance, Category::Canvas] {
+        for category in [Category::Appearance, Category::Canvas, Category::Addons] {
             let ctx = egui::Context::default();
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(802.0, 600.0));
             let mut preferences = Preferences::default();
@@ -332,6 +350,8 @@ mod tests {
                     "Equal spacing",
                     "Strength",
                 ],
+                // The app draws the addon list itself; the tabs must still fit.
+                Category::Addons => vec!["Appearance", "Canvas", "Addons"],
             };
             for label in labels {
                 let (rect, clip) = output

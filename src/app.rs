@@ -1,3 +1,4 @@
+mod addons_ui;
 mod appearance;
 mod artwork_color;
 mod bubble_presets_ui;
@@ -158,6 +159,8 @@ pub struct Studio {
     /// `story.changed` notices, oldest first. Nothing reads them in 0.14.0 without addons;
     /// the addon host drains them. Bounded so an app without addons never grows it.
     story_changes: VecDeque<commands::StoryChanged>,
+    /// Installed and running addons (none in tests).
+    addons: addons_ui::AddonState,
     /// The scope of the change `changed` is about to record, when a command knows it.
     pending_scope: Option<commands::ChangeScope>,
     /// How often `commit` fell back to the 0.13.2 path, so tests can prove a site uses
@@ -227,6 +230,10 @@ impl Studio {
         studio.snap_settings = studio.preferences.snap_settings();
         studio.apply_preferences(&cc.egui_ctx);
         studio.startup = Some(startup_ui::Startup::new(&cc.egui_ctx));
+        studio.addons = addons_ui::AddonState::new(Some(scroll_studio::addons::Registry::new(
+            scroll_studio::addons::default_directory(),
+        )));
+        studio.start_enabled_addons(&cc.egui_ctx);
         studio
     }
 
@@ -357,6 +364,7 @@ impl Studio {
             dirty: demo,
             revision: 0,
             story_changes: VecDeque::new(),
+            addons: addons_ui::AddonState::new(None),
             pending_scope: None,
             #[cfg(test)]
             fallbacks: 0,
@@ -551,8 +559,7 @@ impl Studio {
         });
     }
 
-    /// Take the pending `story.changed` notices. Used by the addon host (stage 5).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Take the pending `story.changed` notices, for running addons.
     fn take_story_changes(&mut self) -> Vec<commands::StoryChanged> {
         self.story_changes.drain(..).collect()
     }
@@ -1325,6 +1332,7 @@ impl eframe::App for Studio {
             self.status = message;
         }
         self.poll_recovery(ctx);
+        self.poll_addons();
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             self.setup = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1385,6 +1393,7 @@ impl eframe::App for Studio {
         self.camera_dialog_ui(ctx);
         self.dialogue_setup_ui(ctx);
         self.spacing_ui(ctx);
+        self.addon_proposal_ui(ctx);
         self.finish_context_frame(ctx);
         self.finish_preset_slider_frame(ctx);
         self.publish_ui(ctx);

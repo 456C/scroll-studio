@@ -118,9 +118,14 @@ impl Studio {
                 });
                 ui.add_space(16.0);
                 let glass = self.glass.clone();
-                if settings_ui::show(ui, &mut self.preferences, |painter, rect, strength| {
-                    glass.paint(painter, rect, 18.0, glass_tint(), strength);
-                }) {
+                let shown =
+                    settings_ui::show(ui, &mut self.preferences, |painter, rect, strength| {
+                        glass.paint(painter, rect, 18.0, glass_tint(), strength);
+                    });
+                if shown.addons {
+                    self.addons_settings(ui);
+                }
+                if shown.changed {
                     self.snap_settings = self.preferences.snap_settings();
                     self.snap_guides.clear();
                     self.apply_preferences(ctx);
