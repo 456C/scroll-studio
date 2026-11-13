@@ -690,6 +690,17 @@ impl Studio {
             }
             AddonAction::Remove(id) => {
                 self.stop_addon(id, "Removed");
+                // Addons that need this one cannot keep running without it.
+                let dependents: Vec<_> = self
+                    .addons
+                    .running
+                    .iter()
+                    .filter(|r| r.manifest.requires.contains(id))
+                    .map(|r| r.manifest.id.clone())
+                    .collect();
+                for dependent in dependents {
+                    self.stop_addon(&dependent, &format!("Needs {id}, which was removed"));
+                }
                 registry.remove(id)
             }
         };

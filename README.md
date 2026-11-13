@@ -368,7 +368,8 @@ The visual pass follows [Apple's materials guidance](https://developer.apple.com
 
 ## Addons
 
-Scroll Studio works fully without addons and shows no addon controls until one is enabled.
+Scroll Studio works fully without addons; until one is enabled, nothing about addons appears
+outside Settings → Addons.
 Addons are separate programs you choose to install from **Settings → Addons → Install from
 file** (a `.zip`). Each one lists what it may do: read your story, or suggest changes. A
 suggestion is always shown first, with the text before and after, and **Apply** makes it one

@@ -2,7 +2,8 @@
 
 An addon is a separate program that Scroll Studio starts and talks to. It never touches story
 files: it reads the story through the app and *proposes* edits, which the user reviews and
-applies as one undo step. With no addons installed the app shows no addon controls at all.
+applies as one undo step. With no addons enabled, nothing about addons appears outside
+Settings → Addons.
 
 AI Lite (`addons/ai-lite`) is the reference addon; its source shows everything below in use.
 
@@ -30,13 +31,13 @@ starts disabled, and is started from that folder once the user enables it.
 
 | Key | Meaning |
 | --- | --- |
-| `id` | Lowercase letters, digits and `-`; also the folder name. |
-| `name` | 1–64 characters, shown in Settings. |
+| `id` | 1–64 lowercase letters, digits and `-`, not starting with `-`; also the folder name. |
+| `name` | Up to 64 bytes, not blank; shown in Settings. |
 | `version`, `min_app` | Semver. The app refuses addons that need a newer app. |
 | `requires` | IDs of addons that must be installed before this one can start. |
 | `entry` | The program, relative to the addon folder (no `..`). |
 | `permissions` | `story.read` (read API) and `story.propose` (suggest edits). `story.apply` is refused. |
-| `download_mb`, `hardware` | Shown to the user. |
+| `download_mb`, `hardware` | Shown to the user (`hardware` up to 256 bytes). |
 | `assist` | Optional label (1–32 characters, needs `story.propose`). Adds a ☆ button to character sheets, the lore board and story style, and an entry in each beat's menu. |
 
 Unknown keys are ignored, so newer addons can add fields. Updating with a package that asks
@@ -60,7 +61,7 @@ stdin closes: that is how the app stops an addon, before ending the process.
 | `story.changed {revision, scope}` | notification | After every change, for addons with `story.read`. `scope` is `"everything"` or `{"ids": [...]}`. |
 | `addon.assist {request, target}` | request | The user typed `request` in the star box. `target` is `{"kind": "story"}`, `{"kind": "lore"}`, or `{"kind": "character" \| "panel", "id": n}`. Answer when done: `{"applied": bool, "summary": text}`. With `applied: false` the box stays open (with `summary` shown) so the user can reword. An error answer is shown in the box. |
 | `addon.cancel {id}` | notification | The user gave up on request `id`. |
-| `addon.settings`, `addon.set_setting {key, value}` | request | Answer `{"fields": [{key, label, kind, value}]}`; `kind` is `text`, `toggle` or `info` (read-only, with a Copy button). Shown under the addon's Settings disclosure. |
+| `addon.settings`, `addon.set_setting {key, value}` | request | Answer `{"fields": [{key, label, kind, value}]}`; `kind` is `text`, `toggle` or `info` (read-only, with a Copy button). Shown under the addon's Settings disclosure; at most 32 fields. |
 
 The app's requests use integer IDs; answers to requests it did not send are ignored.
 
@@ -71,16 +72,19 @@ The app's requests use integer IDs; answers to requests it did not send are igno
 | `host.methods` | — | `{"methods": [...]}`: the methods this addon may call. |
 | `host.describe` | — | `{"methods": [{method, about, params}]}` with each method's parameters as JSON Schema. |
 | `story.summary`, `chapters.list`, `panels.list`, `layers.list`, `layer.export`, `characters.list`, `assets.list`, `locations.list`, `groups.list`, `timeline.list`, `object.get`, `lore.board`, `panels.at` | `story.read` | The data, at once. |
-| `edit.*` (43 methods, including `edit.batch`) | `story.propose` | Once the user decides: `{"applied": true, "created": [ids]}`, or an error below. |
+| `edit.*` (41 methods, including `edit.batch`) | `story.propose` | Once the user decides: `{"applied": true, "created": [ids]}`, or an error below. |
 
 `host.describe` is the reference for parameters; `src/wire/docs.rs` is its source. IDs are
 integers and the story itself is `0`. Unknown parameters are refused rather than ignored.
 `edit.batch` takes a list of `{"method": "set_field", "params": {...}}` (no `edit.` prefix,
-no nesting, at most 1000) and is applied and undone as one step.
+no nesting, at most 1000) and is applied and undone as one step. `host.describe` shows its
+parameters as `{"commands": [...]}`, because a JSON Schema for parameters must be an object;
+both that and the bare list are accepted.
 
 Every edit is rehearsed on a copy of the story first: one that would fail, change nothing, or
 change a locked layer is refused before the user sees it, and checked again when they press
-Apply. Commands that need image bytes are not available to addons in protocol 1.
+Apply. Commands that need image bytes (`edit.add_image_asset`, `edit.add_image_version`)
+are not offered to addons in protocol 1.
 
 ### Errors
 
@@ -88,7 +92,7 @@ Apply. Commands that need image bytes are not available to addons in protocol 1.
 | --- | --- |
 | -32700, -32600, -32601, -32602 | JSON-RPC: not JSON, invalid request, unknown method, invalid parameters. |
 | -32001 | The addon lacks the permission for this method. |
-| -32002 | Refused: the edit cannot be applied (it fails, changes nothing, or touches a locked layer). |
+| -32002 | Refused: the edit cannot be applied (it fails, changes nothing, or touches a locked layer), or the user turned down several unrequested suggestions in a row. |
 | -32003 | The user cancelled the suggestion. |
 | -32004 | Busy: another suggestion from this addon is waiting for the user. |
 
@@ -100,8 +104,9 @@ A line the app cannot use is answered with an error whose `id` is `null`.
 - **Don't nag.** Turning down a suggestion the user asked for (through the star) never counts
   against an addon. After 3 unrequested suggestions in a row are turned down, further
   unrequested ones get `-32002` until the user applies one or asks through the star.
-- **Stay responsive.** The app never waits on an addon: an addon that stops reading its input
-  (256 queued messages) or floods output is stopped. A crashed addon is reported in the status
+- **Stay responsive.** The app never waits on an addon. An addon that stops reading its input
+  (256 messages behind) is stopped; one that floods output is slowed to what the app handles
+  each frame; a line over 16 MiB is answered with `-32600`. A crashed addon is reported in the status
   bar and can be restarted from Settings; the story is never affected.
 - **Keep secrets out of stories.** Store settings and keys in the addon's own folder, never in
   a `.scro` file.
