@@ -416,6 +416,8 @@ pub(crate) fn render_with_cache(
                 };
                 draw_image(&mut output, y, scale, layer, &image, mask);
             }
+            // Placeholders are for the editing view only; exports skip unknown kinds.
+            LayerKind::Unknown { .. } => {}
             LayerKind::Shape { color } => {
                 if intersects(layer, scale, y, height) {
                     draw_rect(&mut output, y, scale, layer, *color);
@@ -877,6 +879,7 @@ mod tests {
 
     fn chapter() -> Chapter {
         Chapter {
+            extensions: Default::default(),
             id: 1,
             name: "Test".into(),
             width: 16,
@@ -887,6 +890,7 @@ mod tests {
     }
     fn shape(id: u64, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) -> Layer {
         Layer {
+            extensions: Default::default(),
             id,
             name: "Shape".into(),
             visible: true,
@@ -1265,5 +1269,55 @@ mod tests {
             fs::remove_file(p).unwrap();
         }
         fs::remove_dir(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod unknown_layer_tests {
+    use super::*;
+    use crate::model::{Chapter, Layer};
+
+    fn layer(id: u64, kind: LayerKind) -> Layer {
+        Layer {
+            extensions: Default::default(),
+            id,
+            name: "L".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            x: 2.0,
+            y: 2.0,
+            width: 10.0,
+            height: 10.0,
+            kind,
+        }
+    }
+
+    #[test]
+    fn unknown_layers_are_skipped_by_rendering() {
+        let mut chapter = Chapter {
+            extensions: Default::default(),
+            id: 1,
+            name: "Test".into(),
+            width: 16,
+            height: 32,
+            panels: vec![],
+            layers: vec![layer(
+                2,
+                LayerKind::Shape {
+                    color: [9, 8, 7, 255],
+                },
+            )],
+        };
+        let assets = AssetBytes::new();
+        let without = render_region(&chapter, &assets, 0, 32, 16).unwrap();
+        let unknown = LayerKind::Unknown {
+            kind: "Mannequin".into(),
+            data: serde_json::json!({ "Mannequin": { "pose": 1 } }),
+        };
+        chapter.layers.insert(0, layer(3, unknown.clone()));
+        chapter.layers.push(layer(4, unknown));
+        let with = render_region(&chapter, &assets, 0, 32, 16).unwrap();
+        assert_eq!(with.as_raw(), without.as_raw());
     }
 }

@@ -245,6 +245,7 @@ fn layer_json(chapter: &Chapter, index: usize, layer: &Layer) -> Value {
         LayerKind::Stroke { .. } => ("stroke", Value::Null),
         LayerKind::Shape { .. } => ("shape", Value::Null),
         LayerKind::Effect { .. } => ("effect", Value::Null),
+        LayerKind::Unknown { kind, .. } => ("unknown", json!({ "unknown_kind": kind })),
     };
     value["kind"] = kind.into();
     if let Value::Object(extra) = extra {

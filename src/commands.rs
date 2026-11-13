@@ -3123,6 +3123,8 @@ fn check_image_size(width: u32, height: u32) -> Result<()> {
 
 fn new_asset(id: u64, name: String, kind: AssetKind, width: u32, height: u32) -> Asset {
     Asset {
+        extensions: Default::default(),
+        provenance: None,
         id,
         name,
         kind,

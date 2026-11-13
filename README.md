@@ -396,6 +396,8 @@ Image bytes are stored once and referenced by ID. A character/background sheet m
 
 The archive contains no external image-path dependencies. Saving writes a temporary file in the destination directory and replaces the previous archive only after a successful write. Loading validates the version, dimensions, IDs, references, entry names, and archive limits. Unknown future format versions are rejected. `.scro` is an application format, not PSD compatibility.
 
+Format 12 keeps addon data (`extensions`) and unknown layer kinds so files stay portable. Scroll Studio 0.14 opens formats 1–12 and saves 12; 0.13.x cannot open format 12 files.
+
 ## Rendering and performance boundaries
 
 - The interface repaints in response to interaction rather than continuously animating an idle canvas. Canvas artwork outside the visible region is skipped during painting.

@@ -241,7 +241,7 @@ enum Work {
         side: u32,
     },
     Text {
-        layer: Layer,
+        layer: Box<Layer>,
         scale: f32,
     },
 }
@@ -530,7 +530,7 @@ impl PreviewCache {
                 ctx,
                 key,
                 Work::Text {
-                    layer: preview_layer,
+                    layer: Box::new(preview_layer),
                     scale,
                 },
             );
@@ -1179,6 +1179,7 @@ mod tests {
                 for opacity in [0.0, 0.003, 0.1, 0.25, 0.5, 0.75, 1.0] {
                     let mut chapter = Chapter::new(2, "Alpha", 256, 2);
                     let base = Layer {
+                        extensions: Default::default(),
                         id: 3,
                         name: "Test".into(),
                         visible: true,
@@ -1299,6 +1300,7 @@ mod tests {
         for bg in [[255; 3], [25, 35, 45]] {
             let mut chapter = Chapter::new(2, "Mask", 64, 64);
             let base = Layer {
+                extensions: Default::default(),
                 id: 3,
                 name: "Paper".into(),
                 visible: true,
@@ -1353,6 +1355,7 @@ mod tests {
         complete(&mut previews, &work, &ctx);
         let texture = previews.image(&ctx, 1, &source, &[], 384).unwrap();
         let mut layer = Layer {
+            extensions: Default::default(),
             id: 2,
             name: "Opacity".into(),
             visible: true,

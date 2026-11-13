@@ -1,7 +1,23 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
+
+/// Addon-owned data, keyed by addon id. The core never reads or edits the values.
+pub type Extensions = std::collections::BTreeMap<String, serde_json::Value>;
+
+/// Where a generated image came from. Reserved; the core does not use it yet.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Provenance {
+    pub addon: String,
+    pub model: String,
+    pub prompt: String,
+    pub seed: Option<u64>,
+    pub sources: Vec<u64>,
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
+}
 pub const MAX_POINTER_OFFSET: f32 = 10_000_000.0;
 pub const MAX_BUBBLE_POINTERS: usize = 8;
 pub type AssetBytes = HashMap<u64, Arc<Vec<u8>>>;
@@ -30,6 +46,8 @@ pub struct Story {
     pub card_thumbnails: Vec<CardThumbnail>,
     #[serde(default)]
     pub bubble_presets: Vec<BubblePreset>,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -105,6 +123,8 @@ pub struct BackgroundLocation {
     pub asset_ids: Vec<u64>,
     #[serde(default)]
     pub profile: LocationProfile,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -169,6 +189,8 @@ pub struct Chapter {
     pub height: u32,
     pub panels: Vec<Panel>,
     pub layers: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -193,6 +215,10 @@ pub struct Asset {
     pub height: u32,
     #[serde(default)]
     pub character: CharacterProfile,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty")]
+    pub extensions: Extensions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
 /// Optional depth for a character. Empty fields never become prompt boilerplate.
@@ -349,10 +375,20 @@ pub struct Layer {
     pub width: f32,
     pub height: f32,
     pub kind: LayerKind,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub enum LayerKind {
+    /// A kind written by a newer version or an addon. `data` is the original JSON
+    /// (`{"Kind": {...}}` or a bare `"Kind"`) and is written back unchanged.
+    #[serde(skip)]
+    Unknown {
+        kind: String,
+        data: serde_json::Value,
+    },
     Effect {
         effect: crate::effects::Effect,
     },
@@ -385,6 +421,44 @@ pub enum LayerKind {
     Shape {
         color: [u8; 4],
     },
+}
+
+const KNOWN_LAYER_KINDS: [&str; 5] = ["Effect", "Image", "Stroke", "Text", "Shape"];
+
+/// The name an externally tagged value carries: `{"Name": ..}` or `"Name"`.
+pub fn layer_kind_tag(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(name) => Some(name),
+        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().map(String::as_str),
+        _ => None,
+    }
+}
+
+impl Serialize for LayerKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            LayerKind::Unknown { data, .. } => data.serialize(serializer),
+            _ => LayerKind::serialize(self, serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LayerKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let Some(tag) = layer_kind_tag(&value) else {
+            return Err(serde::de::Error::custom(
+                "a layer kind must be a name or a single-key object",
+            ));
+        };
+        if KNOWN_LAYER_KINDS.contains(&tag) {
+            return LayerKind::deserialize(value).map_err(serde::de::Error::custom);
+        }
+        Ok(LayerKind::Unknown {
+            kind: tag.to_string(),
+            data: value,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -650,6 +724,7 @@ impl TextStyle {
 impl Chapter {
     pub fn new(id: u64, name: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
+            extensions: Default::default(),
             id,
             name: name.into(),
             width,
@@ -667,6 +742,7 @@ impl Story {
 
     pub fn with_canvas(title: impl Into<String>, width: u32, height: u32) -> Self {
         let mut story = Self {
+            extensions: Default::default(),
             version: FORMAT_VERSION,
             title: title.into(),
             synopsis: String::new(),
@@ -744,6 +820,7 @@ impl Story {
         let mut add = |name: &str, x, y, width, height, kind| {
             let id = story.alloc_id();
             story.chapters[0].layers.push(Layer {
+                extensions: Default::default(),
                 id,
                 name: name.into(),
                 visible: true,
@@ -974,7 +1051,7 @@ impl Story {
             ("Rainy station", AssetKind::Background, "A nearly empty station at blue hour. Muted teal structures, warm platform lights, reflective pavement.", "Rainy city train station background, blue hour, teal shadows, warm amber station lights, atmospheric webtoon style, no characters, no text."),
         ] {
             let id = story.alloc_id();
-            story.assets.push(Asset { id, name: name.into(), kind, notes: notes.into(), prompt: prompt.into(), width: 0, height: 0, character: CharacterProfile::default() });
+            story.assets.push(Asset { extensions: Default::default(), provenance: None, id, name: name.into(), kind, notes: notes.into(), prompt: prompt.into(), width: 0, height: 0, character: CharacterProfile::default() });
         }
         // This is a newly generated demonstration, not migration of a saved story.
         // Judge its lettering at the same reading scale as new 1600 px chapters.

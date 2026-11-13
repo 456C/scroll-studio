@@ -50,6 +50,7 @@ pub fn add_location(story: &mut Story, name: &str) -> Result<u64> {
     );
     let id = story.alloc_id();
     story.locations.push(BackgroundLocation {
+        extensions: Default::default(),
         id,
         name: name.to_owned(),
         asset_ids: Vec::new(),
@@ -202,6 +203,8 @@ mod tests {
         let ids = [story.alloc_id(), story.alloc_id()];
         for (id, name) in ids.into_iter().zip(["Station day", "Station night"]) {
             story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: name.into(),
                 kind: AssetKind::Background,

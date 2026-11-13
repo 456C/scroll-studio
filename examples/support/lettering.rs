@@ -16,6 +16,7 @@ pub fn paper(story: &mut Story, chapter: usize) {
     let id = story.alloc_id();
     let ch = &mut story.chapters[chapter];
     ch.layers.push(Layer {
+        extensions: Default::default(),
         id,
         name: "Paper".into(),
         visible: true,
@@ -40,6 +41,7 @@ pub fn text(
     targets: &[[f32; 2]],
 ) -> anyhow::Result<()> {
     let mut layer = Layer {
+        extensions: Default::default(),
         id: story.alloc_id(),
         name: text.chars().take(32).collect(),
         visible: true,

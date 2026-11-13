@@ -142,6 +142,8 @@ impl Studio {
                 let applied = self.commit(Some(command), |studio| {
                     let asset_id = studio.story.alloc_id();
                     studio.story.assets.push(Asset {
+                        extensions: Default::default(),
+                        provenance: None,
                         id: asset_id,
                         name,
                         kind: AssetKind::Image,

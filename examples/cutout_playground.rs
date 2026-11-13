@@ -61,6 +61,8 @@ fn main() -> anyhow::Result<()> {
     let mut story = Story::with_canvas("Cutout review", 800, 900);
     let asset_id = story.alloc_id();
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id: asset_id,
         name: "Hair study".into(),
         kind: AssetKind::Image,
@@ -114,6 +116,7 @@ fn main() -> anyhow::Result<()> {
     ] {
         let id = story.alloc_id();
         story.chapters[0].layers.push(Layer {
+            extensions: Default::default(),
             id,
             name: name.into(),
             x,

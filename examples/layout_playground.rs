@@ -26,6 +26,8 @@ fn main() -> anyhow::Result<()> {
     image.write_to(&mut bytes, image::ImageFormat::Png)?;
     assets.insert(asset_id, Arc::new(bytes.into_inner()));
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id: asset_id,
         name: "Blue panel".into(),
         kind: AssetKind::Image,
@@ -47,6 +49,7 @@ fn main() -> anyhow::Result<()> {
     ] {
         let id = story.alloc_id();
         story.chapters[chapter].layers.push(Layer {
+            extensions: Default::default(),
             id,
             name: "Reference panel".into(),
             visible: true,
@@ -72,6 +75,7 @@ fn main() -> anyhow::Result<()> {
 
 fn image_layer(id: u64, asset_id: u64, x: f32, y: f32) -> Layer {
     Layer {
+        extensions: Default::default(),
         id,
         name: "Blue panel".into(),
         visible: true,

@@ -15,6 +15,8 @@ fn main() -> anyhow::Result<()> {
     }
     let character = story.alloc_id();
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id: character,
         name: "Ari".into(),
         kind: AssetKind::Character,
@@ -63,6 +65,8 @@ fn main() -> anyhow::Result<()> {
         image.write_to(&mut png, image::ImageFormat::Png)?;
         assets.insert(id, Arc::new(png.into_inner()));
         story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id,
             name: name.into(),
             kind: AssetKind::Background,

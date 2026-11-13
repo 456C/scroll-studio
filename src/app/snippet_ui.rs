@@ -590,6 +590,7 @@ impl Studio {
         self.checkpoint();
         let id = self.story.alloc_id();
         let layer = Layer {
+            extensions: Default::default(),
             id,
             name: format!("{} snippet", asset.name),
             visible: true,
@@ -660,6 +661,8 @@ mod tests {
         let bytes = Arc::new(encoded.into_inner());
         studio.assets.insert(id, bytes.clone());
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id,
             name: "Shared source".into(),
             kind: AssetKind::Background,

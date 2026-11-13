@@ -195,6 +195,7 @@ mod tests {
 
     fn shape(id: u64, y: f32, height: f32) -> Layer {
         Layer {
+            extensions: Default::default(),
             id,
             name: format!("Object {id}"),
             x: 20.0,

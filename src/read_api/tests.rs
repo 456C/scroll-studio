@@ -103,6 +103,7 @@ fn layers_list_exposes_lettering_but_never_pixels() {
     let mut story = Story::demo();
     let id = story.alloc_id();
     story.chapters[0].layers.push(Layer {
+        extensions: Default::default(),
         id,
         name: "Mira's line".into(),
         visible: true,

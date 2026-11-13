@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         panel.prompt = prompt.into();
     }
     let mira_id = story.alloc_id();
-    story.assets.push(Asset {
+    story.assets.push(Asset { extensions: Default::default(), provenance: None,
         id: mira_id,
         name: "Mira".into(),
         kind: AssetKind::Character,
@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
         },
     });
     let ren_id = story.alloc_id();
-    story.assets.push(Asset {
+    story.assets.push(Asset { extensions: Default::default(), provenance: None,
         id: ren_id,
         name: "Ren".into(),
         kind: AssetKind::Character,

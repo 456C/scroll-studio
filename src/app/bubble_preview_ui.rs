@@ -104,6 +104,7 @@ impl BubblePreview {
 
 fn sample_layer(preset: &BubblePreset, text: &str) -> anyhow::Result<Layer> {
     let mut layer = Layer {
+        extensions: Default::default(),
         id: 0,
         name: "Preset preview".into(),
         visible: true,

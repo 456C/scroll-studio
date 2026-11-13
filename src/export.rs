@@ -462,6 +462,7 @@ mod tests {
 
     fn chapter(width: u32, height: u32) -> Chapter {
         Chapter {
+            extensions: Default::default(),
             id: 1,
             name: "Export test".into(),
             width,
@@ -474,6 +475,7 @@ mod tests {
     fn image_chapter(image: RgbaImage) -> (Chapter, AssetBytes) {
         let mut chapter = chapter(image.width(), image.height());
         chapter.layers.push(Layer {
+            extensions: Default::default(),
             id: 2,
             name: "Texture".into(),
             visible: true,
@@ -688,6 +690,7 @@ mod tests {
         let directory = TestDirectory::new();
         let mut chapter = chapter(16, 4000);
         chapter.layers.push(Layer {
+            extensions: Default::default(),
             id: 2,
             name: "Missing second-slice asset".into(),
             visible: true,

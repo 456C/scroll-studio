@@ -630,6 +630,18 @@ pub(crate) fn validate_layer(
             validate_text_style(style, layer.width, layer.height)?;
         }
         LayerKind::Shape { .. } => {}
+        LayerKind::Unknown { kind, data } => {
+            ensure!(
+                !kind.is_empty()
+                    && kind.chars().count() <= 64
+                    && crate::model::layer_kind_tag(data) == Some(kind.as_str()),
+                "Invalid layer kind"
+            );
+            ensure!(
+                serde_json::to_vec(data).is_ok_and(|bytes| bytes.len() <= 1 << 20),
+                "Layer kind data is too large"
+            );
+        }
     }
     Ok(())
 }
@@ -688,6 +700,8 @@ mod tests {
         let mut story = Story::new("A portable story");
         let asset_id = story.alloc_id();
         story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: asset_id,
             name: "Mira".into(),
             kind: AssetKind::Character,
@@ -699,6 +713,7 @@ mod tests {
         });
         let id = story.alloc_id();
         story.chapters[0].layers.push(Layer {
+            extensions: Default::default(),
             id,
             name: "Portrait".into(),
             visible: true,
@@ -1424,5 +1439,147 @@ mod tests {
             .to_string()
             .contains("too large"));
         fs::remove_file(path).unwrap();
+    }
+
+    fn write_manifest(path: &Path, manifest: &serde_json::Value, assets: &AssetBytes) {
+        let mut zip = ZipWriter::new(File::create(path).unwrap());
+        zip.start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(manifest).unwrap())
+            .unwrap();
+        for (id, bytes) in assets {
+            zip.start_file(format!("assets/{id}.bin"), SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn read_manifest(path: &Path) -> serde_json::Value {
+        let mut archive = ZipArchive::new(File::open(path).unwrap()).unwrap();
+        serde_json::from_slice(
+            &read_entry(&mut archive, "manifest.json", MAX_MANIFEST_BYTES).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn format_12_extensions_and_unknown_layer_kinds_survive_open_and_save() {
+        let path = test_path("format-12");
+        let (story, assets) = image_story();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&story).unwrap()).unwrap();
+        manifest["version"] = 12.into();
+        let ext = |name: &str| {
+            serde_json::json!({
+                "example.addon": { "zeta": [3, {"y": 1, "b": null}], "alpha": "first", "n": 1.5 },
+                "another": name,
+            })
+        };
+        manifest["extensions"] = ext("story");
+        manifest["chapters"][0]["extensions"] = ext("chapter");
+        manifest["assets"][0]["extensions"] = ext("asset");
+        manifest["assets"][0]["provenance"] = serde_json::json!({
+            "addon": "gen", "model": "m1", "prompt": "a coat", "seed": 7,
+            "sources": [1, 2], "future_field": { "z": 1, "a": [true] },
+        });
+        manifest["chapters"][0]["layers"][0]["extensions"] = ext("layer");
+        manifest["locations"] = serde_json::json!([{
+            "id": 900, "name": "Harbour", "asset_ids": [],
+            "profile": serde_json::to_value(crate::model::LocationProfile::default()).unwrap(),
+            "extensions": ext("location"),
+        }]);
+        let mut mannequin = manifest["chapters"][0]["layers"][0].clone();
+        mannequin["id"] = 901.into();
+        mannequin["kind"] = serde_json::json!({
+            "Mannequin": { "pose": { "z": 1, "a": [1, 2, {"q": false}] }, "name": "m" }
+        });
+        let mut bare = mannequin.clone();
+        bare["id"] = 902.into();
+        bare["kind"] = serde_json::json!("Ghost");
+        manifest["chapters"][0]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .extend([mannequin, bare]);
+        manifest["next_id"] = 1000.into();
+        write_manifest(&path, &manifest, &assets);
+
+        let (loaded, loaded_assets) = load_story(&path).unwrap();
+        assert_eq!(loaded.version, 12);
+        assert!(matches!(
+            &loaded.chapters[0].layers[1].kind,
+            LayerKind::Unknown { kind, .. } if kind == "Mannequin"
+        ));
+        save_story(&path, &loaded, &loaded_assets).unwrap();
+        assert_eq!(read_manifest(&path), manifest);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn version_11_loads_as_12_and_version_13_is_rejected() {
+        let path = test_path("v11");
+        let (story, assets) = image_story();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&story).unwrap()).unwrap();
+        manifest["version"] = 11.into();
+        write_manifest(&path, &manifest, &assets);
+        let (loaded, loaded_assets) = load_story(&path).unwrap();
+        assert_eq!(loaded, story);
+        save_story(&path, &loaded, &loaded_assets).unwrap();
+        let saved = read_manifest(&path);
+        assert_eq!(saved["version"], 12);
+        let mut expected = manifest.clone();
+        expected["version"] = 12.into();
+        assert_eq!(saved, expected);
+
+        manifest["version"] = 13.into();
+        write_manifest(&path, &manifest, &assets);
+        let error = format!("{:#}", load_story(&path).unwrap_err());
+        assert!(error.contains("Unsupported .scro version 13"), "{error}");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn known_layer_kinds_with_malformed_contents_still_fail_and_odd_unknowns_validate() {
+        let path = test_path("malformed-kind");
+        let (story, assets) = image_story();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&story).unwrap()).unwrap();
+        manifest["chapters"][0]["layers"][0]["kind"] =
+            serde_json::json!({ "Shape": { "color": "red" } });
+        write_manifest(&path, &manifest, &assets);
+        assert!(load_story(&path).is_err());
+        manifest["chapters"][0]["layers"][0]["kind"] =
+            serde_json::json!({ "Shape": {}, "Other": {} });
+        write_manifest(&path, &manifest, &assets);
+        assert!(load_story(&path).is_err());
+        fs::remove_file(path).unwrap();
+
+        let mut story = story;
+        let unknown = |kind: &str, data: serde_json::Value| LayerKind::Unknown {
+            kind: kind.into(),
+            data,
+        };
+        for (kind, ok) in [
+            (unknown("X", serde_json::json!({"X": 1})), true),
+            (unknown("", serde_json::json!({"": 1})), false),
+            (unknown("X", serde_json::json!({"Y": 1})), false),
+            (unknown(&"k".repeat(65), serde_json::json!({"k": 1})), false),
+            (
+                unknown("Big", serde_json::json!({"Big": "x".repeat(1 << 20)})),
+                false,
+            ),
+        ] {
+            story.chapters[0].layers[0].kind = kind;
+            assert_eq!(validate_story(&story, &assets).is_ok(), ok);
+        }
+    }
+
+    #[test]
+    fn stories_without_addon_data_write_none_of_the_new_keys() {
+        let (story, _) = image_story();
+        let text = serde_json::to_string(&story).unwrap();
+        assert!(!text.contains("extensions") && !text.contains("provenance"));
+        assert!(!text.contains("Unknown"));
     }
 }

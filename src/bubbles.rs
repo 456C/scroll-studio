@@ -369,6 +369,7 @@ mod tests {
 
     fn dialogue(id: u64) -> Layer {
         Layer {
+            extensions: Default::default(),
             id,
             name: "Dialogue".into(),
             visible: true,

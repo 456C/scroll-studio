@@ -957,6 +957,8 @@ impl Studio {
                     _ => AssetKind::Image,
                 };
                 self.story.assets.push(Asset {
+                    extensions: Default::default(),
+                    provenance: None,
                     id,
                     name: name.clone(),
                     kind,
@@ -1003,6 +1005,7 @@ impl Studio {
         let height = width * asset.height as f32 / asset.width.max(1) as f32;
         let [x, y] = pos.unwrap_or([(ch.width as f32 - width) * 0.5, self.scroll_y + 100.0]);
         let layer = Layer {
+            extensions: Default::default(),
             id: 0,
             name: asset.name,
             visible: true,
@@ -1703,6 +1706,8 @@ mod tests {
         let mut imported = before.clone();
         let id = imported.alloc_id();
         imported.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id,
             name: "Reference".into(),
             kind: AssetKind::Image,
@@ -2033,6 +2038,7 @@ mod tests {
 
         let undo = studio.undo.len();
         let shape = Layer {
+            extensions: Default::default(),
             id: 0,
             name: "Panel border".into(),
             visible: true,
@@ -2105,6 +2111,8 @@ mod tests {
         let group = studio.selected_group.unwrap();
         let character = studio.story.alloc_id();
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: character,
             name: "Mira".into(),
             kind: AssetKind::Character,

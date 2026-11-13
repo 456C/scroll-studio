@@ -610,6 +610,7 @@ mod tests {
         use crate::model::*;
         let mut chapter = Chapter::new(1, "Fill", 128, 128);
         chapter.layers.push(Layer {
+            extensions: Default::default(),
             id: 2,
             name: "Backdrop".into(),
             x: 0.0,
@@ -624,6 +625,7 @@ mod tests {
             },
         });
         chapter.layers.push(Layer {
+            extensions: Default::default(),
             id: 3,
             name: "Intruder".into(),
             x: 60.0,
@@ -671,6 +673,7 @@ mod tests {
         use crate::model::*;
         let mut chapter = Chapter::new(1, "Blur", 128, 128);
         chapter.layers.push(Layer {
+            extensions: Default::default(),
             id: 2,
             name: "Stripe".into(),
             x: 60.0,

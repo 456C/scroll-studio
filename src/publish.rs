@@ -798,6 +798,7 @@ mod tests {
         let layer_id = story.alloc_id();
         let mut unselected = Chapter::new(unselected_id, "SECRET_UNSELECTED_CHAPTER", 64, 64);
         unselected.layers.push(Layer {
+            extensions: Default::default(),
             id: layer_id,
             name: "SECRET_UNSELECTED_LAYER".into(),
             visible: true,
@@ -815,6 +816,8 @@ mod tests {
         let hidden_asset = b"SECRET_ORIGINAL_ASSET_BYTES".to_vec();
         let asset_id = story.alloc_id();
         story.assets.push(crate::model::Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: asset_id,
             name: "reference".into(),
             kind: crate::model::AssetKind::Image,

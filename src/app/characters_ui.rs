@@ -1569,6 +1569,8 @@ mod tests {
                 .collect();
             for reference in profile.references.clone() {
                 studio.story.assets.push(Asset {
+                    extensions: Default::default(),
+                    provenance: None,
                     id: reference.asset_id,
                     name: reference.label,
                     kind: AssetKind::Image,
@@ -1645,6 +1647,8 @@ mod tests {
         if !cast {
             let id = studio.story.alloc_id();
             studio.story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: "Mira".into(),
                 kind: AssetKind::Character,
@@ -1832,6 +1836,8 @@ mod tests {
         for index in 0..count {
             let id = studio.story.alloc_id();
             studio.story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: format!("Cast {index:04}"),
                 kind: AssetKind::Character,
@@ -2038,6 +2044,8 @@ mod tests {
         let mut studio = gallery_studio(&ctx, 1000);
         let portrait_id = studio.story.alloc_id();
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: portrait_id,
             name: "Shared reference".into(),
             kind: AssetKind::Image,
@@ -2212,6 +2220,8 @@ mod tests {
         for index in 0..additional {
             let id = studio.story.alloc_id();
             studio.story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: format!("Reference {index}"),
                 kind: AssetKind::Image,

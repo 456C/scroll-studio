@@ -11,6 +11,8 @@ fn manifest(story: &Story) -> Vec<u8> {
 fn asset(story: &mut Story, name: &str, kind: AssetKind) -> u64 {
     let id = story.alloc_id();
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id,
         name: name.into(),
         kind,
@@ -149,6 +151,7 @@ pub(crate) fn world() -> Story {
     // Older stories can hold untrimmed names; edits and undo must keep them exactly.
     let docks = story.alloc_id();
     story.locations.push(BackgroundLocation {
+        extensions: Default::default(),
         id: docks,
         name: " Docks ".into(),
         asset_ids: Vec::new(),
@@ -480,6 +483,7 @@ pub(crate) fn commands_for(story: &Story) -> Vec<Command> {
             chapter: chapter.id,
             index: None,
             layer: crate::model::Layer {
+                extensions: Default::default(),
                 id: 0,
                 name: "Shape".into(),
                 visible: true,
@@ -1671,6 +1675,7 @@ fn image_commands_are_marked_as_needing_bytes() {
 
 fn shape(name: &str) -> crate::model::Layer {
     crate::model::Layer {
+        extensions: Default::default(),
         id: 0,
         name: name.into(),
         visible: true,
@@ -1855,4 +1860,36 @@ fn story_wide_replace_reaches_dialogue_and_scales_linearly() {
         story.field(Target::Object(line), Field::Text).unwrap(),
         "Mina, wait!"
     );
+}
+
+#[test]
+fn unknown_layer_kinds_add_edit_delete_and_undo_exactly() {
+    let mut story = Story::demo();
+    let chapter = story.chapters[0].id;
+    let mut layer = shape("Mannequin");
+    layer.kind = crate::model::LayerKind::Unknown {
+        kind: "Mannequin".into(),
+        data: serde_json::json!({ "Mannequin": { "pose": [1, 2, { "z": 0, "a": 1 }] } }),
+    };
+    let before = manifest(&story);
+    let added = story
+        .apply(Command::AddLayer {
+            chapter,
+            index: None,
+            layer,
+        })
+        .unwrap();
+    let id = story.chapters[0].layers.last().unwrap().id;
+    let with_layer = manifest(&story);
+    let mut moved = story.chapters[0].layers.last().unwrap().clone();
+    moved.x = 12.0;
+    moved.locked = true;
+    let edit = story.apply(Command::SetLayer { layer: moved }).unwrap();
+    story.apply(edit.inverse).unwrap();
+    assert!(manifest(&story) == with_layer);
+    let deleted = story.apply(Command::DeleteLayer { layer: id }).unwrap();
+    story.apply(deleted.inverse).unwrap();
+    assert!(manifest(&story) == with_layer);
+    story.apply(added.inverse).unwrap();
+    assert!(manifest(&story) == before);
 }

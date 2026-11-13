@@ -985,6 +985,7 @@ impl Studio {
                                                 self.backing_editor(ui, &mut layer);
                                             }
                                             LayerKind::Text { .. } => {}
+                                            LayerKind::Unknown { .. } => {}
                                             LayerKind::Effect { effect } => {
                                                 self.effect_editor(ui, effect)
                                             }
@@ -1212,6 +1213,8 @@ impl Studio {
                                     self.checkpoint();
                                     let id = self.story.alloc_id();
                                     self.story.assets.push(Asset {
+                                        extensions: Default::default(),
+                                        provenance: None,
                                         id,
                                         name,
                                         kind,
@@ -1409,6 +1412,8 @@ mod tests {
         };
         let id = studio.story.alloc_id();
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id,
             name: "Reference artwork".into(),
             kind,
@@ -1643,6 +1648,7 @@ mod tests {
         for y in [100.0, 300.0] {
             let id = studio.story.alloc_id();
             studio.story.chapters[0].layers.push(Layer {
+                extensions: Default::default(),
                 id,
                 name: format!("Panel {id}"),
                 visible: true,
