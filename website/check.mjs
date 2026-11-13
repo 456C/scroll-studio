@@ -25,7 +25,7 @@ for(const page of pages){
     }else if(fragment)assert(ids.includes(fragment),`${page}: missing anchor ${fragment}`);
   }
 }
-for(const filename of [release.installer,release.portable]){
+for(const filename of [release.installer,release.portable,...release.addons.map(addon=>addon.file)]){
   const content=await readFile(path.join(root,'downloads',filename));
   const expected=(await readFile(path.join(root,'downloads',filename+'.sha256'),'utf8')).split(/\s/)[0];
   const actual=createHash('sha256').update(content).digest('hex');
@@ -39,4 +39,10 @@ assert.equal((index.match(/role="tab"/g)||[]).length,3);
 assert.equal((index.match(/role="tabpanel"/g)||[]).length,3);
 const script=await readFile(path.join(root,'app.js'),'utf8');
 assert(!/fetch\(|localStorage|sessionStorage|document\.cookie/.test(script),'Unexpected tracking or storage');
-console.log(`Verified ${pages.length} pages, local links, tab wiring and both ${release.version} download hashes.`);
+const addons=await readFile(path.join(root,'addons.html'),'utf8');
+for(const addon of release.addons){
+  assert(addons.includes(`downloads/${addon.file}`),`addons.html does not offer ${addon.file}`);
+  assert(addons.includes(addon.sha256),`addons.html shows a different checksum for ${addon.file}`);
+}
+assert(index.includes('href="addons.html"'),'Home page does not link the addons page');
+console.log(`Verified ${pages.length} pages, local links, tab wiring and the ${release.version} app and addon download hashes.`);

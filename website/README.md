@@ -4,14 +4,14 @@ A buildless, responsive download page. Local fonts and illustration, accessible 
 
 ## Build and review
 
-Package the current Rust release first with `scripts/installer.ps1`. From this directory, run:
+Package the current Rust release first with `scripts/installer.ps1`, and the AI Lite addon with `scripts/package-ai-lite.ps1`. From this directory, run:
 
 ```sh
 node build.mjs
 node check.mjs
 ```
 
-The build reads the app version and copies only that release's installer, portable ZIP and checksums into `dist/downloads`. All downloads are independent of the private GitHub repository. Nothing in `dist` is a user story or working directory. The build refuses stale download files; move an old `website/dist` aside before building a different version.
+The build reads the app and addon versions and copies only that release's installer, portable ZIP, AI Lite ZIP and checksums into `dist/downloads`. The Addons page (`addons.html`) shows each addon's size, hardware and checksum from its package and `addon.json`. All downloads are independent of the private GitHub repository. Nothing in `dist` is a user story or working directory. The build refuses stale download files; move an old `website/dist` aside before building a different version.
 
 Serve `dist` with a local static server for review. The primary download works without JavaScript. Workflow tabs support arrow keys, Home and End; FAQ and checksums use native disclosures. Motion respects the browser's reduced-motion preference.
 

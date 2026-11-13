@@ -670,6 +670,7 @@ fn addons_can_read_the_api_description_they_may_use() {
     assert_eq!(
         described["methods"].as_array().unwrap().len(),
         crate::wire::READ_METHODS.len() + crate::wire::EDIT_METHODS.len()
+            - host::IMAGE_METHODS.len()
     );
 }
 
@@ -683,4 +684,60 @@ fn only_proposing_addons_may_assist() {
     assert!(Manifest::parse(&serde_json::to_vec(&m).unwrap()).is_ok());
     m.assist = Some(String::new());
     assert!(Manifest::parse(&serde_json::to_vec(&m).unwrap()).is_err());
+}
+
+#[test]
+fn edits_that_change_nothing_are_refused_and_batches_may_be_wrapped() {
+    let story = Story::demo();
+    let both = manifest(&BOTH);
+    let same = json!({ "target_id": 0, "field": "title", "value": story.title });
+    assert!(matches!(
+        host::handle(&story, &both, "edit.set_field", &same),
+        Action::Fail {
+            code: host::REFUSED,
+            ..
+        }
+    ));
+    let rename = json!({ "method": "set_field",
+        "params": { "target_id": 0, "field": "title", "value": "Renamed" } });
+    for params in [json!([rename.clone()]), json!({ "commands": [rename] })] {
+        assert!(matches!(
+            host::handle(&story, &both, "edit.batch", &params),
+            Action::Propose(_)
+        ));
+    }
+}
+
+#[test]
+fn image_commands_are_not_offered_to_addons() {
+    // The list matches exactly the commands that need image bytes.
+    let mut needing = std::collections::BTreeSet::new();
+    for command in crate::commands::tests::commands_for(&world()) {
+        let parts = match command {
+            Command::Batch(parts) => parts,
+            other => vec![other],
+        };
+        for part in parts {
+            if let Ok((method, _)) = crate::wire::command_request(&part) {
+                if part.needs_image_bytes() {
+                    needing.insert(method);
+                }
+            }
+        }
+    }
+    let listed: std::collections::BTreeSet<_> =
+        host::IMAGE_METHODS.iter().map(|m| m.to_string()).collect();
+    assert_eq!(needing, listed);
+    let story = Story::demo();
+    for method in ["host.methods", "host.describe"] {
+        let Action::Reply(answer) = host::handle(&story, &manifest(&BOTH), method, &Value::Null)
+        else {
+            panic!("{method} failed")
+        };
+        let text = answer.to_string();
+        assert!(
+            host::IMAGE_METHODS.iter().all(|m| !text.contains(m)),
+            "{method}"
+        );
+    }
 }

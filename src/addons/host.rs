@@ -46,6 +46,10 @@ pub const REFUSED: i64 = -32002;
 pub const CANCELLED: i64 = -32003;
 pub const BUSY: i64 = -32004;
 
+/// Edit methods that need image bytes, which cannot travel over this connection in
+/// protocol 1: not offered to addons.
+pub const IMAGE_METHODS: [&str; 2] = ["edit.add_image_asset", "edit.add_image_version"];
+
 /// Cancelled unrequested suggestions in a row before the addon must wait for the user.
 pub const MAX_CANCELLED: u32 = 3;
 /// Messages handled per frame; the rest wait for the next frame.
@@ -179,13 +183,18 @@ pub fn handle(story: &Story, manifest: &Manifest, method: &str, params: &Value) 
             methods.extend(wire::READ_METHODS);
         }
         if manifest.has(Permission::StoryPropose) {
-            methods.extend(wire::EDIT_METHODS);
+            methods.extend(
+                wire::EDIT_METHODS
+                    .iter()
+                    .filter(|m| !IMAGE_METHODS.contains(m)),
+            );
         }
         return Action::Reply(json!({ "methods": methods }));
     }
     if method == "host.describe" {
         let methods: Vec<_> = wire::docs::METHODS
             .iter()
+            .filter(|doc| !IMAGE_METHODS.contains(&doc.method))
             .filter(|doc| {
                 manifest.has(if doc.is_edit() {
                     Permission::StoryPropose
@@ -197,6 +206,16 @@ pub fn handle(story: &Story, manifest: &Manifest, method: &str, params: &Value) 
             .collect();
         return Action::Reply(json!({ "methods": methods }));
     }
+    // `host.describe` gives a batch as `{"commands": [...]}` (tool schemas must be objects);
+    // the bare list is accepted too.
+    let unwrapped;
+    let params = match wire::docs::method(method) {
+        Some(doc) if method == "edit.batch" && params.is_object() => {
+            unwrapped = doc.wrapped_params(params.clone());
+            &unwrapped
+        }
+        _ => params,
+    };
     let is_edit = method.starts_with(wire::EDIT_PREFIX);
     let known = if is_edit {
         wire::EDIT_METHODS.contains(&method)
@@ -247,6 +266,9 @@ pub fn check_edit(story: &Story, command: &Command) -> Result<(), String> {
     rehearsal
         .apply(command.clone())
         .map_err(|error| format!("{error:#}"))?;
+    if rehearsal == *story {
+        return Err("This would change nothing".into());
+    }
     if let Some(layer) = changed_locked_layer(story, &rehearsal) {
         return Err(format!(
             "Layer {layer} is locked; unlock it in Scroll Studio first"
