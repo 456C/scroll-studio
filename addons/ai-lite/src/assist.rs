@@ -55,7 +55,7 @@ pub fn run(
     // What edits may touch: the object asked about (the story is 0), or anything for lore.
     let subject = match kind {
         "lore" => None,
-        "character" | "panel" => Some(
+        "character" | "panel" | "location" => Some(
             target["id"]
                 .as_u64()
                 .ok_or_else(|| RpcError::new(INVALID_PARAMS, "The request names no object"))?,
@@ -140,7 +140,7 @@ fn gather(host: &dyn Host, target: &Value) -> Result<String, RpcError> {
     let summary = host.call("story.summary", Value::Null)?;
     let about = match target["kind"].as_str() {
         Some("lore") => host.call("lore.board", Value::Null)?,
-        Some("character") | Some("panel") => {
+        Some("character") | Some("panel") | Some("location") => {
             let id = target["id"]
                 .as_u64()
                 .ok_or_else(|| RpcError::new(INVALID_PARAMS, "The request names no object"))?;

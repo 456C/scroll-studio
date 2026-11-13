@@ -7,6 +7,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const ENABLED_FILE: &str = "enabled.json";
+/// The folder inside an addon that is kept when the addon is updated.
+pub const DATA_FOLDER: &str = "data";
 const MAX_PACKAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 20_000;
 
@@ -159,7 +161,21 @@ impl Registry {
                     "Could not replace the installed version; stop the addon and try again",
                 )?;
             }
+            // The addon's own `data` folder (its settings, downloads) carries over to the
+            // new version unless the package brings one.
+            let old_data = previous.join(DATA_FOLDER);
+            let new_data = staging.join(DATA_FOLDER);
+            let carried = replacing && old_data.is_dir() && !new_data.exists();
+            if carried {
+                if let Err(error) = std::fs::rename(&old_data, &new_data) {
+                    let _ = std::fs::rename(&previous, &destination);
+                    return Err(error).context("Could not keep the addon's data");
+                }
+            }
             if let Err(error) = std::fs::rename(&staging, &destination) {
+                if carried {
+                    let _ = std::fs::rename(&new_data, &old_data);
+                }
                 if replacing {
                     let _ = std::fs::rename(&previous, &destination);
                 }
@@ -199,12 +215,29 @@ impl Registry {
 
     /// Delete an addon's folder and forget whether it was enabled.
     pub fn remove(&self, id: &str) -> Result<()> {
-        let folder = self.folder(id)?;
-        if folder.exists() {
+        // A listed folder whose name is not a valid ID can still be removed, as long as the
+        // name is one plain folder inside the addons folder.
+        let plain = !id.is_empty()
+            && !id.starts_with('.')
+            && Path::new(id)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+            && Path::new(id).components().count() == 1;
+        let folder = if manifest::valid_id(id) {
+            self.folder(id)?
+        } else if plain {
+            self.directory.join(id)
+        } else {
+            bail!("Invalid addon ID");
+        };
+        if folder.is_dir() {
             std::fs::remove_dir_all(&folder)
                 .context("Could not remove the addon; is it still running?")?;
         }
-        self.set_enabled(id, false)
+        if manifest::valid_id(id) {
+            self.set_enabled(id, false)?;
+        }
+        Ok(())
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {

@@ -3,11 +3,12 @@
 The first Scroll Studio addon. It runs as its own small program; nothing in it is part of the
 Scroll Studio app, and the app works the same without it.
 
-- **Star button (☆).** Appears on character sheets, the lore board, the story style window and in
+- **Star button (☆).** Appears on character and location sheets, the lore board, the story style window and in
   each beat's `···` menu while AI Lite is enabled. Type what should change; AI Lite asks a model
   on your computer and Scroll Studio shows the suggested change. Apply makes it one undo step.
-- **MCP server.** Off by default. Turn it on to let an AI app you already use (Claude Desktop,
-  an editor, any MCP client) read the open story and suggest edits. Every edit still waits for
+- **MCP server.** Off by default. Turn it on to let an AI app you already use (any MCP client
+  that can connect to a Streamable HTTP server with a bearer token) read the open story and
+  suggest edits. Every edit still waits for
   your yes in Scroll Studio.
 
 ## Model server
@@ -21,7 +22,7 @@ AI Lite talks to any model server with an OpenAI-compatible API over plain `http
 | llama.cpp `llama-server` | `http://127.0.0.1:8080` |
 
 Leave **Model** empty to use the first model the server lists. Settings are kept in
-`config.json` in the addon's folder, never in your stories. Cloud APIs with your own key are
+`data/config.json` in the addon's folder, which updates keep, never in your stories. Cloud APIs with your own key are
 planned for a later version.
 
 ## MCP
@@ -33,8 +34,9 @@ changes each time Scroll Studio starts. Requests carrying a web page `Origin` ar
 
 Tools mirror Scroll Studio's read and edit methods one to one (`story_summary`,
 `characters_list`, `edit_set_field`, `edit_batch`, …), with descriptions and parameter schemas
-supplied by the app. An edit tool returns once you apply or cancel it; one edit can wait at a
-time.
+supplied by the app. An edit tool returns once you apply or cancel it, so give your client a
+generous tool timeout; if it gives up first, the suggestion stays open in Scroll Studio until you
+decide. One edit can wait at a time. Protocol versions 2025-11-25 and 2025-06-18 are supported.
 
 ## Build and package
 

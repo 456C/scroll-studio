@@ -28,9 +28,10 @@ impl Default for Settings {
     }
 }
 
+/// Scroll Studio starts addons in their own folder and keeps its `data` folder when the
+/// addon is updated.
 fn path() -> PathBuf {
-    // Scroll Studio starts addons in their own folder.
-    PathBuf::from("config.json")
+    PathBuf::from("data").join("config.json")
 }
 
 impl Settings {
@@ -98,6 +99,10 @@ impl Settings {
     }
 
     fn save(&self) -> Result<(), String> {
+        if let Some(folder) = path().parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|e| format!("Could not save the settings: {e}"))?;
+        }
         let bytes = serde_json::to_vec_pretty(&self.to_json()).map_err(|e| e.to_string())?;
         let temp = path().with_extension("json.tmp");
         std::fs::write(&temp, bytes)

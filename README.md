@@ -376,11 +376,11 @@ suggestion is always shown first, with the text before and after, and **Apply** 
 step you can undo. An addon cannot save, open or delete files, and it never edits a story
 without your yes. Addons run as programs on your computer, so install only ones you trust.
 
-**AI Lite** is the first addon. Its ☆ button on character sheets, the lore board, story style
+**AI Lite** is the first addon. Its ☆ button on character and location sheets, the lore board, story style
 and each beat's `···` menu asks a model running on your own computer (Ollama, LM Studio or
 llama.cpp) for a change. Its optional MCP server lets AI apps you already use read the open
-story and suggest edits, which still wait for your yes. See `addons/ai-lite/README.md`; to
-write your own addon, see `docs/addons.md`.
+story and suggest edits, which still wait for your yes. The Addons page at
+scroll.project456.net lists each addon with its size and the hardware it needs.
 
 ## File format
 

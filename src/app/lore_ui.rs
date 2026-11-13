@@ -204,7 +204,7 @@ impl Studio {
         }
     }
     fn remove_lore_card(&mut self, id: u64, delete_note: bool) {
-        let _ = self.apply_command(Command::RemoveLoreCard {
+        self.apply_or_report(Command::RemoveLoreCard {
             card: id,
             delete_note,
         });
@@ -236,7 +236,7 @@ impl Studio {
                 remove_edge = Some(edge.id);
             }
             if edge != self.story.lore_board.connections[index] {
-                let _ = self.apply_command(Command::SetLoreConnection {
+                self.apply_or_report(Command::SetLoreConnection {
                     connection: edge.id,
                     label: edge.label,
                     color: edge.color,
@@ -294,7 +294,7 @@ impl Studio {
                     }
                 }
                 if !edits.is_empty() {
-                    let _ = self.apply_command(Command::Batch(edits));
+                    self.apply_or_report(Command::Batch(edits));
                 }
             } else {
                 ui.add(egui::Label::new(RichText::new(title).strong()).wrap());
@@ -329,7 +329,7 @@ impl Studio {
                 });
             }
             if !edits.is_empty() {
-                let _ = self.apply_command(Command::Batch(edits));
+                self.apply_or_report(Command::Batch(edits));
             }
         } else if !self.story.lore_board.cards.is_empty() {
             ui.label(
@@ -343,7 +343,7 @@ impl Studio {
             );
         }
         if let Some(id) = remove_edge {
-            let _ = self.apply_command(Command::DisconnectLore { connection: id });
+            self.apply_or_report(Command::DisconnectLore { connection: id });
             self.lore_view.connection = None;
         }
     }
@@ -356,7 +356,7 @@ impl Studio {
             }
             if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
                 if let Some(id) = self.lore_view.connection.take() {
-                    let _ = self.apply_command(Command::DisconnectLore { connection: id });
+                    self.apply_or_report(Command::DisconnectLore { connection: id });
                 } else if let Some(id) = self.lore_view.selected {
                     let is_note = self
                         .story
@@ -576,7 +576,7 @@ impl Studio {
                     self.register_context(&r);
                     appearance::context_menu(&r, |ui| {
                         if motion::button(ui, "Remove connection").clicked() {
-                            let _ = self.apply_command(Command::DisconnectLore {
+                            self.apply_or_report(Command::DisconnectLore {
                                 connection: edge.id,
                             });
                             self.lore_view.connection = None;

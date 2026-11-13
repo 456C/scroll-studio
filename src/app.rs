@@ -457,6 +457,13 @@ impl Studio {
     /// exactly as before; a command that fails or changes nothing leaves history untouched.
     /// The caller decides whether to report an error; sheet and board edits stay silent
     /// as they always have.
+    /// Apply an edit from the UI; if it is refused, say why in the status bar.
+    fn apply_or_report(&mut self, command: Command) {
+        if let Err(error) = self.apply_command(command) {
+            self.status = format!("{error:#}");
+        }
+    }
+
     fn apply_command(&mut self, command: Command) -> anyhow::Result<Applied> {
         let previous = self.story.clone();
         let applied = self.story.apply(command)?;
@@ -563,6 +570,24 @@ impl Studio {
     /// Take the pending `story.changed` notices, for running addons.
     fn take_story_changes(&mut self) -> Vec<commands::StoryChanged> {
         self.story_changes.drain(..).collect()
+    }
+
+    /// After a change made outside the current gesture (an addon's suggestion): drop
+    /// selections and drags that may point at removed objects, as undo and redo do.
+    fn settle_after_outside_change(&mut self) {
+        self.lore_view.cancel_gesture();
+        self.interrupt_preset_slider_edit();
+        self.chapter = self
+            .chapter
+            .min(self.story.chapters.len().saturating_sub(1));
+        self.drag_tail = None;
+        self.drag_layer = None;
+        self.resize_anchor = None;
+        self.snap_drag = None;
+        self.snap_guides.clear();
+        self.previews.clear();
+        self.sanitize_location_selection();
+        self.retain_selection_after_history();
     }
 
     fn undo(&mut self) {

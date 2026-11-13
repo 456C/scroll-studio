@@ -344,6 +344,14 @@ jobs:
           if ($count -lt 5) { throw "Expected 5 sample stories, found $count." }
           cargo run --release --locked --quiet --example verify_web_roundtrip -- $samples
           if ($LASTEXITCODE -ne 0) { throw 'A sample story failed to load or validate.' }
+      - name: Every command and its inverse on the sample stories
+        shell: pwsh
+        # Spec release test: on each real sample, every command followed by its inverse
+        # leaves the saved manifest byte-identical.
+        run: |
+          $env:SCROLL_SAMPLE_STORIES = Join-Path $env:GITHUB_WORKSPACE 'target\sample-package'
+          cargo test --release --locked --lib commands::tests
+          if ($LASTEXITCODE -ne 0) { throw 'A command did not undo exactly on a sample story.' }
       - name: Smoke test the installer
         shell: pwsh
         # Silent per-user install into a temp folder, then open, export, save and

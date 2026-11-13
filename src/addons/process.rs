@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -22,6 +23,8 @@ use std::time::{Duration, Instant};
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 /// Messages received but not yet handled; the addon waits when this is full.
 const INCOMING_QUEUE: usize = 256;
+/// Bytes received but not yet handled; the addon also waits once this much is queued.
+const INCOMING_BYTES: usize = 64 * 1024 * 1024;
 /// Messages waiting to be written to the addon; an addon this far behind is stopped.
 const OUTGOING_QUEUE: usize = 256;
 const ERROR_LINES: usize = 20;
@@ -47,6 +50,10 @@ pub struct AddonProcess {
     outgoing: Option<SyncSender<String>>,
     /// `None` once stopped, which also ends the reader thread and frees its queue.
     events: Option<Receiver<Event>>,
+    /// Bytes of the lines waiting in `events`.
+    queued: Arc<AtomicUsize>,
+    /// Cleared when stopped, so a reader waiting for room gives up.
+    reading: Arc<AtomicBool>,
     errors: Arc<Mutex<VecDeque<String>>>,
     error_reader: Option<JoinHandle<()>>,
 }
@@ -101,6 +108,9 @@ impl AddonProcess {
             })?;
 
         let (sender, events) = mpsc::sync_channel(INCOMING_QUEUE);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let reading = Arc::new(AtomicBool::new(true));
+        let (queued_bytes, still_reading) = (queued.clone(), reading.clone());
         std::thread::Builder::new()
             .name("addon-output".into())
             .spawn(move || {
@@ -112,6 +122,19 @@ impl AddonProcess {
                         Ok(Line::End) | Err(_) => Event::Closed,
                     };
                     let closed = event == Event::Closed;
+                    if let Event::Line(line) = &event {
+                        // Wait while the queue holds too many bytes, so 256 long lines
+                        // cannot pile up gigabytes; give up once the app stops listening.
+                        while queued_bytes.load(Ordering::Acquire) > 0
+                            && queued_bytes.load(Ordering::Acquire) + line.len() > INCOMING_BYTES
+                        {
+                            if !still_reading.load(Ordering::Acquire) {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                        queued_bytes.fetch_add(line.len(), Ordering::AcqRel);
+                    }
                     // Blocks while the app catches up, which also slows a flooding addon.
                     if sender.send(event).is_err() {
                         return;
@@ -146,6 +169,8 @@ impl AddonProcess {
             child,
             outgoing: Some(outgoing),
             events: Some(events),
+            queued,
+            reading,
             errors,
             error_reader: Some(error_reader),
         })
@@ -165,7 +190,11 @@ impl AddonProcess {
     }
 
     pub fn try_recv(&self) -> Option<Event> {
-        self.events.as_ref()?.try_recv().ok()
+        let event = self.events.as_ref()?.try_recv().ok()?;
+        if let Event::Line(line) = &event {
+            self.queued.fetch_sub(line.len(), Ordering::AcqRel);
+        }
+        Some(event)
     }
 
     /// The addon's last error output, newest last, on one line. Waits briefly for the
@@ -189,6 +218,7 @@ impl AddonProcess {
     pub fn stop(&mut self) {
         self.outgoing = None;
         self.events = None;
+        self.reading.store(false, Ordering::Release);
         let deadline = Instant::now() + GRACE;
         while Instant::now() < deadline {
             if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {
