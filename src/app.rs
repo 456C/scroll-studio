@@ -1332,7 +1332,7 @@ impl eframe::App for Studio {
             self.status = message;
         }
         self.poll_recovery(ctx);
-        self.poll_addons();
+        self.poll_addons(ctx);
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             self.setup = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

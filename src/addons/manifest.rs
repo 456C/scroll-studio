@@ -121,7 +121,7 @@ impl Manifest {
     }
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len())
         && id
             .bytes()

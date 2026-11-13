@@ -4,11 +4,16 @@
 
 use super::*;
 use scroll_studio::addons::{
-    host::{Running, Status},
+    host::{self, Decision, Running, Status},
     process::AddonProcess,
-    Installed, Permission, Registry,
+    Installed, Manifest, Permission, Registry,
 };
 use scroll_studio::wire;
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
+
+/// A background install: its result, the version it replaces, and whether that was enabled.
+type Installing = (Receiver<Result<Manifest, String>>, Option<Manifest>, bool);
 
 /// Addons known to this window.
 pub(super) struct AddonState {
@@ -17,6 +22,10 @@ pub(super) struct AddonState {
     installed: Vec<Installed>,
     running: Vec<Running>,
     message: Option<String>,
+    /// An install running in the background, and the manifest it replaces.
+    installing: Option<Installing>,
+    /// The review for the open proposal, worked out once: (addon ID, request ID, changes).
+    review: Option<(String, serde_json::Value, Vec<Change>)>,
 }
 
 impl AddonState {
@@ -27,6 +36,8 @@ impl AddonState {
             installed,
             running: Vec::new(),
             message: None,
+            installing: None,
+            review: None,
         }
     }
 
@@ -41,7 +52,8 @@ impl AddonState {
     }
 }
 
-/// One line of a proposal as the user sees it.
+/// One change in a proposal as the user sees it.
+#[derive(Debug, PartialEq)]
 struct Change {
     title: String,
     before: Option<String>,
@@ -66,6 +78,7 @@ impl Studio {
     }
 
     fn start_addon(&mut self, ctx: &egui::Context, id: &str) -> anyhow::Result<()> {
+        self.stop_addon(id, "Restarted");
         self.addons.running.retain(|r| r.manifest.id != id);
         let installed = self
             .addons
@@ -78,27 +91,43 @@ impl Studio {
             .clone()
             .map_err(|error| anyhow::anyhow!(error))?;
         let program = manifest.entry_in(&installed.folder)?;
-        let ctx = ctx.clone();
+        let wake = ctx.clone();
         let process = AddonProcess::start(
             &program,
             &installed.folder,
-            Arc::new(move || ctx.request_repaint()),
+            Arc::new(move || wake.request_repaint()),
         )?;
-        self.addons.running.push(Running::new(manifest, process));
+        self.addons
+            .running
+            .push(Running::new(manifest, process, self.revision));
         Ok(())
     }
 
-    /// Answer running addons and pass on story changes. Cheap when none are running.
-    pub(super) fn poll_addons(&mut self) {
+    /// Answer running addons, pass on story changes and finish background installs.
+    /// Cheap when no addons are installed.
+    pub(super) fn poll_addons(&mut self, ctx: &egui::Context) {
         let changes = self.take_story_changes();
+        if let Some((receiver, _, _)) = &self.addons.installing {
+            if let Ok(result) = receiver.try_recv() {
+                let (_, previous, was_enabled) = self.addons.installing.take().expect("checked");
+                self.finish_install(ctx, result, previous, was_enabled);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        }
         if self.addons.running.is_empty() {
             return;
         }
+        let mut more = false;
         for running in &mut self.addons.running {
-            running.poll(&self.story);
+            more |= running.poll(&self.story).more;
             for change in &changes {
                 running.story_changed(change);
             }
+        }
+        if more {
+            // Anything left over is answered next frame, keeping each frame short.
+            ctx.request_repaint();
         }
     }
 
@@ -110,19 +139,23 @@ impl Studio {
             .iter()
             .position(|r| r.proposal.is_some())
         else {
+            self.addons.review = None;
             return;
         };
-        let name = self.addons.running[index].manifest.name.clone();
-        let command = self.addons.running[index]
-            .proposal
-            .as_ref()
-            .expect("found above")
-            .command
-            .clone();
-        let changes = describe(&self.story, &command);
+        let running = &self.addons.running[index];
+        let name = running.manifest.name.clone();
+        let addon = running.manifest.id.clone();
+        let proposal = running.proposal.clone().expect("found above");
+        let current = matches!(&self.addons.review,
+            Some((id, request, _)) if *id == addon && *request == proposal.request_id);
+        if !current {
+            let changes = describe(&self.story, &proposal.command);
+            self.addons.review = Some((addon.clone(), proposal.request_id.clone(), changes));
+        }
+        let changes = &self.addons.review.as_ref().expect("set above").2;
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::new("addon_proposal")).show(ctx, |ui| {
-            ui.set_width((ctx.screen_rect().width() - 64.0).clamp(300.0, 620.0));
+            ui.set_width((ctx.screen_rect().width() - 64.0).clamp(300.0, 680.0));
             ui.heading(format!("{name} suggests a change"));
             ui.label(
                 RichText::new(if changes.len() == 1 {
@@ -137,48 +170,83 @@ impl Studio {
             );
             ui.add_space(8.0);
             egui::ScrollArea::vertical()
-                .max_height((ctx.screen_rect().height() - 260.0).clamp(120.0, 420.0))
+                .id_salt("addon_proposal_changes")
+                .max_height((ctx.screen_rect().height() - 260.0).clamp(120.0, 460.0))
                 .show(ui, |ui| {
-                    for change in &changes {
+                    for (i, change) in changes.iter().enumerate() {
                         ui.label(RichText::new(&change.title).strong());
-                        if let Some(before) = &change.before {
-                            ui.label(RichText::new(format!("Before: {before}")).color(MUTED));
+                        // Full text, so nothing applied is hidden; long text scrolls.
+                        for (label, text) in [("Before", &change.before), ("After", &change.after)]
+                        {
+                            if let Some(text) = text {
+                                ui.label(RichText::new(label).size(12.0).color(MUTED));
+                                egui::ScrollArea::vertical()
+                                    .id_salt(("addon_change", i, label))
+                                    .max_height(140.0)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::Label::new(if text.is_empty() {
+                                                "(empty)"
+                                            } else {
+                                                text.as_str()
+                                            })
+                                            .selectable(true)
+                                            .wrap(),
+                                        );
+                                    });
+                            }
                         }
-                        if let Some(after) = &change.after {
-                            ui.label(format!("After: {after}"));
-                        }
-                        ui.add_space(6.0);
+                        ui.add_space(8.0);
                     }
                 });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if motion::button(ui, "Cancel").clicked() {
-                    decision = Some(false);
+                    decision = Some(Choice::Cancel);
+                }
+                if motion::button(ui, "Stop addon")
+                    .on_hover_text("Cancel and stop this addon until you restart it")
+                    .clicked()
+                {
+                    decision = Some(Choice::Stop);
                 }
                 if ui
                     .add(motion::Button::new(RichText::new("Apply").color(BG)).fill(ACCENT))
                     .clicked()
                 {
-                    decision = Some(true);
+                    decision = Some(Choice::Apply);
                 }
             });
         });
         if decision.is_none() && modal.should_close() {
-            decision = Some(false);
+            decision = Some(Choice::Cancel);
         }
-        match decision {
-            Some(true) => {
-                // The story may have changed since the addon asked; apply re-checks it.
-                let result = self.apply_command(command).map_err(|e| format!("{e:#}"));
-                if let Err(error) = &result {
-                    self.status = format!("{name}'s change could not be applied: {error}");
-                }
-                self.addons.running[index].resolve(result);
+        let Some(choice) = decision else {
+            return;
+        };
+        self.addons.review = None;
+        match choice {
+            Choice::Apply => {
+                // The story may have changed since the addon asked: check again, including
+                // locks, before applying.
+                let result = host::check_edit(&self.story, &proposal.command).and_then(|()| {
+                    self.apply_command(proposal.command)
+                        .map_err(|e| format!("{e:#}"))
+                });
+                let decision = match result {
+                    Ok(applied) => Decision::Applied(Box::new(applied)),
+                    Err(error) => {
+                        self.status = format!("{name}'s change could not be applied: {error}");
+                        Decision::Failed(error)
+                    }
+                };
+                self.addons.running[index].resolve(decision);
             }
-            Some(false) => {
-                self.addons.running[index].resolve(Err("Cancelled by the user".into()));
+            Choice::Cancel => self.addons.running[index].resolve(Decision::Cancelled),
+            Choice::Stop => {
+                self.addons.running[index].resolve(Decision::Cancelled);
+                self.addons.running[index].stop("Stopped from its suggestion".into());
             }
-            None => {}
         }
     }
 
@@ -186,16 +254,24 @@ impl Studio {
     pub(super) fn addons_settings(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
-            let can_install = self.addons.registry.is_some();
+            let installing = self.addons.installing.is_some();
+            let can_install = self.addons.registry.is_some() && !installing;
             if ui
-                .add_enabled(can_install, motion::Button::new("Install from file…"))
+                .add_enabled(
+                    can_install,
+                    motion::Button::new(if installing {
+                        "Installing…"
+                    } else {
+                        "Install from file…"
+                    }),
+                )
                 .clicked()
             {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Scroll Studio addon", &["zip"])
                     .pick_file()
                 {
-                    self.install_addon(&ctx, &path);
+                    self.install_addon(&path);
                 }
             }
         });
@@ -298,29 +374,78 @@ impl Studio {
         }
     }
 
-    fn install_addon(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+    /// Install in the background. A running copy is stopped first so its files can be
+    /// replaced; it restarts afterwards unless the new version asks for new permissions.
+    fn install_addon(&mut self, path: &std::path::Path) {
         let Some(registry) = self.addons.registry.clone() else {
             return;
         };
-        // Stop a running copy so its files can be replaced.
-        let id = registry.install_zip(path);
-        match id {
-            Ok(manifest) => {
-                let was_running = self.addons.running(&manifest.id).is_some();
-                self.addons.running.retain(|r| r.manifest.id != manifest.id);
-                self.addons.refresh();
-                self.addons.message =
-                    Some(format!("Installed {} {}", manifest.name, manifest.version));
-                if was_running {
-                    if let Err(error) = self.start_addon(ctx, &manifest.id) {
-                        self.addons.message = Some(format!("{}: {error:#}", manifest.name));
-                    }
-                }
+        // Only the manifest decides the ID, so peek at it to stop the right addon.
+        let peek = peek_manifest(path);
+        let (previous, was_enabled) = match &peek {
+            Some(id) => {
+                let installed = self.addons.installed.iter().find(|i| &i.id == id);
+                let previous = installed.and_then(|i| i.manifest.clone().ok());
+                let was_enabled = installed.is_some_and(|i| i.enabled);
+                self.stop_addon(id, "Updating");
+                (previous, was_enabled)
             }
+            None => (None, false),
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = sender.send(registry.install_zip(&path).map_err(|e| format!("{e:#}")));
+        });
+        self.addons.installing = Some((receiver, previous, was_enabled));
+        self.addons.message = Some("Installing…".into());
+    }
+
+    fn finish_install(
+        &mut self,
+        ctx: &egui::Context,
+        result: Result<Manifest, String>,
+        previous: Option<Manifest>,
+        was_enabled: bool,
+    ) {
+        self.addons.refresh();
+        let manifest = match result {
+            Ok(manifest) => manifest,
             Err(error) => {
-                self.addons.message = Some(format!("Could not install: {error:#}"));
+                self.addons.message = Some(format!("Could not install: {error}"));
+                return;
             }
+        };
+        let note = "Addons run as programs on your computer; enable only ones you trust.";
+        let same_permissions = previous
+            .as_ref()
+            .is_some_and(|p| p.permissions == manifest.permissions);
+        if was_enabled && same_permissions {
+            self.addons.message = Some(format!(
+                "Updated {} to {}.",
+                manifest.name, manifest.version
+            ));
+            if let Err(error) = self.start_addon(ctx, &manifest.id) {
+                self.addons.message = Some(format!("{}: {error:#}", manifest.name));
+            }
+            return;
         }
+        if was_enabled {
+            // New permissions need the user's yes again.
+            if let Some(registry) = &self.addons.registry {
+                let _ = registry.set_enabled(&manifest.id, false);
+            }
+            self.addons.refresh();
+            self.addons.message = Some(format!(
+                "Updated {} to {}. It asks for different permissions, so it is off until you enable it. {note}",
+                manifest.name, manifest.version
+            ));
+            return;
+        }
+        self.addons.message = Some(format!(
+            "Installed {} {}. {note}",
+            manifest.name, manifest.version
+        ));
     }
 
     fn addon_action(&mut self, ctx: &egui::Context, action: AddonAction) {
@@ -333,26 +458,35 @@ impl Studio {
                 self.start_addon(ctx, id)
             }),
             AddonAction::Enable(id, false) => {
-                self.stop_addon(id);
+                self.stop_addon(id, "Disabled");
                 registry.set_enabled(id, false)
             }
             AddonAction::Restart(id) => self.start_addon(ctx, id),
             AddonAction::Remove(id) => {
-                self.stop_addon(id);
+                self.stop_addon(id, "Removed");
                 registry.remove(id)
             }
         };
         self.addons.refresh();
-        self.addons.message = result.err().map(|error| format!("{error:#}"));
+        if let Err(error) = result {
+            self.addons.message = Some(format!("{error:#}"));
+        }
     }
 
-    /// Stop an addon, cancelling anything it had waiting.
-    fn stop_addon(&mut self, id: &str) {
+    /// Stop an addon, telling it about anything it had waiting.
+    fn stop_addon(&mut self, id: &str, reason: &str) {
         if let Some(running) = self.addons.running.iter_mut().find(|r| r.manifest.id == id) {
-            running.resolve(Err("The addon was stopped".into()));
+            running.resolve(Decision::Failed("The addon was stopped".into()));
+            running.stop(reason.into());
         }
         self.addons.running.retain(|r| r.manifest.id != id);
     }
+}
+
+enum Choice {
+    Apply,
+    Cancel,
+    Stop,
 }
 
 enum AddonAction {
@@ -361,33 +495,77 @@ enum AddonAction {
     Remove(String),
 }
 
-/// Describe a proposal: one entry per change, with before and after for text.
+/// The addon ID a package declares, without installing it.
+fn peek_manifest(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut zip = zip::ZipArchive::new(file).ok()?;
+    let mut entry = zip
+        .by_name(scroll_studio::addons::manifest::FILE_NAME)
+        .ok()?;
+    let mut bytes = Vec::new();
+    (&mut entry)
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Manifest::parse(&bytes).ok().map(|m| m.id)
+}
+
+/// Describe a proposal from a rehearsal on a copy: every text field it would change, with
+/// the full text before and after, then every change that is not plain text.
 fn describe(story: &Story, command: &Command) -> Vec<Change> {
-    match command {
-        Command::Batch(parts) => parts.iter().flat_map(|c| describe(story, c)).collect(),
-        Command::SetField {
-            target,
-            field,
-            value,
-        } => vec![Change {
-            title: format!(
-                "{} · {}",
-                object_label(story, *target),
-                humanize(field.as_str())
-            ),
-            before: story.field(*target, *field).ok().map(preview),
-            after: Some(preview(value)),
-        }],
-        other => {
-            let (method, params) = wire::command_request(other).unwrap_or_default();
-            let title = humanize(method.trim_start_matches(wire::EDIT_PREFIX));
-            let details = params.to_string();
-            vec![Change {
-                title,
-                before: None,
-                after: (details != "null").then(|| preview(&details)),
-            }]
+    let mut rehearsal = story.clone();
+    if let Err(error) = rehearsal.apply(command.clone()) {
+        return vec![Change {
+            title: "This suggestion no longer applies".into(),
+            before: None,
+            after: Some(format!("{error:#}")),
+        }];
+    }
+    let mut changes = Vec::new();
+    for (target, field) in story.text_fields() {
+        let before = story.field(target, field).ok();
+        let after = rehearsal.field(target, field).ok();
+        if before != after {
+            changes.push(Change {
+                title: format!(
+                    "{} · {}",
+                    object_label(story, target),
+                    humanize(field.as_str())
+                ),
+                before: Some(before.unwrap_or("(removed)").to_owned()),
+                after: Some(after.unwrap_or("(removed)").to_owned()),
+            });
         }
+    }
+    let mut parts = Vec::new();
+    flatten(command, &mut parts);
+    for part in parts {
+        if matches!(part, Command::SetField { .. } | Command::ReplaceText { .. }) {
+            continue; // shown above as the text it changes
+        }
+        let (title, details) = match wire::command_request(part) {
+            Ok((method, params)) => (
+                humanize(method.trim_start_matches(wire::EDIT_PREFIX)),
+                (!params.is_null()).then(|| {
+                    serde_json::to_string_pretty(&params).unwrap_or_else(|_| params.to_string())
+                }),
+            ),
+            Err(_) => (humanize(part.name()), None),
+        };
+        changes.push(Change {
+            title,
+            before: None,
+            after: details,
+        });
+    }
+    changes
+}
+
+fn flatten<'a>(command: &'a Command, out: &mut Vec<&'a Command>) {
+    match command {
+        Command::Batch(parts) => parts.iter().for_each(|part| flatten(part, out)),
+        other => out.push(other),
     }
 }
 
@@ -421,43 +599,53 @@ fn humanize(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Long text, shortened for the review (the full text is still what applies).
-fn preview(text: &str) -> String {
-    const LIMIT: usize = 600;
-    if text.is_empty() {
-        return "(empty)".into();
-    }
-    if text.chars().count() <= LIMIT {
-        return text.to_owned();
-    }
-    let short: String = text.chars().take(LIMIT).collect();
-    format!("{short}…")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn proposals_describe_text_changes_with_before_and_after() {
+    fn reviews_show_every_text_change_in_full_and_each_structural_change() {
         let story = Story::demo();
+        let long = "word ".repeat(2000);
         let changes = describe(
             &story,
             &Command::Batch(vec![
                 Command::SetField {
                     target: Target::Story,
-                    field: Field::Title,
-                    value: "Rain".into(),
+                    field: Field::Synopsis,
+                    value: long.clone(),
                 },
                 Command::AddGroup,
             ]),
         );
         assert_eq!(changes.len(), 2);
-        assert_eq!(changes[0].title, "Story “After the rain” · Title");
-        assert_eq!(changes[0].before.as_deref(), Some("After the rain"));
-        assert_eq!(changes[0].after.as_deref(), Some("Rain"));
+        assert_eq!(changes[0].title, "Story “After the rain” · Synopsis");
+        assert_eq!(changes[0].before.as_deref(), Some(story.synopsis.as_str()));
+        assert_eq!(
+            changes[0].after.as_deref(),
+            Some(long.as_str()),
+            "no truncation"
+        );
         assert_eq!(changes[1].title, "Add group");
-        assert!(preview(&"x".repeat(5000)).chars().count() <= 601);
+        // A find-and-replace lists every field it would change, not just the pattern.
+        let replaced = describe(
+            &story,
+            &Command::ReplaceText {
+                find: "Mira".into(),
+                replace: "Mina".into(),
+                scope: commands::Scope::Story,
+            },
+        );
+        let expected = story
+            .text_fields()
+            .into_iter()
+            .filter(|(t, f)| story.field(*t, *f).unwrap().contains("Mira"))
+            .count();
+        assert!(expected > 0);
+        assert_eq!(replaced.len(), expected);
+        assert!(replaced
+            .iter()
+            .all(|c| c.after.as_deref().unwrap().contains("Mina")));
     }
 
     #[test]
@@ -473,10 +661,11 @@ mod tests {
                     value: "x".into(),
                 })
                 .ok();
-            studio.poll_addons();
+            studio.poll_addons(&ctx);
         }
         assert!(studio.story_changes.is_empty());
         // No proposal, no review.
         let _ = ctx.run(Default::default(), |ctx| studio.addon_proposal_ui(ctx));
+        assert!(studio.addons.review.is_none());
     }
 }

@@ -78,6 +78,15 @@ impl Registry {
             zip.len() <= MAX_ENTRIES,
             "The addon package has too many files"
         );
+        // On Windows and macOS, `A.txt` and `a.txt` are the same file: a package relying on
+        // the difference could install files other than the ones that were checked.
+        let mut names = std::collections::HashSet::new();
+        for name in zip.file_names() {
+            ensure!(
+                names.insert(name.trim_end_matches('/').to_lowercase()),
+                "The addon package has files whose names differ only in letter case"
+            );
+        }
         let manifest = {
             let mut entry = zip
                 .by_name(manifest::FILE_NAME)
@@ -136,12 +145,28 @@ impl Registry {
                 let mode = std::fs::metadata(&entry)?.permissions().mode();
                 std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(mode | 0o700))?;
             }
+            // Move the old version aside first, so a failed swap can put it back.
             let destination = self.directory.join(&manifest.id);
-            if destination.exists() {
-                std::fs::remove_dir_all(&destination)
-                    .context("Could not replace the installed version; close it and try again")?;
+            let previous = self.directory.join(format!(".previous-{}", manifest.id));
+            if previous.exists() {
+                std::fs::remove_dir_all(&previous)?;
             }
-            std::fs::rename(&staging, &destination)?;
+            let replacing = destination.exists();
+            if replacing {
+                std::fs::rename(&destination, &previous).context(
+                    "Could not replace the installed version; stop the addon and try again",
+                )?;
+            }
+            if let Err(error) = std::fs::rename(&staging, &destination) {
+                if replacing {
+                    let _ = std::fs::rename(&previous, &destination);
+                }
+                return Err(error).context("Could not move the new version into place");
+            }
+            if replacing {
+                // The new version is in place; leftovers here are cleaned up next time.
+                let _ = std::fs::remove_dir_all(&previous);
+            }
             Ok(())
         })();
         if result.is_err() && staging.exists() {
@@ -187,7 +212,7 @@ impl Registry {
 
     /// The folder for `id`, refusing anything that is not a plain addon ID.
     fn folder(&self, id: &str) -> Result<PathBuf> {
-        if id.is_empty() || id.starts_with('.') || id.contains(['/', '\\']) || id.contains("..") {
+        if !manifest::valid_id(id) {
             bail!("Invalid addon ID");
         }
         Ok(self.directory.join(id))
