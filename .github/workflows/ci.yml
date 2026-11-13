@@ -341,6 +341,30 @@ jobs:
           if ($count -lt 5) { throw "Expected 5 sample stories, found $count." }
           cargo run --release --locked --quiet --example verify_web_roundtrip -- $samples
           if ($LASTEXITCODE -ne 0) { throw 'A sample story failed to load or validate.' }
+      - name: Smoke test the installer
+        shell: pwsh
+        # Silent per-user install into a temp folder, then open, export, save and
+        # reopen every installed sample with the desktop library. The window itself
+        # is not opened: hosted runners have no GPU for the OpenGL interface.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'dist') -Filter '*-Setup-x64.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Installer not found in dist.' }
+          $target = Join-Path $env:RUNNER_TEMP 'smoke-install'
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList '/S', "/D=$target" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)." }
+          foreach ($needed in @('Scroll Studio.exe', 'Uninstall.exe', 'README.md', 'LICENSE')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $target $needed) -PathType Leaf)) { throw "Install is missing $needed" }
+          }
+          $samples = Join-Path $target 'Samples'
+          $installed = @(Get-ChildItem -LiteralPath $samples -Filter '*.scro').Count
+          if ($installed -lt 5) { throw "Expected 5 installed samples, found $installed." }
+          cargo run --release --locked --quiet --example release_smoke -- $samples (Join-Path $env:RUNNER_TEMP 'smoke-work')
+          if ($LASTEXITCODE -ne 0) { throw 'Release smoke test failed.' }
+          $uninstall = Start-Process -FilePath (Join-Path $target 'Uninstall.exe') -ArgumentList '/S', "_?=$target" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with $($uninstall.ExitCode)." }
+          if (Test-Path -LiteralPath (Join-Path $target 'Scroll Studio.exe')) { throw 'Uninstall left Scroll Studio.exe behind.' }
+          Write-Host 'Installed, smoke-tested and uninstalled.'
       - name: Verify checksums and collect release files
         shell: pwsh
         run: |
