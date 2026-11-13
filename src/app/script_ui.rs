@@ -316,6 +316,10 @@ impl Studio {
                                                 self.begin_dialogue_setup(panel.id);
                                                 ui.close_menu();
                                             }
+                                            self.assist_menu_item(
+                                                ui,
+                                                serde_json::json!({ "kind": "panel", "id": panel.id }),
+                                            );
                                             ui.separator();
                                             ui.label("Position on canvas");
                                             ui.add(

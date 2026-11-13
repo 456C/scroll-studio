@@ -392,6 +392,7 @@ impl Studio {
                                 self.lore_view.connecting,
                                 "Connect cards",
                             );
+                            self.assist_star(ui, serde_json::json!({ "kind": "lore" }));
                             if connect.clicked() {
                                 self.lore_view.connecting = !self.lore_view.connecting;
                                 self.lore_view.link_from = self

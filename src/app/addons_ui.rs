@@ -36,6 +36,61 @@ pub(super) struct AddonState {
     installing: Option<Installing>,
     /// The review for the open proposal, worked out once per story state.
     review: Option<Review>,
+    /// The star button's request box, when open.
+    pub(super) assist: Option<super::assist_ui::Assist>,
+    /// Each running addon's own settings, as it last described them.
+    settings: std::collections::HashMap<String, Vec<SettingField>>,
+    /// Requests sent to addons that the app is waiting on.
+    waiting: Vec<(String, u64, Purpose)>,
+}
+
+/// Why the app asked an addon something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Purpose {
+    Settings,
+    Assist,
+}
+
+/// One of an addon's own settings, as the addon describes it.
+#[derive(Clone, Debug, PartialEq)]
+struct SettingField {
+    key: String,
+    label: String,
+    kind: SettingKind,
+    value: serde_json::Value,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingKind {
+    Text,
+    Toggle,
+    /// Read-only and copyable, like an address or a token.
+    Info,
+}
+
+fn setting_fields(answer: &serde_json::Value) -> Vec<SettingField> {
+    answer["fields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .take(32)
+                .filter_map(|field| {
+                    Some(SettingField {
+                        key: field["key"].as_str()?.chars().take(64).collect(),
+                        label: field["label"].as_str()?.chars().take(64).collect(),
+                        kind: match field["kind"].as_str()? {
+                            "text" => SettingKind::Text,
+                            "toggle" => SettingKind::Toggle,
+                            "info" => SettingKind::Info,
+                            _ => return None,
+                        },
+                        value: field["value"].clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl AddonState {
@@ -48,6 +103,38 @@ impl AddonState {
             message: None,
             installing: None,
             review: None,
+            assist: None,
+            settings: Default::default(),
+            waiting: Vec::new(),
+        }
+    }
+
+    /// The running addon that offers the star button, and its label.
+    pub(super) fn assistant(&self) -> Option<(String, String)> {
+        self.running.iter().find_map(|r| {
+            let label = r.manifest.assist.clone()?;
+            (r.status == Status::Running).then(|| (r.manifest.id.clone(), label))
+        })
+    }
+
+    /// Ask a running addon something; `None` if it is not running or too busy.
+    pub(super) fn ask(
+        &mut self,
+        addon: &str,
+        method: &str,
+        params: serde_json::Value,
+        purpose: Purpose,
+    ) -> Option<u64> {
+        let running = self.running.iter_mut().find(|r| r.manifest.id == addon)?;
+        let id = running.request(method, params)?;
+        self.waiting.push((addon.to_owned(), id, purpose));
+        Some(id)
+    }
+
+    pub(super) fn cancel(&mut self, addon: &str, id: u64) {
+        self.waiting.retain(|(a, i, _)| !(a == addon && *i == id));
+        if let Some(running) = self.running.iter_mut().find(|r| r.manifest.id == addon) {
+            running.cancel_request(id);
         }
     }
 
@@ -110,6 +197,13 @@ impl Studio {
         self.addons
             .running
             .push(Running::new(manifest, process, self.revision));
+        self.addons.settings.remove(id);
+        self.addons.ask(
+            id,
+            "addon.settings",
+            serde_json::json!({}),
+            Purpose::Settings,
+        );
         Ok(())
     }
 
@@ -137,10 +231,41 @@ impl Studio {
             return;
         }
         let mut more = false;
+        let mut answers = Vec::new();
+        let mut stopped = None;
         for running in &mut self.addons.running {
+            let was_running = running.status == Status::Running;
             more |= running.poll(&self.story).more;
+            // Said once, when an addon stops by itself; Settings → Addons can restart it.
+            if let (true, Status::Stopped(reason)) = (was_running, &running.status) {
+                stopped = Some(format!("{}: {reason}", running.manifest.name));
+            }
             for change in &changes {
                 running.story_changed(change);
+            }
+            let id = running.manifest.id.clone();
+            answers.extend(running.take_answers().into_iter().map(|a| (id.clone(), a)));
+        }
+        if let Some(message) = stopped {
+            self.status = message.chars().take(200).collect();
+        }
+        for (addon, (id, outcome)) in answers {
+            let Some(i) = self
+                .addons
+                .waiting
+                .iter()
+                .position(|(a, i, _)| *a == addon && *i == id)
+            else {
+                continue;
+            };
+            let (_, _, purpose) = self.addons.waiting.remove(i);
+            match purpose {
+                // An addon without settings answers with an error: it just has none.
+                Purpose::Settings => {
+                    let fields = outcome.map(|a| setting_fields(&a)).unwrap_or_default();
+                    self.addons.settings.insert(addon, fields);
+                }
+                Purpose::Assist => self.finish_assist(id, outcome),
             }
         }
         if more {
@@ -366,6 +491,18 @@ impl Studio {
                                 match running.map(|r| &r.status) {
                                     Some(Status::Running) => {
                                         ui.label(RichText::new("Running").color(ACCENT));
+                                        if let Some(fields) =
+                                            self.addons.settings.get(&installed.id)
+                                        {
+                                            if !fields.is_empty() {
+                                                addon_settings_ui(
+                                                    ui,
+                                                    &installed.id,
+                                                    fields,
+                                                    &mut action,
+                                                );
+                                            }
+                                        }
                                     }
                                     Some(Status::Stopped(reason)) => {
                                         ui.horizontal_wrapped(|ui| {
@@ -507,6 +644,15 @@ impl Studio {
                 registry.set_enabled(id, false)
             }
             AddonAction::Restart(id) => self.start_addon(ctx, id),
+            AddonAction::Set(id, key, value) => {
+                self.addons.ask(
+                    id,
+                    "addon.set_setting",
+                    serde_json::json!({ "key": key, "value": value }),
+                    Purpose::Settings,
+                );
+                return;
+            }
             AddonAction::Remove(id) => {
                 self.stop_addon(id, "Removed");
                 registry.remove(id)
@@ -551,6 +697,86 @@ enum AddonAction {
     Enable(String, bool),
     Restart(String),
     Remove(String),
+    Set(String, String, serde_json::Value),
+}
+
+/// An addon's own settings, behind a disclosure so the card stays short.
+fn addon_settings_ui(
+    ui: &mut egui::Ui,
+    id: &str,
+    fields: &[SettingField],
+    action: &mut Option<AddonAction>,
+) {
+    egui::CollapsingHeader::new("Settings")
+        .id_salt(("addon_settings", id))
+        .show(ui, |ui| {
+            egui::Grid::new(("addon_settings_grid", id))
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    for field in fields {
+                        ui.label(RichText::new(&field.label).color(MUTED));
+                        match field.kind {
+                            SettingKind::Toggle => {
+                                let mut on = field.value.as_bool().unwrap_or(false);
+                                if ui.checkbox(&mut on, "").changed() {
+                                    *action = Some(AddonAction::Set(
+                                        id.to_owned(),
+                                        field.key.clone(),
+                                        on.into(),
+                                    ));
+                                }
+                            }
+                            SettingKind::Text => {
+                                let draft_id = egui::Id::new(("addon_setting", id, &field.key));
+                                let current = field.value.as_str().unwrap_or_default().to_owned();
+                                let mut draft = ui
+                                    .data_mut(|d| d.get_temp::<String>(draft_id))
+                                    .unwrap_or_else(|| current.clone());
+                                let edit = ui.add(
+                                    egui::TextEdit::singleline(&mut draft)
+                                        .char_limit(512)
+                                        .desired_width(240.0),
+                                );
+                                if edit.has_focus() {
+                                    ui.data_mut(|d| d.insert_temp(draft_id, draft));
+                                } else {
+                                    if edit.lost_focus() && draft != current {
+                                        *action = Some(AddonAction::Set(
+                                            id.to_owned(),
+                                            field.key.clone(),
+                                            draft.into(),
+                                        ));
+                                    }
+                                    ui.data_mut(|d| d.remove::<String>(draft_id));
+                                }
+                            }
+                            SettingKind::Info => {
+                                let text = match &field.value {
+                                    serde_json::Value::String(text) => text.clone(),
+                                    serde_json::Value::Null => String::new(),
+                                    other => other.to_string(),
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Label::new(&text).selectable(true).truncate());
+                                    if !text.is_empty()
+                                        && motion::copy_button(
+                                            ui,
+                                            ("addon_setting_copy", id, &field.key),
+                                            "Copy",
+                                            false,
+                                        )
+                                        .clicked()
+                                    {
+                                        ui.ctx().copy_text(text.clone());
+                                    }
+                                });
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 /// The addon ID a package declares, without installing it.
@@ -605,9 +831,7 @@ fn describe(story: &Story, command: &Command) -> Vec<Change> {
         let (title, details) = match wire::command_request(part) {
             Ok((method, params)) => (
                 humanize(method.trim_start_matches(wire::EDIT_PREFIX)),
-                (!params.is_null()).then(|| {
-                    serde_json::to_string_pretty(&params).unwrap_or_else(|_| params.to_string())
-                }),
+                (!params.is_null()).then(|| readable(story, &params)),
             ),
             Err(_) => (humanize(part.name()), None),
         };
@@ -645,6 +869,44 @@ fn object_label(story: &Story, target: Target) -> String {
         kind
     } else {
         format!("{kind} “{name}”")
+    }
+}
+
+/// Parameters as lines a person can read: `Title: The flooded station`, objects by name.
+fn readable(story: &Story, params: &serde_json::Value) -> String {
+    use serde_json::Value;
+    fn text(story: &Story, key: &str, value: &Value) -> String {
+        match value {
+            Value::String(text) => text.clone(),
+            Value::Bool(on) => if *on { "Yes" } else { "No" }.into(),
+            Value::Null => "None".into(),
+            Value::Number(n) if key.ends_with("_id") => n
+                .as_u64()
+                .map(|id| object_label(story, Target::Object(id)))
+                .unwrap_or_else(|| n.to_string()),
+            Value::Number(n) => n.to_string(),
+            Value::Array(items) => items
+                .iter()
+                .map(|item| text(story, key.trim_end_matches('s'), item))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", humanize(k), text(story, k, v)))
+                .collect::<Vec<_>>()
+                .join(" · "),
+        }
+    }
+    match params {
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, v)| {
+                let label = humanize(key.trim_end_matches("_id").trim_end_matches("_ids"));
+                format!("{label}: {}", text(story, key, v))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => text(story, "", other),
     }
 }
 
@@ -704,6 +966,40 @@ mod tests {
         assert!(replaced
             .iter()
             .all(|c| c.after.as_deref().unwrap().contains("Mina")));
+    }
+
+    #[test]
+    fn structural_changes_read_as_plain_lines_with_object_names() {
+        let story = Story::demo();
+        let character = story
+            .assets
+            .iter()
+            .find(|a| a.kind == AssetKind::Character)
+            .unwrap()
+            .clone();
+        let changes = describe(
+            &story,
+            &Command::Batch(vec![
+                Command::AddLoreNote {
+                    title: "The flooded station".into(),
+                    position: [40.0, 40.0],
+                },
+                Command::AddPaletteColor {
+                    character: character.id,
+                    name: "Coat".into(),
+                    color: [40, 40, 48, 255],
+                },
+            ]),
+        );
+        let note = changes[0].after.as_deref().unwrap();
+        assert!(note.contains("Title: The flooded station"), "{note}");
+        assert!(note.contains("Position: 40.0, 40.0"), "{note}");
+        let color = changes[1].after.as_deref().unwrap();
+        assert!(
+            color.contains(&format!("Character: Character “{}”", character.name)),
+            "{color}"
+        );
+        assert!(!color.contains('{'), "no raw JSON: {color}");
     }
 
     #[test]

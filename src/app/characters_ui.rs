@@ -531,7 +531,12 @@ impl Studio {
                 ui.push_id((self.document_epoch, id), |ui| {
                     let _header = ui
                         .horizontal(|ui| {
-                            let name_width = (ui.available_width() - 370.0).max(120.0);
+                            let star = if self.addons.assistant().is_some() {
+                                36.0
+                            } else {
+                                0.0
+                            };
+                            let name_width = (ui.available_width() - 370.0 - star).max(120.0);
                             ui.add(
                                 egui::TextEdit::singleline(&mut character.name)
                                     .font(egui::FontId::proportional(23.0))
@@ -561,6 +566,10 @@ impl Studio {
                             if motion::button(ui, "Angle").clicked() {
                                 self.open_camera(ctx, id);
                             }
+                            self.assist_star(
+                                ui,
+                                serde_json::json!({ "kind": "character", "id": id }),
+                            );
                             if motion::copy_button(
                                 ui,
                                 ("copy_prompt", self.document_epoch, id),

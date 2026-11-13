@@ -236,21 +236,24 @@ impl Studio {
                     (ctx.screen_rect().height() - 260.0).clamp(180.0, 320.0),
                     "Linework, palette, lighting, mood…",
                 );
-                if ui
-                    .add_enabled_ui(!prompt.trim().is_empty(), |ui| {
-                        motion::copy_button(
-                            ui,
-                            ("copy_style_prompt", self.document_epoch),
-                            "Copy style",
-                            true,
-                        )
-                    })
-                    .inner
-                    .clicked()
-                {
-                    ctx.copy_text(prompt.clone());
-                    self.status = "Style copied".into();
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled_ui(!prompt.trim().is_empty(), |ui| {
+                            motion::copy_button(
+                                ui,
+                                ("copy_style_prompt", self.document_epoch),
+                                "Copy style",
+                                true,
+                            )
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        ctx.copy_text(prompt.clone());
+                        self.status = "Style copied".into();
+                    }
+                    self.assist_star(ui, serde_json::json!({ "kind": "story" }));
+                });
             });
         self.style_prompt_open = open;
         if prompt != original {

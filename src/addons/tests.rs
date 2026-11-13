@@ -21,6 +21,7 @@ fn manifest(permissions: &[Permission]) -> Manifest {
         permissions: permissions.to_vec(),
         download_mb: 4.0,
         hardware: "Any PC that runs Scroll Studio".into(),
+        assist: None,
     }
 }
 
@@ -326,7 +327,17 @@ fn messages_are_strict_json_rpc_lines() {
     ));
     assert_eq!(
         host::parse_message(r#"{"jsonrpc":"2.0","id":5,"result":{}}"#),
-        host::FromAddon::Response
+        host::FromAddon::Response {
+            id: json!(5),
+            outcome: Ok(json!({}))
+        }
+    );
+    assert_eq!(
+        host::parse_message(r#"{"jsonrpc":"2.0","id":6,"error":{"code":1,"message":"no model"}}"#),
+        host::FromAddon::Response {
+            id: json!(6),
+            outcome: Err("no model".into())
+        }
     );
     // A refusal at Apply is told apart from the user saying no.
     let refused: Value = serde_json::from_str(&host::decision_line(
@@ -393,6 +404,25 @@ fn fake_addon() {
             out(edit(1));
             std::thread::sleep(Duration::from_millis(300));
             std::process::exit(3);
+        }
+        "assistant" => {
+            // Answers the app's requests: settings at once, assist after proposing.
+            loop {
+                let request = next();
+                match request["method"].as_str() {
+                    Some("addon.settings") => out(json!({ "jsonrpc": "2.0", "id": request["id"],
+                        "result": { "fields": [{ "key": "model", "label": "Model", "kind": "text", "value": "tiny" }] } })),
+                    Some("addon.assist") => {
+                        eprintln!("assist-request={}", request["params"]["request"]);
+                        out(edit(10));
+                        let decision = next();
+                        out(json!({ "jsonrpc": "2.0", "id": request["id"],
+                            "result": { "applied": decision["result"]["applied"] } }));
+                    }
+                    Some("addon.cancel") => eprintln!("cancelled={}", request["params"]["id"]),
+                    _ => {}
+                }
+            }
         }
         "proposer" => {
             for id in 1..=10 {
@@ -555,4 +585,86 @@ fn repeated_cancels_stop_the_addon() {
     }
     assert!(matches!(&running.status, Status::Stopped(reason) if reason.contains("cancelled")));
     assert!(running.proposal.is_none());
+}
+
+#[test]
+fn the_app_asks_addons_and_hears_their_answers() {
+    let mut running = fake("assistant");
+    let mut story = Story::demo();
+    let settings = running.request("addon.settings", json!({})).unwrap();
+    let mut answers = Vec::new();
+    until(&mut running, &story, |r| !r.is_pending(settings));
+    answers.extend(running.take_answers());
+    assert_eq!(answers[0].0, settings);
+    assert_eq!(answers[0].1.as_ref().unwrap()["fields"][0]["key"], "model");
+    // An answer to a request the app never sent is ignored.
+    assert!(running.take_answers().is_empty());
+
+    let assist = running
+        .request(
+            "addon.assist",
+            json!({ "request": "Rename it", "target": { "kind": "story" } }),
+        )
+        .unwrap();
+    until(&mut running, &story, |r| r.proposal.is_some());
+    let command = running.proposal.as_ref().unwrap().command.clone();
+    let applied = story.apply(command).unwrap();
+    running.resolve(Decision::Applied(Box::new(applied)));
+    until(&mut running, &story, |r| !r.is_pending(assist));
+    let answers = running.take_answers();
+    assert_eq!(answers[0].1.as_ref().unwrap()["applied"], true);
+    assert_eq!(story.title, "From addon");
+
+    // Cancelling tells the addon; stopping answers whatever is still waiting.
+    let gone = running
+        .request("addon.assist", json!({ "request": "x" }))
+        .unwrap();
+    running.cancel_request(gone);
+    assert!(!running.is_pending(gone));
+    let waiting = running
+        .request("addon.settings_never_answered", json!({}))
+        .unwrap();
+    running.stop("Stopped for the test".into());
+    let answers = running.take_answers();
+    assert!(answers
+        .iter()
+        .any(|(id, outcome)| *id == waiting && outcome.is_err()));
+    assert!(running.request("addon.settings", json!({})).is_none());
+}
+
+#[test]
+fn addons_can_read_the_api_description_they_may_use() {
+    let story = Story::demo();
+    let reader = manifest(&[Permission::StoryRead]);
+    let Action::Reply(described) = host::handle(&story, &reader, "host.describe", &Value::Null)
+    else {
+        panic!("host.describe failed")
+    };
+    let methods = described["methods"].as_array().unwrap();
+    assert_eq!(methods.len(), crate::wire::READ_METHODS.len());
+    assert!(methods
+        .iter()
+        .all(|m| !m["method"].as_str().unwrap().starts_with("edit.")));
+    assert_eq!(methods[0]["params"]["type"], "object");
+    let both = manifest(&BOTH);
+    let Action::Reply(described) = host::handle(&story, &both, "host.describe", &Value::Null)
+    else {
+        panic!("host.describe failed")
+    };
+    assert_eq!(
+        described["methods"].as_array().unwrap().len(),
+        crate::wire::READ_METHODS.len() + crate::wire::EDIT_METHODS.len()
+    );
+}
+
+#[test]
+fn only_proposing_addons_may_assist() {
+    let mut m = manifest(&[Permission::StoryRead]);
+    m.assist = Some("Ask AI Lite".into());
+    let bytes = serde_json::to_vec(&m).unwrap();
+    assert!(Manifest::parse(&bytes).is_err());
+    m.permissions = BOTH.to_vec();
+    assert!(Manifest::parse(&serde_json::to_vec(&m).unwrap()).is_ok());
+    m.assist = Some(String::new());
+    assert!(Manifest::parse(&serde_json::to_vec(&m).unwrap()).is_err());
 }

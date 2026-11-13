@@ -5,14 +5,21 @@
 //!   user applies or cancels. The reply arrives when they decide: `{"applied": true,
 //!   "created": [...]}`, or error [`CANCELLED`] (the user said no) or [`REFUSED`] (it could
 //!   not be applied). Each addon has at most one proposal open; another gets [`BUSY`].
-//!   `host.methods` lists what this addon may call.
+//!   `host.methods` lists what this addon may call; `host.describe` also gives each
+//!   method's description and parameters as JSON Schema.
 //! - **App → addon notifications:** `host.ready {protocol, app_version, permissions,
 //!   revision}` once at start, then `story.changed {revision, scope}` for addons that may
-//!   read.
+//!   read, and `addon.cancel {id}` when the user gives up on a request.
+//! - **App → addon requests** (integer IDs): `addon.assist {request, target}` when the user
+//!   asks through the star button (manifest `assist`), answered once the addon is done,
+//!   usually after proposing an edit; `addon.settings` and `addon.set_setting {key, value}`
+//!   for the addon's own settings, answered with `{"fields": [{key, label, kind, value}]}`
+//!   where `kind` is `text`, `toggle` or `info` (read-only, copyable). Answers to requests
+//!   the app did not send are ignored.
 //!
 //! Edits that would change a locked layer are refused before the user sees them, and
 //! checked again when the user applies. A line the host cannot use is answered with a
-//! JSON-RPC error whose `id` is `null`; an addon's own response lines are ignored. An
+//! JSON-RPC error whose `id` is `null`. An
 //! addon whose suggestions are cancelled [`MAX_CANCELLED`] times in a row is stopped.
 //!
 //! Permissions limit what an addon may ask the app for. They are not a sandbox: an addon
@@ -52,8 +59,11 @@ pub enum FromAddon {
     },
     /// Notifications from addons are accepted and ignored in protocol 1.
     Notification { method: String },
-    /// A response line (the host sends no requests in protocol 1): ignored.
-    Response,
+    /// An answer to a request the app sent: its result, or the error message.
+    Response {
+        id: Value,
+        outcome: Result<Value, String>,
+    },
     /// A line the host cannot use, answered with an error.
     Invalid {
         id: Option<Value>,
@@ -73,7 +83,20 @@ pub fn parse_message(line: &str) -> FromAddon {
     if value.get("method").is_none()
         && (value.get("result").is_some() || value.get("error").is_some())
     {
-        return FromAddon::Response;
+        let outcome = match value.get("error") {
+            Some(error) => Err(error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("The addon reported an error")
+                .chars()
+                .take(500)
+                .collect()),
+            None => Ok(value.get("result").cloned().unwrap_or(Value::Null)),
+        };
+        return FromAddon::Response {
+            id: value.get("id").cloned().unwrap_or(Value::Null),
+            outcome,
+        };
     }
     let id = value
         .get("id")
@@ -156,6 +179,20 @@ pub fn handle(story: &Story, manifest: &Manifest, method: &str, params: &Value) 
         if manifest.has(Permission::StoryPropose) {
             methods.extend(wire::EDIT_METHODS);
         }
+        return Action::Reply(json!({ "methods": methods }));
+    }
+    if method == "host.describe" {
+        let methods: Vec<_> = wire::docs::METHODS
+            .iter()
+            .filter(|doc| {
+                manifest.has(if doc.is_edit() {
+                    Permission::StoryPropose
+                } else {
+                    Permission::StoryRead
+                })
+            })
+            .map(|doc| json!({ "method": doc.method, "about": doc.about, "params": doc.schema() }))
+            .collect();
         return Action::Reply(json!({ "methods": methods }));
     }
     let is_edit = method.starts_with(wire::EDIT_PREFIX);
@@ -283,6 +320,9 @@ pub struct Polled {
     pub more: bool,
 }
 
+/// Requests the app may have waiting at one addon.
+pub const MAX_PENDING: usize = 16;
+
 /// A started addon and its open proposal.
 pub struct Running {
     pub manifest: Manifest,
@@ -291,6 +331,11 @@ pub struct Running {
     pub status: Status,
     /// Suggestions cancelled in a row.
     cancelled: u32,
+    next_request: u64,
+    /// Requests sent to the addon and not yet answered.
+    pending: Vec<u64>,
+    /// Answers to the app's requests, oldest first, until the app takes them.
+    answers: Vec<(u64, Result<Value, String>)>,
 }
 
 impl Running {
@@ -302,6 +347,9 @@ impl Running {
             proposal: None,
             status: Status::Running,
             cancelled: 0,
+            next_request: 1,
+            pending: Vec::new(),
+            answers: Vec::new(),
         };
         let ready = notification_line(
             "host.ready",
@@ -358,7 +406,16 @@ impl Running {
                             }
                         }
                     }
-                    FromAddon::Notification { .. } | FromAddon::Response => {}
+                    FromAddon::Notification { .. } => {}
+                    FromAddon::Response { id, outcome } => {
+                        if let Some(i) = id
+                            .as_u64()
+                            .and_then(|id| self.pending.iter().position(|p| *p == id))
+                        {
+                            let id = self.pending.remove(i);
+                            self.answers.push((id, outcome));
+                        }
+                    }
                     FromAddon::Invalid { id, code, reason } => {
                         self.send(error_line(&id.unwrap_or(Value::Null), code, &reason))
                     }
@@ -368,7 +425,7 @@ impl Running {
                     INVALID_REQUEST,
                     "Message too long",
                 )),
-                Event::Closed => self.stopped("The addon stopped".into()),
+                Event::Closed => self.stopped("Stopped unexpectedly".into()),
             }
         }
         polled.more = self.status == Status::Running;
@@ -402,10 +459,46 @@ impl Running {
         }
     }
 
-    /// Stop the program; anything it had waiting is dropped.
+    /// Send the addon a request; its answer arrives through [`Running::take_answers`].
+    /// `None` when the addon is stopped or already has [`MAX_PENDING`] requests waiting.
+    pub fn request(&mut self, method: &str, params: Value) -> Option<u64> {
+        if self.status != Status::Running || self.pending.len() >= MAX_PENDING {
+            return None;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.push(id);
+        self.send(
+            json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string(),
+        );
+        Some(id)
+    }
+
+    /// Stop waiting for a request and tell the addon it can give up on it.
+    pub fn cancel_request(&mut self, id: u64) {
+        if let Some(i) = self.pending.iter().position(|p| *p == id) {
+            self.pending.remove(i);
+            self.send(notification_line("addon.cancel", json!({ "id": id })));
+        }
+    }
+
+    pub fn is_pending(&self, id: u64) -> bool {
+        self.pending.contains(&id)
+    }
+
+    /// Answers that arrived since the last call.
+    pub fn take_answers(&mut self) -> Vec<(u64, Result<Value, String>)> {
+        std::mem::take(&mut self.answers)
+    }
+
+    /// Stop the program; anything it had waiting is dropped and requests the app sent
+    /// are answered with the reason.
     pub fn stop(&mut self, reason: String) {
         self.process.stop();
         self.proposal = None;
+        for id in std::mem::take(&mut self.pending) {
+            self.answers.push((id, Err(reason.clone())));
+        }
         self.status = Status::Stopped(reason);
     }
 

@@ -1,0 +1,21 @@
+[package]
+name = "ai-lite"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "AI Lite: a Scroll Studio addon with a star button and an MCP server"
+license = "MIT"
+publish = false
+
+# A separate program, built on its own: nothing here is part of the Scroll Studio app.
+[workspace]
+
+[dependencies]
+serde_json = "1"
+getrandom = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
