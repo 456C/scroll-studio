@@ -413,3 +413,72 @@ jobs:
           path: website/dist
           retention-days: 14
           if-no-files-found: error
+
+  ai-lite:
+    name: AI Lite addon
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      # A single program that runs without the Visual C++ redistributable, like the app.
+      RUSTFLAGS: -C target-feature=+crt-static
+    defaults:
+      run:
+        working-directory: addons/ai-lite
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: addons/ai-lite
+          key: ai-lite-crt-static
+          cache-on-failure: true
+      - name: Run tests
+        run: cargo test --locked
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Package the addon
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -LiteralPath addon.json -Raw | ConvertFrom-Json
+          if ($manifest.id -ne 'ai-lite') { throw "Unexpected addon id $($manifest.id)" }
+          $version = (Select-String -LiteralPath Cargo.toml -Pattern '^version = "(.+)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($manifest.version -ne $version) {
+            throw "addon.json says $($manifest.version) but Cargo.toml says $version"
+          }
+          # The app installs a .zip with addon.json and the program at its top level.
+          $stage = Join-Path $env:RUNNER_TEMP 'ai-lite-package'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath addon.json -Destination $stage
+          Copy-Item -LiteralPath target/release/ai-lite.exe -Destination (Join-Path $stage $manifest.entry)
+          Copy-Item -LiteralPath README.md -Destination $stage
+          $name = "ai-lite-$version"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $entries = [IO.Compression.ZipFile]::OpenRead($zip).Entries.FullName
+          foreach ($required in @('addon.json', $manifest.entry)) {
+            if ($entries -notcontains $required) { throw "The package is missing $required" }
+          }
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Out-File -LiteralPath "$zip.sha256" -Encoding ascii
+          $sizeMb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 1)
+          "AI_LITE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AI_LITE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Packaged ``$name.zip`` ($sizeMb MB), SHA-256 ``$hash``" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+      - name: Upload the addon package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.AI_LITE_NAME }}
+          path: |
+            ${{ env.AI_LITE_ZIP }}
+            ${{ env.AI_LITE_ZIP }}.sha256
+          if-no-files-found: error
+          retention-days: 14
