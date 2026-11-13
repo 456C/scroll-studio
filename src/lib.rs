@@ -1,3 +1,4 @@
+pub mod addons;
 pub mod bubbles;
 pub mod characters;
 pub mod clipping;
