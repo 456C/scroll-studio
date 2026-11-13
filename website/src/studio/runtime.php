@@ -5,13 +5,14 @@ namespace Scroll;
 use RuntimeException;
 use ZipArchive;
 
-const VERSION = 11;
+const VERSION = 12;
 const MAX_TOTAL = 536870912;
 const MAX_IMAGE = 67108864;
 const MAX_MANIFEST = 16777216;
 const TTL = 86400;
 const GLOBAL_QUOTA = 4294967296;
 const MAX_SAFE_ID = 9007199254740991;
+const MAX_EXTENSION_KEYS = 256;
 final class Problem extends RuntimeException {
     public function __construct(string $message, public int $status = 422) { parent::__construct($message); }
 }
@@ -33,12 +34,43 @@ function atomic(string $path, string $bytes): void {
 function json(array $data): string {
     return json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
 }
+// Add-on data (extensions, provenance, layer kinds) is written back exactly as read. PHP arrays cannot
+// tell {} from [] or keep numeric keys as an object, so those values stay stdClass inside opaque subtrees.
+function keep_json(mixed $value, bool $opaque = false): mixed {
+    if (is_array($value)) return array_map(fn($v) => keep_json($v, $opaque), $value);
+    if (!$value instanceof \stdClass) return $value;
+    $fields = get_object_vars($value);
+    if ($opaque && (!$fields || array_is_list($fields))) {
+        foreach ($fields as $k => $v) $value->{$k} = keep_json($v, true);
+        return $value;
+    }
+    $out = [];
+    foreach ($fields as $k => $v) $out[$k] = keep_json($v, $opaque || in_array($k, ['extensions', 'provenance', 'kind'], true));
+    return $out;
+}
 function decode(string $bytes): array {
     require_ok(strlen($bytes) <= MAX_MANIFEST, 'World details exceed 16 MiB.');
-    try { $data = json_decode($bytes, true, 256, JSON_THROW_ON_ERROR); }
+    try {
+        $data = json_decode($bytes, true, 256, JSON_THROW_ON_ERROR);
+        if (preg_match('/\{\s*\}|"\d+"\s*:/', $bytes)) $data = keep_json(json_decode($bytes, false, 256, JSON_THROW_ON_ERROR));
+    }
     catch (\JsonException $e) { throw new Problem('The world manifest is not valid JSON.'); }
     require_ok(is_array($data) && !array_is_list($data), 'Invalid world manifest.');
     return $data;
+}
+function is_object_value(mixed $value): bool {
+    return $value instanceof \stdClass || (is_array($value) && !array_is_list($value));
+}
+// Optional add-on data: absent, or a JSON object whose contents are never interpreted.
+function opaque_object(array $owner, string $key, string $label, int $max = MAX_EXTENSION_KEYS): void {
+    if (!array_key_exists($key, $owner)) return;
+    $value = $owner[$key];
+    require_ok(is_object_value($value) && count(get_object_vars((object)$value)) <= $max, 'Invalid ' . $label . '.');
+}
+function image_layer_asset(mixed $layer): mixed {
+    $kind = is_array($layer) ? ($layer['kind'] ?? null) : null;
+    $image = is_array($kind) ? ($kind['Image'] ?? null) : null;
+    return is_array($image) ? ($image['asset_id'] ?? null) : null;
 }
 function identifier(mixed $id): bool { return is_int($id) && $id > 0 && $id <= MAX_SAFE_ID; }
 function color(mixed $value, int $length = 3): bool {
@@ -56,7 +88,7 @@ function profile(): array {
 }
 function normalize(array $s): array {
     require_ok(is_int($s['version'] ?? null) && $s['version'] >= 1 && $s['version'] <= VERSION,
-        'This .scro version is not supported. Use Scroll Studio 0.13 or an earlier file.');
+        'This .scro version is not supported. Update Scroll Studio or use an earlier file.');
     $old = $s['version']; $s['version'] = VERSION;
     foreach (['assets','locations','groups','timeline','lore','bubble_presets','card_thumbnails'] as $key) $s[$key] ??= [];
     $s['visual_style'] ??= ''; $s['synopsis'] ??= '';
@@ -100,6 +132,7 @@ function normalize(array $s): array {
 function validate(array $s, string $folder): void {
     require_ok(text($s['title'] ?? null,4096) && text($s['synopsis'] ?? null) && text($s['visual_style'] ?? null), 'Invalid story details.');
     require_ok(($s['version'] ?? null) === VERSION && identifier($s['next_id'] ?? null), 'Invalid world version or identifier.');
+    opaque_object($s,'extensions','story extensions');
     $ids=[];$maximum=0;
     $claim=function($id) use (&$ids,&$maximum): void {
         require_ok(identifier($id) && !isset($ids[$id]), 'Duplicate, invalid, or too-large identifier.');
@@ -109,17 +142,18 @@ function validate(array $s, string $folder): void {
     require_ok(count($chapters)>0, 'A desktop-compatible world needs a chapter.');
     $chapterIds=[];$protectedAssets=[];
     foreach ($chapters as $c) {
-        $claim($c['id'] ?? null);$chapterIds[$c['id']]=true;
+        $claim($c['id'] ?? null);$chapterIds[$c['id']]=true;opaque_object($c,'extensions','chapter extensions');
         foreach ($c['panels'] ?? [] as $p) $claim($p['id'] ?? null);
         foreach ($c['layers'] ?? [] as $l) {
-            $claim($l['id'] ?? null);
-            if (isset($l['kind']['Image']['asset_id'])) $protectedAssets[$l['kind']['Image']['asset_id']]=true;
+            $claim($l['id'] ?? null);opaque_object($l,'extensions','layer extensions');
+            $imageAsset=image_layer_asset($l);
+            if ($imageAsset!==null) $protectedAssets[$imageAsset]=true;
         }
     }
     foreach (list_of($s['bubble_presets'],4096,'bubble presets') as $p) $claim($p['id'] ?? null);
     $assets=[];$images=[];$allImages=[];$characters=[];$backgrounds=[];$totalBytes=0;
     foreach (list_of($s['assets'],4096,'assets') as $a) {
-        $claim($a['id'] ?? null);
+        $claim($a['id'] ?? null);opaque_object($a,'extensions','asset extensions');opaque_object($a,'provenance','image provenance');
         require_ok(text($a['name'] ?? null,4096) && text($a['notes'] ?? null) && text($a['prompt'] ?? null), 'Invalid asset details.');
         require_ok(in_array($a['kind'] ?? null,['Character','Background','Image'],true), 'Unknown asset type.');
         require_ok(is_int($a['width'] ?? null) && is_int($a['height'] ?? null), 'Invalid image size.');
@@ -159,7 +193,7 @@ function validate(array $s, string $folder): void {
     }
     $locations=[];$groupIds=[];$noteIds=[];
     foreach (list_of($s['locations'],4096,'locations') as $l) {
-        $claim($l['id'] ?? null);$locations[$l['id']]=true;
+        $claim($l['id'] ?? null);$locations[$l['id']]=true;opaque_object($l,'extensions','location extensions');
         require_ok(text($l['name'] ?? null,4096) && trim($l['name'])!=='','Invalid location name.');
         $refs($l['asset_ids'] ?? [],$backgrounds,'background');
         foreach (($l['profile'] ?? []) as $key=>$value) require_ok(text($value),'Invalid location details.');

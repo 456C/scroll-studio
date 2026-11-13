@@ -50,7 +50,7 @@ Install `cleanup.php` outside the document root at `/usr/local/lib/scroll-studio
 
 ### Compatibility and verification
 
-The PHP editor accepts native format versions 1–11, preserves chapter artwork/scripts and original image bytes, and exports format 11. Card thumbnail choices use the optional `card_thumbnails` list introduced in desktop 0.13.1. Earlier desktop builds can open the file but do not retain those choices on subsequent saves. No original reference is replaced or recompressed when choosing a cover.
+The PHP editor accepts native format versions 1–12, preserves chapter artwork/scripts, original image bytes, add-on `extensions`, image `provenance` and layers of unknown kind, and exports format 12. Card thumbnail choices use the optional `card_thumbnails` list introduced in desktop 0.13.1. Earlier desktop builds can open the file but do not retain those choices on subsequent saves. No original reference is replaced or recompressed when choosing a cover.
 
 Run `php` with ZIP and GD enabled for `website/tests/roundtrip.php`. With a local preview running, `node website/tests/api.mjs <origin>` tests session isolation, CSRF, revision conflicts, recovery copies, image upload/previews, immutable chapters, export and thumbnail persistence. `scripts/build.ps1 run --example verify_web_roundtrip` opens those exports with the actual desktop loader. All 350 desktop tests passed. Browser checks covered the empty workspace, phone-size sheets and editing, local `.scro` import, and basic lore creation before a saved browser permission block prevented the remaining visual checks. Do not describe the final thumbnail menu as visually verified until browser access is restored.
 
