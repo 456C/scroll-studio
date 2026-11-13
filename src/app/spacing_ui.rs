@@ -425,6 +425,7 @@ mod tests {
         studio.story.chapters[0].name = "A long chapter name ".repeat(100);
         let id = studio.story.alloc_id();
         studio.story.chapters[0].layers.push(Layer {
+            extensions: Default::default(),
             id,
             name: "Lower panel".into(),
             x: 100.0,

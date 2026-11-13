@@ -51,6 +51,8 @@ impl StorySetup {
             if !self.character_name.trim().is_empty() {
                 let id = story.alloc_id();
                 story.assets.push(Asset {
+                    extensions: Default::default(),
+                    provenance: None,
                     id,
                     name: self.character_name.trim().into(),
                     kind: AssetKind::Character,

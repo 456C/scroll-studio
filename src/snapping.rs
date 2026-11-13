@@ -760,6 +760,7 @@ mod tests {
 
     fn layer(kind: LayerKind) -> Layer {
         Layer {
+            extensions: Default::default(),
             id: 1,
             name: String::new(),
             visible: true,

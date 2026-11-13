@@ -10,10 +10,11 @@ enum LayerGroup {
     Strokes,
     Shapes,
     Effects,
+    Other,
 }
 
 impl LayerGroup {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Bubbles,
         Self::Characters,
         Self::Backgrounds,
@@ -21,6 +22,7 @@ impl LayerGroup {
         Self::Strokes,
         Self::Shapes,
         Self::Effects,
+        Self::Other,
     ];
 
     fn label(self) -> &'static str {
@@ -32,6 +34,7 @@ impl LayerGroup {
             Self::Strokes => "Brush strokes",
             Self::Shapes => "Shapes",
             Self::Effects => "Effects",
+            Self::Other => "Other",
         }
     }
 
@@ -48,7 +51,7 @@ struct LayerRow {
 }
 
 /// Grouping is a view of the layer stack; it never changes painting order.
-fn grouped_layers(chapter: &Chapter, assets: &[Asset]) -> [Vec<LayerRow>; 7] {
+fn grouped_layers(chapter: &Chapter, assets: &[Asset]) -> [Vec<LayerRow>; 8] {
     let mut image_groups: HashMap<_, _> = assets
         .iter()
         .map(|asset| {
@@ -70,7 +73,7 @@ fn grouped_layers(chapter: &Chapter, assets: &[Asset]) -> [Vec<LayerRow>; 7] {
             image_groups.insert(reference.asset_id, LayerGroup::Characters);
         }
     }
-    let mut groups: [Vec<LayerRow>; 7] = std::array::from_fn(|_| Vec::new());
+    let mut groups: [Vec<LayerRow>; 8] = std::array::from_fn(|_| Vec::new());
     for layer in chapter.layers.iter().rev() {
         let group = match &layer.kind {
             LayerKind::Text { .. } => LayerGroup::Bubbles,
@@ -81,6 +84,7 @@ fn grouped_layers(chapter: &Chapter, assets: &[Asset]) -> [Vec<LayerRow>; 7] {
             LayerKind::Stroke { .. } => LayerGroup::Strokes,
             LayerKind::Effect { .. } => LayerGroup::Effects,
             LayerKind::Shape { .. } => LayerGroup::Shapes,
+            LayerKind::Unknown { .. } => LayerGroup::Other,
         };
         groups[group.index()].push(LayerRow {
             id: layer.id,
@@ -278,6 +282,8 @@ mod tests {
 
     fn asset(id: u64, kind: AssetKind) -> Asset {
         Asset {
+            extensions: Default::default(),
+            provenance: None,
             id,
             name: format!("Asset {id}"),
             kind,
@@ -291,6 +297,7 @@ mod tests {
 
     fn layer(id: u64, kind: LayerKind) -> Layer {
         Layer {
+            extensions: Default::default(),
             id,
             name: format!("Layer {id}"),
             visible: true,

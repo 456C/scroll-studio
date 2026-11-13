@@ -50,6 +50,7 @@ impl Studio {
     fn add_effect(&mut self, name: &str, rect: [f32; 4], effect: Effect, before: Option<usize>) {
         let [x, y, width, height] = rect;
         let layer = Layer {
+            extensions: Default::default(),
             id: 0,
             name: name.into(),
             visible: true,

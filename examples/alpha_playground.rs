@@ -140,6 +140,7 @@ fn add(
 ) {
     let id = story.alloc_id();
     story.chapters[0].layers.push(Layer {
+        extensions: Default::default(),
         id,
         name: name.into(),
         visible: true,
@@ -164,6 +165,8 @@ fn asset(
     image.write_to(&mut bytes, image::ImageFormat::Png)?;
     assets.insert(id, Arc::new(bytes.into_inner()));
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id,
         name: name.into(),
         kind: AssetKind::Image,

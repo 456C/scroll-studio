@@ -291,6 +291,8 @@ mod tests {
 
     fn character() -> Asset {
         Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: 9,
             name: "Mira".into(),
             kind: AssetKind::Character,
@@ -425,6 +427,8 @@ mod tests {
             });
             assets.insert(id, encoded.clone());
             story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: format!("View {id}"),
                 kind: AssetKind::Image,

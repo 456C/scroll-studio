@@ -864,6 +864,9 @@ impl Studio {
             LayerKind::Shape { color } => {
                 painter.rect_filled(rect, 0, rgba(*color));
             }
+            LayerKind::Unknown { kind, .. } => {
+                preview_placeholder(painter, rect, &format!("{kind} layer"));
+            }
             LayerKind::Stroke {
                 points,
                 color,
@@ -973,6 +976,7 @@ impl Studio {
                             return;
                         };
                         let mut layer = Layer {
+                            extensions: Default::default(),
                             id: 0,
                             name: "Dialogue".into(),
                             visible: true,
@@ -1467,6 +1471,7 @@ impl Studio {
     fn begin_stroke(&mut self, p: [f32; 2]) {
         let ch = &self.story.chapters[self.chapter];
         let layer = Layer {
+            extensions: Default::default(),
             id: 0,
             name: "Brush stroke".into(),
             visible: true,
@@ -1685,6 +1690,7 @@ mod floating_toolbar_tests {
         let id = studio.story.alloc_id();
         let asset_id = studio.story.alloc_id();
         studio.story.chapters[0].layers.push(Layer {
+            extensions: Default::default(),
             id,
             name: "Artwork below controls".into(),
             visible: true,
@@ -1866,6 +1872,7 @@ mod floating_toolbar_tests {
         let (ctx, mut studio) = fixture();
         let id = studio.story.alloc_id();
         studio.story.chapters[0].layers = vec![Layer {
+            extensions: Default::default(),
             id,
             name: "Centered artwork".into(),
             visible: true,
@@ -2069,6 +2076,8 @@ mod floating_toolbar_tests {
                 .assets
                 .insert(asset_id, Arc::new(encoded.into_inner()));
             studio.story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id: asset_id,
                 name: "Rectangle source".into(),
                 kind: AssetKind::Image,
@@ -2276,6 +2285,7 @@ mod tests {
         studio.chapter = 0;
         let id = studio.story.alloc_id();
         studio.story.chapters[0].layers = vec![Layer {
+            extensions: Default::default(),
             id,
             name: "Small panel".into(),
             visible: true,
@@ -2950,6 +2960,8 @@ mod tests {
         image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
         studio.assets.insert(asset, Arc::new(bytes.into_inner()));
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: asset,
             name: "Brush target".into(),
             kind: AssetKind::Image,

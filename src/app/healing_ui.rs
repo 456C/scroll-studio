@@ -98,6 +98,8 @@ impl Studio {
         let asset_id = self.story.alloc_id();
         let layer_id = self.story.alloc_id();
         self.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: asset_id,
             name: result.name.clone(),
             kind: AssetKind::Image,
@@ -120,6 +122,7 @@ impl Studio {
         self.story.chapters[chapter].layers.insert(
             insertion,
             Layer {
+                extensions: Default::default(),
                 id: layer_id,
                 name: result.name.clone(),
                 visible: true,

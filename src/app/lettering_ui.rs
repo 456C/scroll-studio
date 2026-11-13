@@ -832,6 +832,7 @@ mod tests {
 
     fn bubble() -> Layer {
         Layer {
+            extensions: Default::default(),
             id: 1,
             name: "Dialogue".into(),
             visible: true,

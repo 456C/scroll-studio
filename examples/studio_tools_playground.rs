@@ -15,6 +15,8 @@ fn asset(
     image.write_to(&mut bytes, image::ImageFormat::Png)?;
     assets.insert(id, Arc::new(bytes.into_inner()));
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id,
         name: name.into(),
         kind,
@@ -29,6 +31,7 @@ fn asset(
 fn layer(story: &mut Story, name: &str, rect: [f32; 4], kind: LayerKind) -> u64 {
     let id = story.alloc_id();
     story.chapters[0].layers.push(Layer {
+        extensions: Default::default(),
         id,
         name: name.into(),
         visible: true,
@@ -88,6 +91,7 @@ fn main() -> anyhow::Result<()> {
     )?;
     let location = story.alloc_id();
     story.locations.push(BackgroundLocation {
+        extensions: Default::default(),
         id: location,
         name: "Midnight station".into(),
         asset_ids: vec![background, tall, detail],

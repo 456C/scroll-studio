@@ -89,6 +89,8 @@ mod tests {
         let second = s.alloc_id();
         for id in [char_id, first, second] {
             s.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: "Reference".into(),
                 kind: if id == char_id {

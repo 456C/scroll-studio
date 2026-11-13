@@ -334,6 +334,7 @@ mod tests {
     #[test]
     fn backing_expands_crop_without_moving_or_rescaling_source_pixels() {
         let mut layer = Layer {
+            extensions: Default::default(),
             id: 1,
             name: "Cutout".into(),
             x: 10.0,
@@ -386,6 +387,8 @@ mod tests {
         let id = studio.story.alloc_id();
         let bg = studio.story.alloc_id();
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id: asset,
             name: "Cutout".into(),
             kind: AssetKind::Image,
@@ -401,6 +404,7 @@ mod tests {
         studio.assets.insert(asset, Arc::new(bytes.into_inner()));
         studio.story.chapters[0].layers = vec![
             Layer {
+                extensions: Default::default(),
                 id: bg,
                 name: "Ground".into(),
                 x: 0.0,
@@ -415,6 +419,7 @@ mod tests {
                 },
             },
             Layer {
+                extensions: Default::default(),
                 id,
                 name: "Subject".into(),
                 x: 40.0,

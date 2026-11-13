@@ -351,6 +351,7 @@ mod tests {
         studio.error = None;
         let id = studio.story.alloc_id();
         studio.story.chapters[0].layers.push(Layer {
+            extensions: Default::default(),
             id,
             name: "Artwork".into(),
             visible: true,

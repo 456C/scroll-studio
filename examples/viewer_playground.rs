@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
         style.font = FontChoice::Karla;
         style.tail.enabled = false;
         chart.layers.push(Layer {
+            extensions: Default::default(),
             id: index as u64 + 2,
             name: text.to_string(),
             visible: true,
@@ -64,6 +65,8 @@ fn main() -> anyhow::Result<()> {
     let mut story = Story::with_canvas("Viewer detail", 800, 1600);
     let id = story.alloc_id();
     story.assets.push(Asset {
+        extensions: Default::default(),
+        provenance: None,
         id,
         name: "Reference detail".into(),
         kind: AssetKind::Character,

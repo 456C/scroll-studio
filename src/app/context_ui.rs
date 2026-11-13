@@ -1020,6 +1020,7 @@ mod tests {
         let ids = [studio.story.alloc_id(), studio.story.alloc_id()];
         for (index, id) in ids.into_iter().enumerate() {
             studio.story.chapters[0].layers.push(Layer {
+                extensions: Default::default(),
                 id,
                 name: format!("Shape {index}"),
                 visible: true,
@@ -1138,6 +1139,8 @@ mod tests {
             (ids[1], "Character B", "B uniform"),
         ] {
             studio.story.assets.push(Asset {
+                extensions: Default::default(),
+                provenance: None,
                 id,
                 name: name.into(),
                 kind: AssetKind::Character,

@@ -143,6 +143,7 @@ pub fn prepare_layers(
     let mut layers = Vec::with_capacity(selected.len());
     for (index, block) in selected.iter().enumerate() {
         let mut layer = Layer {
+            extensions: Default::default(),
             id: story.next_id + index as u64,
             name: format!("Dialogue {}", index + 1),
             visible: true,

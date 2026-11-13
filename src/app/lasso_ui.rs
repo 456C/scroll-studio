@@ -991,6 +991,8 @@ mod tests {
         image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
         studio.assets.insert(id, Arc::new(bytes.into_inner()));
         studio.story.assets.push(Asset {
+            extensions: Default::default(),
+            provenance: None,
             id,
             name: "Original".into(),
             kind: AssetKind::Image,
@@ -1002,6 +1004,7 @@ mod tests {
         });
         let layer = studio.story.alloc_id();
         studio.story.chapters[0].layers.push(Layer {
+            extensions: Default::default(),
             id: layer,
             name: "Image".into(),
             visible: true,
