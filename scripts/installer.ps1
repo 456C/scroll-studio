@@ -23,7 +23,7 @@ if (-not (Test-Path -LiteralPath $archive) -or
             # SourceForge can answer PowerShell's downloader with its HTML mirror page,
             # which then fails the checksum. curl.exe (built into Windows 10 and later)
             # follows the redirect to the file itself.
-            $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue
+            $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($curl) {
                 & $curl.Source --fail --silent --show-error --location --max-time 120 --output $archive $nsisUrl
                 if ($LASTEXITCODE -ne 0) { throw "curl.exe exited with $LASTEXITCODE" }
