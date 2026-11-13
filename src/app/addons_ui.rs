@@ -42,6 +42,8 @@ pub(super) struct AddonState {
     settings: std::collections::HashMap<String, Vec<SettingField>>,
     /// Requests sent to addons that the app is waiting on.
     waiting: Vec<(String, u64, Purpose)>,
+    /// The addon whose Remove button is asking to confirm.
+    confirm_remove: Option<String>,
 }
 
 /// Why the app asked an addon something.
@@ -106,6 +108,7 @@ impl AddonState {
             assist: None,
             settings: Default::default(),
             waiting: Vec::new(),
+            confirm_remove: None,
         }
     }
 
@@ -199,7 +202,9 @@ impl Studio {
             .collect();
         for id in ids {
             if let Err(error) = self.start_addon(ctx, &id) {
-                self.addons.message = Some(format!("{id}: {error:#}"));
+                let message = format!("{id}: {error:#}");
+                self.status = message.clone();
+                self.addons.message = Some(message);
             }
         }
     }
@@ -267,12 +272,12 @@ impl Studio {
         for running in &mut self.addons.running {
             let was_running = running.status == Status::Running;
             more |= running.poll(&self.story).more;
+            for change in &changes {
+                running.story_changed(change);
+            }
             // Said once, when an addon stops by itself; Settings → Addons can restart it.
             if let (true, Status::Stopped(reason)) = (was_running, &running.status) {
                 stopped = Some(format!("{}: {reason}", running.manifest.name));
-            }
-            for change in &changes {
-                running.story_changed(change);
             }
             let id = running.manifest.id.clone();
             answers.extend(running.take_answers().into_iter().map(|a| (id.clone(), a)));
@@ -343,12 +348,9 @@ impl Studio {
             ui.heading(format!("{name} suggests a change"));
             ui.label(
                 RichText::new(if changes.len() == 1 {
-                    "1 change. Apply it as one step you can undo.".to_owned()
+                    "1 change".to_owned()
                 } else {
-                    format!(
-                        "{} changes. Apply them as one step you can undo.",
-                        changes.len()
-                    )
+                    format!("{} changes", changes.len())
                 })
                 .color(MUTED),
             );
@@ -418,7 +420,10 @@ impl Studio {
                         .map_err(|e| format!("{e:#}"))
                 });
                 let decision = match result {
-                    Ok(applied) => Decision::Applied(Box::new(applied)),
+                    Ok(applied) => {
+                        self.settle_after_outside_change();
+                        Decision::Applied(Box::new(applied))
+                    }
                     Err(error) => {
                         self.status = format!("{name}'s change could not be applied: {error}");
                         Decision::Failed(error)
@@ -426,7 +431,15 @@ impl Studio {
                 };
                 self.addons.running[index].resolve(decision);
             }
-            Choice::Cancel => self.addons.running[index].resolve(Decision::Cancelled),
+            Choice::Cancel => {
+                let running = &mut self.addons.running[index];
+                let was_paused = running.suggestions_paused();
+                running.resolve(Decision::Cancelled);
+                if !was_paused && running.suggestions_paused() {
+                    self.status =
+                        format!("{name} suggestions paused; allow them again in Settings → Addons");
+                }
+            }
             Choice::Stop => {
                 self.addons.running[index].resolve(Decision::Cancelled);
                 self.addons.running[index].stop("Stopped from its suggestion".into());
@@ -469,6 +482,7 @@ impl Studio {
         let busy = self.addons.installing.is_some();
         for installed in &self.addons.installed {
             let running = self.addons.running(&installed.id);
+            let confirming = self.addons.confirm_remove.as_deref() == Some(installed.id.as_str());
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Frame::new()
                     .fill(CARD)
@@ -491,10 +505,12 @@ impl Studio {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if motion::button(ui, "Remove").clicked() {
-                                                action =
-                                                    Some(AddonAction::Remove(installed.id.clone()));
-                                            }
+                                            remove_buttons(
+                                                ui,
+                                                &installed.id,
+                                                confirming,
+                                                &mut action,
+                                            );
                                             let mut enabled = installed.enabled;
                                             if ui.checkbox(&mut enabled, "Enabled").changed() {
                                                 action = Some(AddonAction::Enable(
@@ -521,7 +537,24 @@ impl Studio {
                                 }
                                 match running.map(|r| &r.status) {
                                     Some(Status::Running) => {
-                                        ui.label(RichText::new("Running").color(ACCENT));
+                                        let paused =
+                                            running.is_some_and(|r| r.suggestions_paused());
+                                        if paused {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(
+                                                    RichText::new("Suggestions paused")
+                                                        .color(MUTED),
+                                                )
+                                                .on_hover_text("You turned down several in a row");
+                                                if motion::button(ui, "Allow again").clicked() {
+                                                    action = Some(AddonAction::Allow(
+                                                        installed.id.clone(),
+                                                    ));
+                                                }
+                                            });
+                                        } else {
+                                            ui.label(RichText::new("Running").color(ACCENT));
+                                        }
                                         if let Some(fields) =
                                             self.addons.settings.get(&installed.id)
                                         {
@@ -545,6 +578,17 @@ impl Studio {
                                             }
                                         });
                                     }
+                                    // Enabled but not running: it failed to start.
+                                    None if installed.enabled => {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(RichText::new("Not running").color(MUTED));
+                                            if motion::button(ui, "Start").clicked() {
+                                                action = Some(AddonAction::Restart(
+                                                    installed.id.clone(),
+                                                ));
+                                            }
+                                        });
+                                    }
                                     None => {}
                                 }
                             }
@@ -554,10 +598,12 @@ impl Studio {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if motion::button(ui, "Remove").clicked() {
-                                                action =
-                                                    Some(AddonAction::Remove(installed.id.clone()));
-                                            }
+                                            remove_buttons(
+                                                ui,
+                                                &installed.id,
+                                                confirming,
+                                                &mut action,
+                                            );
                                         },
                                     );
                                 });
@@ -679,6 +725,25 @@ impl Studio {
                 registry.set_enabled(id, false)
             }
             AddonAction::Restart(id) => self.start_addon(ctx, id),
+            AddonAction::AskRemove(id) => {
+                self.addons.confirm_remove = Some(id.clone());
+                return;
+            }
+            AddonAction::KeepInstalled => {
+                self.addons.confirm_remove = None;
+                return;
+            }
+            AddonAction::Allow(id) => {
+                if let Some(running) = self
+                    .addons
+                    .running
+                    .iter_mut()
+                    .find(|r| &r.manifest.id == id)
+                {
+                    running.allow_suggestions();
+                }
+                return;
+            }
             AddonAction::Set(id, key, value) => {
                 self.addons.ask(
                     id,
@@ -689,6 +754,7 @@ impl Studio {
                 return;
             }
             AddonAction::Remove(id) => {
+                self.addons.confirm_remove = None;
                 self.stop_addon(id, "Removed");
                 // Addons that need this one cannot keep running without it.
                 let dependents: Vec<_> = self
@@ -752,6 +818,26 @@ enum AddonAction {
     Restart(String),
     Remove(String),
     Set(String, String, serde_json::Value),
+    Allow(String),
+    AskRemove(String),
+    KeepInstalled,
+}
+
+/// Remove asks once more before deleting, in place of the button.
+fn remove_buttons(ui: &mut egui::Ui, id: &str, confirming: bool, action: &mut Option<AddonAction>) {
+    if !confirming {
+        if motion::button(ui, "Remove").clicked() {
+            *action = Some(AddonAction::AskRemove(id.to_owned()));
+        }
+        return;
+    }
+    // Right to left: the confirming button sits where Remove was.
+    if motion::button(ui, "Confirm remove").clicked() {
+        *action = Some(AddonAction::Remove(id.to_owned()));
+    }
+    if motion::button(ui, "Keep").clicked() {
+        *action = Some(AddonAction::KeepInstalled);
+    }
 }
 
 /// An addon's own settings, behind a disclosure so the card stays short.

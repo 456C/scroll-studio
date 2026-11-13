@@ -91,7 +91,7 @@ fn installing_listing_enabling_and_removing() {
         &[
             ("addon.json", &manifest_json),
             ("ai-lite.exe", b"#!/bin/sh\n"),
-            ("data/model.txt", b"x"),
+            ("assets/model.txt", b"x"),
         ],
     );
     let installed = registry.install_zip(&zip).unwrap();
@@ -105,9 +105,21 @@ fn installing_listing_enabling_and_removing() {
     assert!(list[0].size_bytes > 0);
     registry.set_enabled("ai-lite", true).unwrap();
     assert!(registry.list()[0].enabled);
-    // Reinstalling replaces the folder and keeps the enabled choice.
+    // Reinstalling replaces the folder and keeps the enabled choice and the addon's data.
+    let data = dir.join("addons/ai-lite/data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("config.json"), b"{\"mcp\":true}").unwrap();
+    std::fs::write(dir.join("addons/ai-lite/old-file.txt"), b"x").unwrap();
     registry.install_zip(&zip).unwrap();
     assert!(registry.list()[0].enabled);
+    assert_eq!(
+        std::fs::read(data.join("config.json")).unwrap(),
+        b"{\"mcp\":true}"
+    );
+    assert!(
+        !dir.join("addons/ai-lite/old-file.txt").exists(),
+        "other files are replaced"
+    );
     // A broken update leaves the installed version as it was.
     let broken = dir.join("broken");
     std::fs::create_dir_all(&broken).unwrap();
@@ -128,6 +140,12 @@ fn installing_listing_enabling_and_removing() {
     registry.remove("ai-lite").unwrap();
     assert!(registry.list().is_empty());
     assert!(registry.remove("../escape").is_err());
+    assert!(registry.remove(".installing-x").is_err());
+    // A folder with a name no addon could have is listed, and can be removed.
+    std::fs::create_dir_all(dir.join("addons/Not An ID")).unwrap();
+    assert_eq!(registry.list().len(), 1);
+    registry.remove("Not An ID").unwrap();
+    assert!(registry.list().is_empty());
     assert!(registry.set_enabled("C:", true).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -740,4 +758,17 @@ fn image_commands_are_not_offered_to_addons() {
             "{method}"
         );
     }
+}
+
+#[test]
+fn the_real_ai_lite_manifest_is_valid() {
+    let bytes = include_bytes!("../../addons/ai-lite/addon.json");
+    let mut manifest: Manifest = serde_json::from_slice(bytes).unwrap();
+    // Checked against the app version it targets, which may be newer than this build.
+    assert!(manifest::parse_version(&manifest.min_app).is_some());
+    manifest.min_app = env!("CARGO_PKG_VERSION").into();
+    let checked = Manifest::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert_eq!(checked.id, "ai-lite");
+    assert!(checked.has(Permission::StoryRead) && checked.has(Permission::StoryPropose));
+    assert!(checked.assist.is_some());
 }

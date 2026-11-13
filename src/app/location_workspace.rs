@@ -59,6 +59,10 @@ impl Studio {
                         motion::menu_button(ui, "•••", |ui| {
                             self.location_context_actions(ui, Some(location.id));
                         });
+                        self.assist_star(
+                            ui,
+                            serde_json::json!({ "kind": "location", "id": location.id }),
+                        );
                     });
                 });
                 ui.add_space(12.0);

@@ -523,6 +523,16 @@ impl Running {
         }
     }
 
+    /// Unrequested suggestions are being refused after the user turned several down.
+    pub fn suggestions_paused(&self) -> bool {
+        self.cancelled >= MAX_CANCELLED
+    }
+
+    /// The user wants this addon's suggestions again.
+    pub fn allow_suggestions(&mut self) {
+        self.cancelled = 0;
+    }
+
     pub fn is_pending(&self, id: u64) -> bool {
         self.pending.contains(&id)
     }
