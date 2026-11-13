@@ -26,6 +26,8 @@ impl Studio {
     /// A star button for `target` (`{"kind": "story" | "character" | "panel" | "lore", "id"}`),
     /// or nothing when no addon offers one.
     pub(super) fn assist_star(&mut self, ui: &mut egui::Ui, target: Value) {
+        #[cfg(test)]
+        tests::record(ui.ctx(), self.addons.assistant().is_some());
         let Some((addon, label)) = self.addons.assistant() else {
             return;
         };
@@ -52,6 +54,8 @@ impl Studio {
     /// A menu entry that opens the request box for `target`, for places where a button
     /// would repeat on every item. Nothing when no addon offers it.
     pub(super) fn assist_menu_item(&mut self, ui: &mut egui::Ui, target: Value) {
+        #[cfg(test)]
+        tests::record(ui.ctx(), self.addons.assistant().is_some());
         let Some((addon, label)) = self.addons.assistant() else {
             return;
         };
@@ -209,5 +213,81 @@ impl Studio {
             }
             Err(error) => assist.error = Some(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How often a place that could show the star was drawn, and whether it showed one.
+    #[derive(Clone, Copy, Default)]
+    struct Seen {
+        places: usize,
+        offered: bool,
+    }
+
+    fn seen_id() -> egui::Id {
+        egui::Id::new("assist_places_seen")
+    }
+
+    pub(super) fn record(ctx: &egui::Context, offered: bool) {
+        ctx.data_mut(|data| {
+            let seen = data.get_temp_mut_or_default::<Seen>(seen_id());
+            seen.places += 1;
+            seen.offered |= offered;
+        });
+    }
+
+    /// Release test: with no addons installed, no AI control is reachable in the UI.
+    #[test]
+    fn with_no_addons_no_ai_control_is_offered_anywhere() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::from_context(&ctx);
+        studio.welcome = false;
+        studio.story = Story::demo();
+        assert!(studio.addons.assistant().is_none());
+        let character = studio
+            .story
+            .assets
+            .iter()
+            .find(|a| a.kind == AssetKind::Character)
+            .map(|a| a.id);
+        assert!(character.is_some(), "the demo story has a character");
+        studio.selected_asset = character;
+        studio.style_prompt_open = true;
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let count = |ctx: &egui::Context| {
+            ctx.data_mut(|data| data.get_temp::<Seen>(seen_id()))
+                .unwrap_or_default()
+                .places
+        };
+        // The sheet and the board ask whether to show a star; the story style window
+        // keeps its 0.13.2 layout and does not even ask without an addon.
+        type Draw = fn(&mut Studio, &egui::Context);
+        let places: [(Draw, usize); 3] = [
+            (Studio::character_workspace, 2),
+            (Studio::lore_workspace, 2),
+            (Studio::style_prompt_ui, 0),
+        ];
+        for (draw, asked) in places {
+            let before = count(&ctx);
+            for _ in 0..2 {
+                let _ = ctx.run(input(), |ctx| draw(&mut studio, ctx));
+            }
+            assert_eq!(count(&ctx) - before, asked);
+        }
+        let _ = ctx.run(input(), |ctx| studio.assist_ui(ctx));
+        let seen = ctx
+            .data_mut(|data| data.get_temp::<Seen>(seen_id()))
+            .unwrap_or_default();
+        assert!(!seen.offered, "no star or assist entry without an addon");
+        assert!(studio.addons.assist.is_none());
     }
 }

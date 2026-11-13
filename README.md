@@ -366,6 +366,21 @@ Glass uses OpenGL 3.3 or OpenGL ES 3.0 when supported, with a tinted fallback if
 
 The visual pass follows [Apple's materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) for separating controls from content and its [motion guidance](https://developer.apple.com/design/human-interface-guidelines/motion) for brief, purposeful, optional animation. These are native Rust/egui effects, not an Apple platform component.
 
+## Addons
+
+Scroll Studio works fully without addons and shows no addon controls until one is enabled.
+Addons are separate programs you choose to install from **Settings → Addons → Install from
+file** (a `.zip`). Each one lists what it may do: read your story, or suggest changes. A
+suggestion is always shown first, with the text before and after, and **Apply** makes it one
+step you can undo. An addon cannot save, open or delete files, and it never edits a story
+without your yes. Addons run as programs on your computer, so install only ones you trust.
+
+**AI Lite** is the first addon. Its ☆ button on character sheets, the lore board, story style
+and each beat's `···` menu asks a model running on your own computer (Ollama, LM Studio or
+llama.cpp) for a change. Its optional MCP server lets AI apps you already use read the open
+story and suggest edits, which still wait for your yes. See `addons/ai-lite/README.md`; to
+write your own addon, see `docs/addons.md`.
+
 ## File format
 
 `.scro` version 6 is a ZIP container (version 1–5 files are upgraded in memory when opened):

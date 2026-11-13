@@ -109,6 +109,36 @@ impl AddonState {
         }
     }
 
+    /// An addon may start only when every addon it `requires` is installed and usable.
+    fn check_requirements(&self, id: &str) -> anyhow::Result<()> {
+        let Some(Ok(manifest)) = self
+            .installed
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.manifest.as_ref())
+        else {
+            return Ok(()); // reported where the manifest is read
+        };
+        let missing: Vec<_> = manifest
+            .requires
+            .iter()
+            .filter(|needed| {
+                !self
+                    .installed
+                    .iter()
+                    .any(|i| &i.id == *needed && i.manifest.is_ok())
+            })
+            .map(String::as_str)
+            .collect();
+        anyhow::ensure!(
+            missing.is_empty(),
+            "{} needs {} installed first",
+            manifest.name,
+            missing.join(", ")
+        );
+        Ok(())
+    }
+
     /// The running addon that offers the star button, and its label.
     pub(super) fn assistant(&self) -> Option<(String, String)> {
         self.running.iter().find_map(|r| {
@@ -187,6 +217,7 @@ impl Studio {
             .manifest
             .clone()
             .map_err(|error| anyhow::anyhow!(error))?;
+        self.addons.check_requirements(id)?;
         let program = manifest.entry_in(&installed.folder)?;
         let wake = ctx.clone();
         let process = AddonProcess::start(
@@ -635,10 +666,14 @@ impl Studio {
             return;
         };
         let result = match &action {
-            AddonAction::Enable(id, true) => registry.set_enabled(id, true).and_then(|_| {
-                self.addons.refresh();
-                self.start_addon(ctx, id)
-            }),
+            AddonAction::Enable(id, true) => self
+                .addons
+                .check_requirements(id)
+                .and_then(|()| registry.set_enabled(id, true))
+                .and_then(|_| {
+                    self.addons.refresh();
+                    self.start_addon(ctx, id)
+                }),
             AddonAction::Enable(id, false) => {
                 self.stop_addon(id, "Disabled");
                 registry.set_enabled(id, false)
@@ -1027,6 +1062,35 @@ mod tests {
             studio.addons.waiting,
             vec![("other".to_owned(), 2, Purpose::Settings)]
         );
+    }
+
+    #[test]
+    fn an_addon_needing_another_only_starts_once_that_one_is_installed() {
+        let manifest = |id: &str, requires: &[&str]| Manifest {
+            id: id.into(),
+            name: id.to_uppercase(),
+            version: "1.0.0".into(),
+            min_app: "0.1.0".into(),
+            requires: requires.iter().map(|r| r.to_string()).collect(),
+            entry: "run.exe".into(),
+            permissions: Vec::new(),
+            download_mb: 0.0,
+            hardware: String::new(),
+            assist: None,
+        };
+        let installed = |m: Manifest| Installed {
+            id: m.id.clone(),
+            folder: std::path::PathBuf::from(&m.id),
+            manifest: Ok(m),
+            size_bytes: 0,
+            enabled: false,
+        };
+        let mut state = AddonState::new(None);
+        state.installed = vec![installed(manifest("artist", &["models"]))];
+        let error = state.check_requirements("artist").unwrap_err().to_string();
+        assert!(error.contains("ARTIST needs models"), "{error}");
+        state.installed.push(installed(manifest("models", &[])));
+        assert!(state.check_requirements("artist").is_ok());
     }
 
     #[test]
